@@ -810,6 +810,114 @@ public class PointCloudEditor : MonoBehaviour
         });
     }
 
+    // ノイズ除去（確定非表示）済みの点群を物理的に除外したPLYファイルを非同期エクスポート
+    public void ExportCleanedPoints()
+    {
+        PointData[] points = targetRenderer.GetPointData();
+        if (points == null || points.Length == 0)
+        {
+            Debug.LogError("[PointCloudEditor] No points to export!");
+            return;
+        }
+
+        string inputPath = targetRenderer.GetComponent<PointCloudLoader>().GetFilePath();
+        string directory = Path.GetDirectoryName(inputPath);
+        string fileNameWithoutExt = Path.GetFileNameWithoutExtension(inputPath);
+        string exportPath = Path.Combine(directory, $"{fileNameWithoutExt}_cleaned.ply");
+
+        var pm = PointCloudProgressManager.Instance;
+        pm.Start("クリーンアップ済PLYエクスポート", "書き出しデータ準備中...");
+
+        Debug.Log($"[PointCloudEditor] Starting background cleaned PLY export to: {exportPath}");
+
+        Task.Run(() =>
+        {
+            try
+            {
+                var token = pm.CancellationToken;
+                int remainingCount = 0;
+                
+                // 物理非表示（Deleted or NoiseHidden）以外の有効な点をカウント
+                for (int i = 0; i < points.Length; i++)
+                {
+                    if (token.IsCancellationRequested) return;
+                    
+                    int labelVal = points[i].label;
+                    bool isDeleted = (labelVal & 0x20000) != 0;
+                    bool isNoiseHidden = (labelVal & NoiseFilterManager.NOISE_HIDDEN_BIT) != 0;
+                    
+                    if (!isDeleted && !isNoiseHidden) remainingCount++;
+                }
+
+                using (StreamWriter writer = new StreamWriter(exportPath))
+                {
+                    // PLY ASCII Header
+                    writer.WriteLine("ply");
+                    writer.WriteLine("format ascii 1.0");
+                    writer.WriteLine($"element vertex {remainingCount}");
+                    writer.WriteLine("property float x");
+                    writer.WriteLine("property float y");
+                    writer.WriteLine("property float z");
+                    writer.WriteLine("property uchar red");
+                    writer.WriteLine("property uchar green");
+                    writer.WriteLine("property uchar blue");
+                    writer.WriteLine("property int label");
+                    writer.WriteLine("end_header");
+
+                    int written = 0;
+                    int progressInterval = Mathf.Max(1000, remainingCount / 100);
+
+                    for (int i = 0; i < points.Length; i++)
+                    {
+                        if (token.IsCancellationRequested)
+                        {
+                            writer.Close();
+                            if (File.Exists(exportPath)) File.Delete(exportPath);
+                            return;
+                        }
+
+                        int labelVal = points[i].label;
+                        bool isDeleted = (labelVal & 0x20000) != 0;
+                        bool isNoiseHidden = (labelVal & NoiseFilterManager.NOISE_HIDDEN_BIT) != 0;
+                        
+                        if (isDeleted || isNoiseHidden) continue; // 物理除外
+
+                        Vector3 pos = points[i].position;
+                        Color32 col = PointData.UnpackColor(points[i].originalColor);
+                        int classId = labelVal & 0xFFFF; // クラスIDはそのまま書き出す
+
+                        writer.WriteLine($"{pos.x.ToString(CultureInfo.InvariantCulture)} {pos.y.ToString(CultureInfo.InvariantCulture)} {pos.z.ToString(CultureInfo.InvariantCulture)} {col.r} {col.g} {col.b} {classId}");
+                        
+                        written++;
+                        if (written % progressInterval == 0)
+                        {
+                            pm.Update((float)written / remainingCount, $"データを書き出し中... ({written:N0} / {remainingCount:N0} 点)");
+                        }
+                    }
+                }
+                
+                // 同時に、Python側が出力した removal_report.json があればエクスポートフォルダにコピーする
+                string reportSrc = Path.Combine(Application.dataPath, "../python_backend/output/removal_report.json");
+                string reportDest = Path.Combine(directory, $"{fileNameWithoutExt}_removal_report.json");
+                if (File.Exists(reportSrc))
+                {
+                    File.Copy(reportSrc, reportDest, true);
+                    Debug.Log($"[PointCloudEditor] Copied removal report to: {reportDest}");
+                }
+
+                Debug.Log($"[PointCloudEditor] Successfully exported cleaned PLY with {remainingCount} points to: {exportPath}");
+            }
+            catch (System.Exception ex)
+            {
+                Debug.LogError($"[PointCloudEditor] Cleaned export failed: {ex.Message}");
+            }
+            finally
+            {
+                finishedExportFlag = true;
+            }
+        });
+    }
+
     // --- ADVANCED SELECTION IMPLEMENTATIONS ---
 
     void HandleLassoTool()

@@ -27,9 +27,12 @@ public class PointCloudEditorUI : MonoBehaviour
     private bool foldoutRansac = false;
     private bool foldoutFilter = false;
     private bool foldoutOperations = true;
+    private bool foldoutNoiseFilter = false;
     private bool foldoutLoad = true;
     private bool foldoutLOD = true;
     private bool foldoutStats = true;
+
+    private NoiseFilterUI noiseFilterUI;
 
     // Lasso drawing texture
     private Texture2D lineTex;
@@ -41,6 +44,11 @@ public class PointCloudEditorUI : MonoBehaviour
     void Start()
     {
         editor = GetComponent<PointCloudEditor>();
+        noiseFilterUI = GetComponent<NoiseFilterUI>();
+        if (noiseFilterUI == null)
+        {
+            noiseFilterUI = gameObject.AddComponent<NoiseFilterUI>();
+        }
         RefreshFileList();
     }
 
@@ -408,6 +416,14 @@ public class PointCloudEditorUI : MonoBehaviour
                 editor.AssignLabelToSelected();
                 editor.targetRenderer.colorMode = 2; // Auto toggle to label color mode
             }
+            GUILayout.Space(8);
+        }
+
+        // --- 6.5. Noise Filter (Foldout) ---
+        foldoutNoiseFilter = GUILayout.Toggle(foldoutNoiseFilter, (foldoutNoiseFilter ? "▼ " : "▶ ") + "🧹 空中モヤ・浮遊点ノイズ除去", foldoutHeaderStyle);
+        if (foldoutNoiseFilter && noiseFilterUI != null)
+        {
+            noiseFilterUI.DrawNoiseFilterSection(width, textStyle, buttonStyle, activeButtonStyle);
             GUILayout.Space(8);
         }
 

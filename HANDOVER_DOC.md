@@ -22,8 +22,8 @@ Unity上において数千万点規模の大規模な点群データ（PLY形式
 | **PointCloudOctree.cs** | `Assets/PointCloudWorkbench/Scripts/PointCloudOctree.cs` | 点群の空間分割オクトリー（八分木）データ構造。階層的LOD用の代表点選定や空間検索を担当。 |
 | **PointCloudRenderer.cs** | `Assets/PointCloudRenderer.cs` | GPU（ComputeBufferとProcedural Shader）を利用して高精度の点群データを描画する。 |
 | **PointCloudLoader.cs** | `Assets/PointCloudLoader.cs` | PLYファイルなどの点群データを非同期でロードしRendererにセットアップする。読み込み上限は2000万点。 |
-| **PointCloudEditor.cs** | `Assets/PointCloudWorkbench/Scripts/PointCloudEditor.cs` | 点群のアノテーション・編集用コアエンジン。ブラシ、矩形、なげなわ、接続探索、RANSAC等の選択ロジックを非同期処理で担当。 |
-| **PointCloudEditorUI.cs** | `Assets/PointCloudWorkbench/Scripts/PointCloudEditorUI.cs` | アノテーションツールのUI表示（OnGUI）やモーダル進捗・キャンセル表示を担当。 |
+| **PointCloudEditor.cs** | `Assets/PointCloudWorkbench/Scripts/PointCloudEditor.cs` | 点群のアノテーション・編集用コアエンジン。ブラシ、矩形、なげなわ、接続探索、RANSAC等の選択や、ノイズ物理除去PLYエクスポートを担当。 |
+| **PointCloudEditorUI.cs** | `Assets/PointCloudWorkbench/Scripts/PointCloudEditorUI.cs` | アノテーションツールのUI表示（OnGUI）や進捗モーダル表示、およびノイズ除去セクションの描画・委譲を担当。 |
 | **PointCloudController.cs** | `Assets/PointCloudController.cs` | VR環境（XRI Grab）およびPCデバッグ用に、点群オブジェクト全体の移動・回転・スケーリングといったトランスフォーム制御を担う。常に「左ドラッグ＝回転、右ドラッグ＝パン」で固定。 |
 | **PointCloudManager.cs** | `Assets/PointCloudManager.cs` | 基準（Reference）と対象（Aligned）点群の管理、簡易距離比較、表示モード切り替えを担当。 |
 | **PointCloudData.cs** | `Assets/PointCloudWorkbench/Scripts/PointCloudData.cs` | 点群に含まれる各点の構造体 `PointData` などの共通 of データ定義。 |
@@ -31,9 +31,10 @@ Unity上において数千万点規模の大規模な点群データ（PLY形式
 | **noise_filters.py** | `python_backend/noise_filters.py` | SOR / ROR / 密度 / DBSCAN フィルタの実装。DBSCAN of 自動ダウンサンプリングと同期フォールバックを制御。 |
 | **pointcloud_io.py** | `python_backend/pointcloud_io.py` | Open3D を用いた PLY ファイル of ロード・セーブ、および Python 内部用 NPZ データ of ロード・セーブ。 |
 | **result_writer.py** | `python_backend/result_writer.py` | 処理結果をリトルエンディアン of `.bin` ファイル、`metadata.json`、`removal_report.json` に出力。 |
-| **PythonBridge.cs** | `Assets/PointCloudWorkbench/Scripts/PythonBridge.cs` | Pythonプロセスを非同期で起動・監視し、リトルエンディアンバイナリを高速デシリアライズするブリッジ。 |
+| **PythonBridge.cs** | `Assets/PointCloudWorkbench/Scripts/PythonBridge.cs` | Pythonプロセスを非同期で詳細パラメータ引数を渡して起動・監視し、リトルエンディアンバイナリを高速デシリアライズするブリッジ。 |
 | **NoiseFilterResult.cs** | `Assets/PointCloudWorkbench/Scripts/NoiseFilterResult.cs` | デシリアライズされた各種ノイズスコア、クラスタID、削除理由マスクを保持するデータクラス。 |
 | **NoiseFilterManager.cs** | `Assets/PointCloudWorkbench/Scripts/NoiseFilterManager.cs` | プレビューフラグ適用、非表示確定、および最大5世代のUndo/Redo履歴スタックを管理するデータ層マネージャ。 |
+| **NoiseFilterUI.cs** | `Assets/PointCloudWorkbench/Scripts/NoiseFilterUI.cs` | 各種ノイズフィルタパラメータ（SOR, ROR, DBSCAN）のトグル・スライダー設定および非同期プロセス実行とUndo/Redo制御を担当するUIクラス。 |
 
 ## 実行方法
 1. Unity Editor（バージョン 6000.4.7f1）で `E:\VR\PointCloudVR` プロジェクトを開く。
@@ -164,3 +165,9 @@ Unity上において数千万点規模の大規模な点群データ（PLY形式
   - `CloudCompare-master_sankou/` (外部コード) や `scratch/` (一時スクリプト)、ゴミファイル（`hub_help.txt`、`query`、`implementation_plan_original.md`）が過去のコミットによって誤ってリモートリポジトリに公開されていたため、過去のすべてのコミット履歴から完全に抹消する履歴書き換えを実行。
   - ローカルの実ファイルは削除せず保持したまま、`.gitignore` を更新してこれらのファイルを追跡対象外に登録。
   - `git filter-branch`、古い参照（`refs/original/`）の削除、および `git gc` を用いたガベージコレクションによってリポジトリデータベースを最適化し、新履歴を `main` へ強制プッシュ。
+- **NeRF点群のモヤ・浮遊点除去機能（Phase D：UI統合 & Phase E：物理エクスポート）の実装**:
+  - `NoiseFilterUI.cs` を新規作成し、各種フィルタ（SOR, ROR, DBSCAN）のパラメータスライダーや有効化トグル、および非同期実行・確定（Commit）・Undo/Redo・リセットボタンなどのGUI操作コントロールを統合。
+  - 非同期解析実行時のスレッドセーフ対策（UnityException回避）として、メインスレッドへのシグナル完了検知フラグを用いた適用処理を実装。
+  - `PointCloudEditorUI.cs` を改修し、アノテーションパネル内に折りたたみセクション「🧹 空中モヤ・浮遊点ノイズ除去」を追加して、描画を `NoiseFilterUI` に委譲。
+  - `PointCloudEditor.cs` に `ExportCleanedPoints()` メソッドを追加し、確定非表示となったノイズ頂点を物理的に除外した新しいPLYファイルを ASCII 形式で非同期（バックグラウンドタスク）書き出しする機能を実装。同時に Python 側の解析サマリー（`removal_report.json`）をエクスポート先に自動コピーする連携機能を追記。
+

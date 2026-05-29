@@ -61,7 +61,10 @@ namespace PointCloudWorkbench
             string inputPlyPath, 
             string outputDir, 
             string mode, 
-            float? voxelSize = null,
+            float? voxelSize,
+            bool runSor, int sorNb, float sorStd,
+            bool runRor, float rorMul, int rorMin,
+            bool runDbscan, float dbscanEps, int dbscanMin, int dbscanCluster, int dbscanTarget,
             CancellationToken cancellationToken = default)
         {
             string pythonPath = GetPythonPath();
@@ -83,8 +86,33 @@ namespace PointCloudWorkbench
             argsBuilder.Append($" --mode {mode}");
             if (voxelSize.HasValue && mode == "downsample")
             {
-                argsBuilder.Append($" --voxel_size {voxelSize.Value}");
+                argsBuilder.Append($" --voxel_size {voxelSize.Value.ToString(System.Globalization.CultureInfo.InvariantCulture)}");
             }
+
+            // フィルタの個別有効化指定
+            System.Collections.Generic.List<string> filters = new System.Collections.Generic.List<string>();
+            if (runSor) filters.Add("sor");
+            if (runRor) filters.Add("ror");
+            if (runDbscan) filters.Add("dbscan");
+
+            if (filters.Count > 0)
+            {
+                argsBuilder.Append(" --filters " + string.Join(" ", filters));
+            }
+            else
+            {
+                // すべて無効の場合は --filters なし（Python側は空リスト扱い）
+                argsBuilder.Append(" --filters none");
+            }
+
+            argsBuilder.Append($" --sor_nb {sorNb}");
+            argsBuilder.Append($" --sor_std {sorStd.ToString(System.Globalization.CultureInfo.InvariantCulture)}");
+            argsBuilder.Append($" --ror_mul {rorMul.ToString(System.Globalization.CultureInfo.InvariantCulture)}");
+            argsBuilder.Append($" --ror_min {rorMin}");
+            argsBuilder.Append($" --dbscan_eps {dbscanEps.ToString(System.Globalization.CultureInfo.InvariantCulture)}");
+            argsBuilder.Append($" --dbscan_min {dbscanMin}");
+            argsBuilder.Append($" --dbscan_cluster {dbscanCluster}");
+            argsBuilder.Append($" --dbscan_target {dbscanTarget}");
 
             ProcessStartInfo psi = new ProcessStartInfo
             {
