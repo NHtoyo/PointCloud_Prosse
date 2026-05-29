@@ -31,6 +31,9 @@ Unity上において数千万点規模の大規模な点群データ（PLY形式
 | **noise_filters.py** | `python_backend/noise_filters.py` | SOR / ROR / 密度 / DBSCAN フィルタの実装。DBSCAN of 自動ダウンサンプリングと同期フォールバックを制御。 |
 | **pointcloud_io.py** | `python_backend/pointcloud_io.py` | Open3D を用いた PLY ファイル of ロード・セーブ、および Python 内部用 NPZ データ of ロード・セーブ。 |
 | **result_writer.py** | `python_backend/result_writer.py` | 処理結果をリトルエンディアン of `.bin` ファイル、`metadata.json`、`removal_report.json` に出力。 |
+| **PythonBridge.cs** | `Assets/PointCloudWorkbench/Scripts/PythonBridge.cs` | Pythonプロセスを非同期で起動・監視し、リトルエンディアンバイナリを高速デシリアライズするブリッジ。 |
+| **NoiseFilterResult.cs** | `Assets/PointCloudWorkbench/Scripts/NoiseFilterResult.cs` | デシリアライズされた各種ノイズスコア、クラスタID、削除理由マスクを保持するデータクラス。 |
+| **NoiseFilterManager.cs** | `Assets/PointCloudWorkbench/Scripts/NoiseFilterManager.cs` | プレビューフラグ適用、非表示確定、および最大5世代のUndo/Redo履歴スタックを管理するデータ層マネージャ。 |
 
 ## 実行方法
 1. Unity Editor（バージョン 6000.4.7f1）で `E:\VR\PointCloudVR` プロジェクトを開く。
@@ -53,6 +56,8 @@ Unity上において数千万点規模の大規模な点群データ（PLY形式
 - `Assets/PointCloudWorkbench/Scripts/PointCloudEditorUI.cs`（UI調整時）
 - `python_backend/run_noise_filter.py`（ノイズフィルタのバックエンド CLI 調整時）
 - `python_backend/noise_filters.py`（ノイズフィルタのアルゴリズム調整・拡張時）
+- `Assets/PointCloudWorkbench/Scripts/PythonBridge.cs`（Python連携・デシリアライズ調整時）
+- `Assets/PointCloudWorkbench/Scripts/NoiseFilterManager.cs`（ノイズフラグ適用・履歴管理調整時）
 
 ## 未確認事項
 - VRデバイス（Meta Quest等）を接続した実機環境での XRI Grab インタラクションの詳細な動作確認。
@@ -144,6 +149,13 @@ Unity上において数千万点規模の大規模な点群データ（PLY形式
   - `run_noise_filter.py` にて、CLI 引数によるパラメータ指定および Full モード / Downsample Preview モード（`preview.ply` を出力）の実行エントリポイントを構築。
   - `tests/` 内に人工テストデータの自動生成（`generate_test_data.py`）と、各フィルタ仕様（浮遊点除去90%以上、線状構造のSoft/Strong、小クラスタとノイズの100%除去）を検証する自動テスト（`test_filters.py`）を実装し、すべてパスすることを確認。
   - `rei1.ply` (327万点) に対する Full モードでの実行が正常に行われ、1分強で約44万点のノイズ候補（SORおよび小クラスタ）を検出・出力できることを確認。
+- **NeRF点群のモヤ・浮遊点除去機能（Phase B：Unityデータ層との連携）の実装**:
+  - `NoiseFilterResult.cs` を新規作成。各種ノイズスコア、クラスタID、削除理由、および `RemovalReason` 列挙型を定義。
+  - `PythonBridge.cs` を新規作成。`System.Diagnostics.Process` を用いて Python プロセスを非同期で安全に実行し、標準出力・標準エラーをリダイレクトして進捗監視を行うブリッジを構築。また、CancellationTokenによるプロセスの強制終了（キル）制御を実装。
+  - `PythonBridge.cs` 内に、リトルエンディアン形式の `.bin` ファイルを `File.ReadAllBytes` と `Buffer.BlockCopy` によって高速に復元するゼロアロケーション指向のデシリアライズ処理を実装。
+  - `NoiseFilterManager.cs` を新規作成。点群の `PointData.label` 内の上位ビット領域（bit18: 削除候補, bit19: 確定非表示）をビット演算で非破壊操作するプレビュー適用（`ApplyPreview`）および非表示確定（`CommitRemoval`）ロジックを実装。
+  - `NoiseFilterManager.cs` 内に、メモリ消費を保護（最大5世代）しつつ `label` 配列のディープコピーを用いて完全な元戻しを可能にするスタックベースの `Undo` / `Redo` 履歴管理システムを実装。
+
 
 
 
