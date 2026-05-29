@@ -1038,9 +1038,6 @@ public class PointCloudEditor : MonoBehaviour
         PointData[] points = targetRenderer.GetPointData();
         if (points == null || points.Length == 0) return;
 
-        var octree = targetRenderer.Octree;
-        bool useOctree = octree != null && targetRenderer.IsOctreeReady;
-
         float localRadius = connectionRadius / targetRenderer.transform.lossyScale.x;
         int maxLimit = maxConnectionPoints;
         bool selecting = brushSelectMode;
@@ -1056,139 +1053,102 @@ public class PointCloudEditor : MonoBehaviour
             {
                 var token = pm.CancellationToken;
                 bool[] visited = new bool[points.Length];
-                List<int> currentFrontier = new List<int>();
-                List<int> connectedIndices = new List<int>();
-
-                currentFrontier.Add(startIdx);
-                visited[startIdx] = true;
-
+                List<int> connectedIndices = new List<int>(maxLimit);
+                
                 var sw = System.Diagnostics.Stopwatch.StartNew();
                 long lastProgressUpdate = 0;
 
-                // ThreadLocal list to reuse buffers in Parallel.For, preventing GC spikes
-                using (var threadLocalBuffer = new System.Threading.ThreadLocal<List<int>>(() => new List<int>(500)))
+                // 1. Spatial Hashing: Build Voxel Grid for fast neighborhood search
+                pm.Update(0f, "ボクセルハッシュを構築中...");
+                float voxelSize = localRadius;
+                if (voxelSize < 0.0001f) voxelSize = 0.0001f;
+                float invVoxelSize = 1f / voxelSize;
+
+                Dictionary<Vector3Int, List<int>> voxelMap = new Dictionary<Vector3Int, List<int>>();
+                
+                for (int i = 0; i < points.Length; i++)
                 {
-                    while (currentFrontier.Count > 0 && connectedIndices.Count < maxLimit)
+                    if (token.IsCancellationRequested) break;
+                    if ((points[i].label & 0x20000) != 0) continue; // Skip hidden/deleted points
+                    
+                    Vector3 pos = positions[i];
+                    Vector3Int voxelIdx = new Vector3Int(
+                        Mathf.FloorToInt(pos.x * invVoxelSize),
+                        Mathf.FloorToInt(pos.y * invVoxelSize),
+                        Mathf.FloorToInt(pos.z * invVoxelSize)
+                    );
+
+                    if (!voxelMap.TryGetValue(voxelIdx, out List<int> list))
                     {
-                        if (token.IsCancellationRequested)
-                        {
-                            break;
-                        }
+                        list = new List<int>();
+                        voxelMap[voxelIdx] = list;
+                    }
+                    list.Add(i);
+                }
 
-                        int pointsToCopy = Mathf.Min(currentFrontier.Count, maxLimit - connectedIndices.Count);
-                        for (int i = 0; i < pointsToCopy; i++)
-                        {
-                            connectedIndices.Add(currentFrontier[i]);
-                        }
+                // 2. BFS using Spatial Hashing
+                pm.Update(0.1f, "探索中...");
+                Queue<int> queue = new Queue<int>();
+                
+                queue.Enqueue(startIdx);
+                visited[startIdx] = true;
+                
+                float radSq = localRadius * localRadius;
+                
+                // Pre-compute 27-neighbor offsets
+                Vector3Int[] offsets = new Vector3Int[27];
+                int offsetIdx = 0;
+                for (int x = -1; x <= 1; x++)
+                for (int y = -1; y <= 1; y++)
+                for (int z = -1; z <= 1; z++)
+                {
+                    offsets[offsetIdx++] = new Vector3Int(x, y, z);
+                }
 
-                        if (connectedIndices.Count >= maxLimit)
-                        {
-                            break;
-                        }
+                while (queue.Count > 0 && connectedIndices.Count < maxLimit)
+                {
+                    if (token.IsCancellationRequested) break;
 
-                        int frontierCount = currentFrontier.Count;
-                        List<int>[] neighborLists = new List<int>[frontierCount];
+                    int currentIdx = queue.Dequeue();
+                    connectedIndices.Add(currentIdx);
+                    
+                    if (connectedIndices.Count >= maxLimit) break;
 
-                        // Parallelize only if frontier is large enough to warrant thread scheduling overhead (e.g. >= 256)
-                        if (frontierCount >= 256)
+                    Vector3 center = positions[currentIdx];
+                    Vector3Int centerVoxel = new Vector3Int(
+                        Mathf.FloorToInt(center.x * invVoxelSize),
+                        Mathf.FloorToInt(center.y * invVoxelSize),
+                        Mathf.FloorToInt(center.z * invVoxelSize)
+                    );
+
+                    // Search in 27 neighboring voxels
+                    for (int i = 0; i < 27; i++)
+                    {
+                        Vector3Int neighborVoxel = centerVoxel + offsets[i];
+                        if (voxelMap.TryGetValue(neighborVoxel, out List<int> candidates))
                         {
-                            Parallel.For(0, frontierCount, i =>
+                            int count = candidates.Count;
+                            for (int j = 0; j < count; j++)
                             {
-                                if (token.IsCancellationRequested) return;
-
-                                int currentPointIdx = currentFrontier[i];
-                                Vector3 center = positions[currentPointIdx]; // Use positions array instead of points struct
-                                var neighborBuffer = threadLocalBuffer.Value;
-                                neighborBuffer.Clear();
-
-                                if (useOctree)
+                                int candidateIdx = candidates[j];
+                                if (!visited[candidateIdx])
                                 {
-                                    octree.FindPointsWithinRadius(octree.root, center, localRadius, neighborBuffer, positions);
-                                }
-                                else
-                                {
-                                    float radSq = localRadius * localRadius;
-                                    for (int pIdx = 0; pIdx < points.Length; pIdx++)
+                                    if ((positions[candidateIdx] - center).sqrMagnitude <= radSq)
                                     {
-                                        if ((points[pIdx].label & 0x20000) != 0) continue;
-                                        if ((positions[pIdx] - center).sqrMagnitude <= radSq)
-                                        {
-                                            neighborBuffer.Add(pIdx);
-                                        }
+                                        visited[candidateIdx] = true; // Mark visited immediately to prevent duplicates in queue
+                                        queue.Enqueue(candidateIdx);
                                     }
-                                }
-
-                                if (neighborBuffer.Count > 0)
-                                {
-                                    neighborLists[i] = new List<int>(neighborBuffer);
-                                }
-                            });
-                        }
-                        else
-                        {
-                            // Sequential execution for small frontiers is much faster due to zero context switches
-                            var neighborBuffer = threadLocalBuffer.Value;
-                            for (int i = 0; i < frontierCount; i++)
-                            {
-                                if (token.IsCancellationRequested) break;
-
-                                int currentPointIdx = currentFrontier[i];
-                                Vector3 center = positions[currentPointIdx];
-                                neighborBuffer.Clear();
-
-                                if (useOctree)
-                                {
-                                    octree.FindPointsWithinRadius(octree.root, center, localRadius, neighborBuffer, positions);
-                                }
-                                else
-                                {
-                                    float radSq = localRadius * localRadius;
-                                    for (int pIdx = 0; pIdx < points.Length; pIdx++)
-                                    {
-                                        if ((points[pIdx].label & 0x20000) != 0) continue;
-                                        if ((positions[pIdx] - center).sqrMagnitude <= radSq)
-                                        {
-                                            neighborBuffer.Add(pIdx);
-                                        }
-                                    }
-                                }
-
-                                if (neighborBuffer.Count > 0)
-                                {
-                                    neighborLists[i] = new List<int>(neighborBuffer);
                                 }
                             }
                         }
+                    }
 
-                        // Merge neighbors sequentially
-                        List<int> nextFrontier = new List<int>();
-                        for (int i = 0; i < frontierCount; i++)
-                        {
-                            var neighbors = neighborLists[i];
-                            if (neighbors == null) continue;
-                            
-                            int count = neighbors.Count;
-                            for (int nIdx = 0; nIdx < count; nIdx++)
-                            {
-                                int neighbor = neighbors[nIdx];
-                                if (!visited[neighbor])
-                                {
-                                    visited[neighbor] = true;
-                                    nextFrontier.Add(neighbor);
-                                }
-                            }
-                        }
-
-                        currentFrontier = nextFrontier;
-
-                        // Throttle progress updates to 50ms intervals to prevent UI/string allocations bottleneck
-                        long elapsed = sw.ElapsedMilliseconds;
-                        if (elapsed - lastProgressUpdate > 50)
-                        {
-                            lastProgressUpdate = elapsed;
-                            float progress = (float)connectedIndices.Count / maxLimit;
-                            pm.Update(progress, $"接続点を探索中... ({connectedIndices.Count:N0} / {maxLimit:N0} 点)");
-                        }
+                    long elapsed = sw.ElapsedMilliseconds;
+                    if (elapsed - lastProgressUpdate > 100)
+                    {
+                        lastProgressUpdate = elapsed;
+                        float progress = 0.1f + 0.8f * ((float)connectedIndices.Count / maxLimit);
+                        pm.Update(progress, $"接続点を探索中... ({connectedIndices.Count:N0} / {maxLimit:N0} 点)");
                     }
                 }
 

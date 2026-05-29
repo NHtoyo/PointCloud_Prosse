@@ -9,6 +9,7 @@
 - 調査結果は `docs/research/`、実装計画は `docs/implementation_plans/` に保存する。
 - 外部リポジトリは、まずGitHub上でREADME、license、requirementsを確認する。
 - 深く読む・実行する必要がある場合だけ `external_repos/` にcloneする。
+- `HANDOVER_DOC.md` には、「プログラムに実装した機能すべてに関する解説」と「プロジェクトで作成したプログラム一覧、パスと説明入り」を常に更新し続けること。
 - `external_repos/` はGit管理に含めない。
 
 ## 詳細ルール
