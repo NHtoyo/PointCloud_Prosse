@@ -27,3 +27,10 @@ PointCloudVR/[Uu]serSettings/
 /vs/
 /copy_log_result.txt
 /scene_dump.txt
+
+# Python backend files
+PointCloudVR/python_backend/.venv/
+PointCloudVR/python_backend/output/
+**/__pycache__/
+**/*.pyc
+**/tests/test_data_*.ply

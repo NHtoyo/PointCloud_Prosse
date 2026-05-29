@@ -1,0 +1,6 @@
+open3d
+numpy
+scipy
+fastapi
+uvicorn
+pydantic

@@ -26,7 +26,11 @@ Unity上において数千万点規模の大規模な点群データ（PLY形式
 | **PointCloudEditorUI.cs** | `Assets/PointCloudWorkbench/Scripts/PointCloudEditorUI.cs` | アノテーションツールのUI表示（OnGUI）やモーダル進捗・キャンセル表示を担当。 |
 | **PointCloudController.cs** | `Assets/PointCloudController.cs` | VR環境（XRI Grab）およびPCデバッグ用に、点群オブジェクト全体の移動・回転・スケーリングといったトランスフォーム制御を担う。常に「左ドラッグ＝回転、右ドラッグ＝パン」で固定。 |
 | **PointCloudManager.cs** | `Assets/PointCloudManager.cs` | 基準（Reference）と対象（Aligned）点群の管理、簡易距離比較、表示モード切り替えを担当。 |
-| **PointCloudData.cs** | `Assets/PointCloudWorkbench/Scripts/PointCloudData.cs` | 点群に含まれる各点の構造体 `PointData` などの共通のデータ定義。 |
+| **PointCloudData.cs** | `Assets/PointCloudWorkbench/Scripts/PointCloudData.cs` | 点群に含まれる各点の構造体 `PointData` などの共通 of データ定義。 |
+| **run_noise_filter.py** | `python_backend/run_noise_filter.py` | CLIエントリポイント。パラメータを受け取り、バッチ処理全体の制御と結果出力を担当。 |
+| **noise_filters.py** | `python_backend/noise_filters.py` | SOR / ROR / 密度 / DBSCAN フィルタの実装。DBSCAN of 自動ダウンサンプリングと同期フォールバックを制御。 |
+| **pointcloud_io.py** | `python_backend/pointcloud_io.py` | Open3D を用いた PLY ファイル of ロード・セーブ、および Python 内部用 NPZ データ of ロード・セーブ。 |
+| **result_writer.py** | `python_backend/result_writer.py` | 処理結果をリトルエンディアン of `.bin` ファイル、`metadata.json`、`removal_report.json` に出力。 |
 
 ## 実行方法
 1. Unity Editor（バージョン 6000.4.7f1）で `E:\VR\PointCloudVR` プロジェクトを開く。
@@ -47,6 +51,8 @@ Unity上において数千万点規模の大規模な点群データ（PLY形式
 - `Assets/PointCloudController.cs`（オブジェクト操作の調整時）
 - `Assets/PointCloudWorkbench/Scripts/PointCloudEditor.cs`（編集・アノテーションロジックの追加時）
 - `Assets/PointCloudWorkbench/Scripts/PointCloudEditorUI.cs`（UI調整時）
+- `python_backend/run_noise_filter.py`（ノイズフィルタのバックエンド CLI 調整時）
+- `python_backend/noise_filters.py`（ノイズフィルタのアルゴリズム調整・拡張時）
 
 ## 未確認事項
 - VRデバイス（Meta Quest等）を接続した実機環境での XRI Grab インタラクションの詳細な動作確認。
@@ -104,6 +110,7 @@ Unity上において数千万点規模の大規模な点群データ（PLY形式
 - ビルトインレンダリングパイプラインを使用。
 - `Graphics.DrawProcedural`によるComputeBufferからの描画。
 - UIは日本語表記を基本とする。
+- Gitのコミットメッセージは原則として日本語で記述する。
 
 ## 技術的な調査・解析メモ
 - **CloudCompareの2Dロール（画面垂直軸回転）の仕組み**:
@@ -127,6 +134,17 @@ Unity上において数千万点規模の大規模な点群データ（PLY形式
   - `connectionRadius` をセルサイズとし、点群をまずセルにまとめ（ハッシュマップ類似構造）、開始点が属するセルから26近傍の占有セルへ隣接探索を広げ、訪問したセル内の全点を選択対象にするアルゴリズムに変更。
   - これにより、大量の距離判定計算（`sqrMagnitude`）を完全に排除し、接続探索の計算量を点ペア候補数依存から「占有セル数と点数」に依存する形へ劇的に削減。10秒以上かかっていた処理が数ミリ秒〜数十ミリ秒で完了する圧倒的な高速化を実現した。
   - *注意点*: この方式はセル接続であり、厳密な点間距離接続より境界部分がやや広く選択される場合があるが、実用上はCloudCompareの接続成分とほぼ同一の挙動を示す。
+- **NeRF点群のモヤ・浮遊点除去機能（Phase A：Pythonバックエンド）の実装**:
+  - Python仮想環境（venv）と `requirements.txt` を用いて、Open3D, NumPy, SciPy などの開発環境を構築。
+  - `pointcloud_io.py` にて Open3D を用いた PLY ファイルのロード・セーブ、および Python 内部用 NPZ データのロード・セーブを実装。
+  - `noise_filters.py` にて SOR（統計的外れ点除去）、ROR（半径外れ点除去）、局所密度、および DBSCAN クラスタリングアルゴリズムを実装。
+  - DBSCAN 処理において、30万点を超える場合は自動でボクセルダウンサンプリングを適用し、結果を KDTree 1-NN を用いて元の点群全体に伝播（ラベル伝播）させることで、出力ファイルの点数を元の点群数と一致させるマージロジックを実装。
+  - Windows環境における子プロセス競合（ハングアップ）を避けるため、DBSCAN 処理を安定した同期処理（シングルプロセス）にリファクタリング。
+  - `result_writer.py` にて、C# 連携用として明示的にリトルエンディアンで `.bin` バイナリを出力し、かつ `metadata.json` / `removal_report.json` を生成する機能を実装。
+  - `run_noise_filter.py` にて、CLI 引数によるパラメータ指定および Full モード / Downsample Preview モード（`preview.ply` を出力）の実行エントリポイントを構築。
+  - `tests/` 内に人工テストデータの自動生成（`generate_test_data.py`）と、各フィルタ仕様（浮遊点除去90%以上、線状構造のSoft/Strong、小クラスタとノイズの100%除去）を検証する自動テスト（`test_filters.py`）を実装し、すべてパスすることを確認。
+  - `rei1.ply` (327万点) に対する Full モードでの実行が正常に行われ、1分強で約44万点のノイズ候補（SORおよび小クラスタ）を検出・出力できることを確認。
+
 
 
 
