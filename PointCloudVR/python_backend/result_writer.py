@@ -24,6 +24,7 @@ def write_results(output_dir: str, results: dict, params: dict, mode: str,
     sor_score_bin = results['sor_score'].astype('<f4')      # float32 little endian (4 bytes)
     density_score_bin = results['density_score'].astype('<f4') # float32 little endian (4 bytes)
     radius_neighbor_count_bin = results['radius_neighbor_count'].astype('<i4') # int32 little endian (4 bytes)
+    cc_noise_score_bin = results['cc_noise_score'].astype('<f4') # float32 little endian (4 bytes)
     cluster_id_bin = results['cluster_id'].astype('<i4')    # int32 little endian (4 bytes)
     reason_bin = results['reason'].astype('<i4')            # int32 little endian (4 bytes)
     
@@ -32,6 +33,7 @@ def write_results(output_dir: str, results: dict, params: dict, mode: str,
     sor_score_bin.tofile(os.path.join(output_dir, "sor_score.bin"))
     density_score_bin.tofile(os.path.join(output_dir, "density_score.bin"))
     radius_neighbor_count_bin.tofile(os.path.join(output_dir, "radius_neighbor_count.bin"))
+    cc_noise_score_bin.tofile(os.path.join(output_dir, "cc_noise_score.bin"))
     cluster_id_bin.tofile(os.path.join(output_dir, "cluster_id.bin"))
     reason_bin.tofile(os.path.join(output_dir, "reason.bin"))
     
@@ -49,6 +51,7 @@ def write_results(output_dir: str, results: dict, params: dict, mode: str,
             "sor_score":             {"filename": "sor_score.bin",             "dtype": "float32", "shape": [point_count]},
             "density_score":         {"filename": "density_score.bin",         "dtype": "float32", "shape": [point_count]},
             "radius_neighbor_count": {"filename": "radius_neighbor_count.bin", "dtype": "int32",   "shape": [point_count]},
+            "cc_noise_score":        {"filename": "cc_noise_score.bin",        "dtype": "float32", "shape": [point_count]},
             "cluster_id":            {"filename": "cluster_id.bin",            "dtype": "int32",   "shape": [point_count]},
             "reason":                {"filename": "reason.bin",                "dtype": "int32",   "shape": [point_count]}
         },
@@ -74,6 +77,7 @@ def write_results(output_dir: str, results: dict, params: dict, mode: str,
         "removed_by_sor": results['removed_by_sor_count'],
         "removed_by_ror": results['removed_by_ror_count'],
         "removed_by_low_density": results['removed_by_low_density_count'],
+        "removed_by_cc_noise": results['removed_by_cc_noise_count'],
         "removed_by_small_cluster": results['removed_by_small_cluster_count'],
         "dbscan_timeout": results['dbscan_timeout'],
         "parameters_used": params

@@ -1,6 +1,14 @@
-import argparse
-import sys
 import os
+import sys
+
+# OpenMP や MKL などのマルチスレッドライブラリのデッドロック防止（スレッド数を 1 に制限）
+os.environ["OMP_NUM_THREADS"] = "1"
+os.environ["MKL_NUM_THREADS"] = "1"
+os.environ["OPENBLAS_NUM_THREADS"] = "1"
+os.environ["VECLIB_MAXIMUM_THREADS"] = "1"
+os.environ["NUMEXPR_NUM_THREADS"] = "1"
+
+import argparse
 import time
 import numpy as np
 import open3d as o3d
@@ -30,18 +38,21 @@ def main():
     parser.add_argument("--density_k", type=int, default=8, help="密度推定のk近傍数 (default: 8)")
     parser.add_argument("--density_thresh", type=float, default=0.0, 
                         help="密度による削除の閾値。0.0以下の場合は低密度削除を無効化 (default: 0.0)")
+    parser.add_argument("--cc_k", type=int, default=20, help="CC平面フィルタの近傍点数 (default: 20)")
+    parser.add_argument("--cc_sigma", type=float, default=1.0, help="CC平面フィルタの相対シグマ閾値 (default: 1.0)")
+    parser.add_argument("--cc_error", type=float, default=0.0, help="CC平面フィルタの絶対誤差閾値 (default: 0.0)")
     parser.add_argument("--dbscan_eps", type=float, default=4.0, help="DBSCANのepsマルチプライヤ (default: 4.0)")
     parser.add_argument("--dbscan_min", type=int, default=10, help="DBSCANのコア点条件最小点数 (default: 10)")
     parser.add_argument("--dbscan_cluster", type=int, default=200, help="小クラスタと判定する閾値サイズ (default: 200)")
     parser.add_argument("--dbscan_target", type=int, default=200000, help="DBSCAN自動ダウンサンプル時の目標点数 (default: 200000)")
     parser.add_argument("--dbscan_timeout", type=int, default=120, help="DBSCANのタイムアウト秒数 (default: 120)")
-    parser.add_argument("--filters", nargs="*", choices=["sor", "ror", "dbscan", "density", "none"], default=None,
+    parser.add_argument("--filters", nargs="*", choices=["sor", "ror", "dbscan", "density", "cc_noise", "none"], default=None,
                         help="有効にするフィルタのリスト (noneを指定した場合はすべて無効)")
 
     args = parser.parse_args()
 
-    # 有効フィルタ集合のパース
-    enabled_filters = set(args.filters or ["sor", "ror", "dbscan", "density"])
+    # 有効フィルタ集合のパース (デフォルトは SOR, CC_Noise, DBSCAN)
+    enabled_filters = set(args.filters or ["sor", "cc_noise", "dbscan"])
     if "none" in enabled_filters:
         enabled_filters = set()
     
@@ -67,6 +78,7 @@ def main():
         "sor": {"nb_neighbors": args.sor_nb, "std_ratio": args.sor_std},
         "ror": {"radius_multiplier": args.ror_mul, "min_neighbors": args.ror_min},
         "density": {"k": args.density_k, "threshold": args.density_thresh},
+        "cc_noise": {"k": args.cc_k, "relative_sigma": args.cc_sigma, "absolute_error": args.cc_error},
         "dbscan": {
             "eps_multiplier": args.dbscan_eps,
             "min_points": args.dbscan_min,
@@ -149,6 +161,7 @@ def main():
     print(f"  - SOR         : {results['removed_by_sor_count']:,} 点")
     print(f"  - ROR         : {results['removed_by_ror_count']:,} 点")
     print(f"  - 低密度      : {results['removed_by_low_density_count']:,} 点")
+    print(f"  - 平面推定(CC): {results['removed_by_cc_noise_count']:,} 点")
     print(f"  - 小クラスタ  : {results['removed_by_small_cluster_count']:,} 点")
     
     if results.get('dbscan_timeout', False):

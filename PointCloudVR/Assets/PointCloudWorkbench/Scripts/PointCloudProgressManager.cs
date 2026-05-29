@@ -23,12 +23,18 @@ namespace PointCloudWorkbench
         public string Title { get; private set; }
         public string StatusMessage { get; private set; }
 
+        // エラーハンドリング用
+        public bool IsError { get; private set; }
+        public string ErrorMessage { get; private set; }
+
         private CancellationTokenSource cts;
         public CancellationToken CancellationToken => cts != null ? cts.Token : CancellationToken.None;
 
         public void Start(string title, string message)
         {
             IsRunning = true;
+            IsError = false;
+            ErrorMessage = "";
             Progress = 0f;
             Title = title;
             StatusMessage = message;
@@ -60,12 +66,24 @@ namespace PointCloudWorkbench
         public void Complete()
         {
             IsRunning = false;
+            IsError = false;
+            ErrorMessage = "";
             Progress = 1f;
             if (cts != null)
             {
                 cts.Dispose();
                 cts = null;
             }
+        }
+
+        public void ShowError(string title, string errorMessage)
+        {
+            IsRunning = true;
+            IsError = true;
+            Title = title;
+            ErrorMessage = errorMessage;
+            StatusMessage = "エラーが発生しました。";
+            Progress = 0f;
         }
     }
 }

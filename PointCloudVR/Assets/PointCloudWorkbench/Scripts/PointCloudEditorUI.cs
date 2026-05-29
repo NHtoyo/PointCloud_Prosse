@@ -17,6 +17,7 @@ public class PointCloudEditorUI : MonoBehaviour
     private bool stylesInitialized = false;
 
     private Vector2 fileScrollPos;
+    private Vector2 errorScrollPos = Vector2.zero;
     private string[] availablePlyFiles = new string[0];
     private float fileCheckTimer = 0f;
 
@@ -583,50 +584,77 @@ public class PointCloudEditorUI : MonoBehaviour
         GUI.Box(new Rect(0, 0, Screen.width, Screen.height), "", backdropStyle);
 
         // Center window coordinates
-        float w = 500f; // Scale up for larger fonts
-        float h = 210f;
+        float w = pm.IsError ? 600f : 500f; // エラー時は少し広げる
+        float h = pm.IsError ? 350f : 210f; // エラー時は縦に広げる
         float x = (Screen.width - w) * 0.5f;
         float y = (Screen.height - h) * 0.5f;
 
         GUILayout.BeginArea(new Rect(x, y, w, h), windowStyle);
         
-        GUILayout.Label($"⏳ {pm.Title}", headerStyle);
-        GUILayout.Space(8);
-        
-        GUILayout.Label(pm.StatusMessage, textStyle);
-        GUILayout.Space(8);
-
-        // Progress bar container
-        Rect progressRect = GUILayoutUtility.GetRect(w - 32, 26);
-        
-        // Progress background
-        GUIStyle barBgStyle = new GUIStyle();
-        if (progressBgTex != null)
+        if (pm.IsError)
         {
-            barBgStyle.normal.background = progressBgTex;
+            GUIStyle errHeaderStyle = new GUIStyle(headerStyle);
+            errHeaderStyle.normal.textColor = new Color(1.0f, 0.3f, 0.3f); // 赤色
+            GUILayout.Label($"❌ {pm.Title}", errHeaderStyle);
+            GUILayout.Space(8);
+            
+            GUILayout.Label("処理中に以下のエラーが発生しました。ログを確認してください。", textStyle);
+            GUILayout.Space(5);
+
+            // エラーログ表示用のスクロールビュー
+            errorScrollPos = GUILayout.BeginScrollView(errorScrollPos, GUILayout.Height(180));
+            GUIStyle errTextStyle = new GUIStyle(textStyle);
+            errTextStyle.normal.textColor = new Color(1.0f, 0.4f, 0.4f); // 薄い赤
+            errTextStyle.fontSize = 13;
+            GUILayout.TextArea(pm.ErrorMessage, errTextStyle);
+            GUILayout.EndScrollView();
+
+            GUILayout.Space(15);
+            if (GUILayout.Button("閉じる", activeButtonStyle, GUILayout.Height(35)))
+            {
+                pm.Complete();
+            }
         }
-        GUI.Box(progressRect, "", barBgStyle);
-        
-        // Progress fill (utilizing lineTex or basic texture if null)
-        float fillWidth = (progressRect.width - 4) * pm.Progress;
-        if (fillWidth > 0.1f)
+        else
         {
-            GUI.color = new Color(0.15f, 0.76f, 1f, 0.9f); // Cyan fill
-            GUI.DrawTexture(new Rect(progressRect.x + 2, progressRect.y + 2, fillWidth, progressRect.height - 4), lineTex != null ? lineTex : Texture2D.whiteTexture);
-            GUI.color = Color.white;
-        }
+            GUILayout.Label($"⏳ {pm.Title}", headerStyle);
+            GUILayout.Space(8);
+            
+            GUILayout.Label(pm.StatusMessage, textStyle);
+            GUILayout.Space(8);
 
-        // Progress percentage text
-        GUIStyle percentStyle = new GUIStyle(textStyle);
-        percentStyle.alignment = TextAnchor.MiddleCenter;
-        percentStyle.fontStyle = FontStyle.Bold;
-        percentStyle.normal.textColor = Color.white;
-        GUI.Label(progressRect, $"{pm.Progress * 100f:F1} %", percentStyle);
+            // Progress bar container
+            Rect progressRect = GUILayoutUtility.GetRect(w - 32, 26);
+            
+            // Progress background
+            GUIStyle barBgStyle = new GUIStyle();
+            if (progressBgTex != null)
+            {
+                barBgStyle.normal.background = progressBgTex;
+            }
+            GUI.Box(progressRect, "", barBgStyle);
+            
+            // Progress fill (utilizing lineTex or basic texture if null)
+            float fillWidth = (progressRect.width - 4) * pm.Progress;
+            if (fillWidth > 0.1f)
+            {
+                GUI.color = new Color(0.15f, 0.76f, 1f, 0.9f); // Cyan fill
+                GUI.DrawTexture(new Rect(progressRect.x + 2, progressRect.y + 2, fillWidth, progressRect.height - 4), lineTex != null ? lineTex : Texture2D.whiteTexture);
+                GUI.color = Color.white;
+            }
 
-        GUILayout.Space(15);
-        if (GUILayout.Button("処理をキャンセル", activeButtonStyle, GUILayout.Height(35)))
-        {
-            pm.Cancel();
+            // Progress percentage text
+            GUIStyle percentStyle = new GUIStyle(textStyle);
+            percentStyle.alignment = TextAnchor.MiddleCenter;
+            percentStyle.fontStyle = FontStyle.Bold;
+            percentStyle.normal.textColor = Color.white;
+            GUI.Label(progressRect, $"{pm.Progress * 100f:F1} %", percentStyle);
+
+            GUILayout.Space(15);
+            if (GUILayout.Button("処理をキャンセル", activeButtonStyle, GUILayout.Height(35)))
+            {
+                pm.Cancel();
+            }
         }
 
         GUILayout.EndArea();

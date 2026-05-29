@@ -64,6 +64,7 @@ namespace PointCloudWorkbench
             float? voxelSize,
             bool runSor, int sorNb, float sorStd,
             bool runRor, float rorMul, int rorMin,
+            bool runCc, int ccK, float ccSigma, float ccError,
             bool runDbscan, float dbscanEps, int dbscanMin, int dbscanCluster, int dbscanTarget,
             CancellationToken cancellationToken = default)
         {
@@ -80,6 +81,7 @@ namespace PointCloudWorkbench
 
             // 引数の組み立て
             StringBuilder argsBuilder = new StringBuilder();
+            argsBuilder.Append("-u "); // Pythonの出力をバッファリングせずリアルタイムに出力させる
             argsBuilder.Append($"\"{scriptPath}\"");
             argsBuilder.Append($" --input \"{inputPlyPath}\"");
             argsBuilder.Append($" --output_dir \"{outputDir}\"");
@@ -93,6 +95,7 @@ namespace PointCloudWorkbench
             System.Collections.Generic.List<string> filters = new System.Collections.Generic.List<string>();
             if (runSor) filters.Add("sor");
             if (runRor) filters.Add("ror");
+            if (runCc) filters.Add("cc_noise");
             if (runDbscan) filters.Add("dbscan");
 
             if (filters.Count > 0)
@@ -109,6 +112,9 @@ namespace PointCloudWorkbench
             argsBuilder.Append($" --sor_std {sorStd.ToString(System.Globalization.CultureInfo.InvariantCulture)}");
             argsBuilder.Append($" --ror_mul {rorMul.ToString(System.Globalization.CultureInfo.InvariantCulture)}");
             argsBuilder.Append($" --ror_min {rorMin}");
+            argsBuilder.Append($" --cc_k {ccK}");
+            argsBuilder.Append($" --cc_sigma {ccSigma.ToString(System.Globalization.CultureInfo.InvariantCulture)}");
+            argsBuilder.Append($" --cc_error {ccError.ToString(System.Globalization.CultureInfo.InvariantCulture)}");
             argsBuilder.Append($" --dbscan_eps {dbscanEps.ToString(System.Globalization.CultureInfo.InvariantCulture)}");
             argsBuilder.Append($" --dbscan_min {dbscanMin}");
             argsBuilder.Append($" --dbscan_cluster {dbscanCluster}");
@@ -141,6 +147,7 @@ namespace PointCloudWorkbench
                     if (e.Data != null)
                     {
                         outputLog.AppendLine(e.Data);
+                        UnityEngine.Debug.Log($"[Python Out] {e.Data}");
                         
                         // 進捗更新メッセージの簡易パーサー
                         if (e.Data.Contains("PLYファイルをロード中"))
@@ -167,6 +174,7 @@ namespace PointCloudWorkbench
                     if (e.Data != null)
                     {
                         errorLog.AppendLine(e.Data);
+                        UnityEngine.Debug.LogError($"[Python Err] {e.Data}");
                     }
                 };
 
@@ -178,7 +186,10 @@ namespace PointCloudWorkbench
                 process.BeginOutputReadLine();
                 process.BeginErrorReadLine();
 
-                // プロセス終了を非同期で監視し、キャンセルも検知
+                // プロセス終了を非同期で監視し、キャンセル・タイムアウトも検知
+                System.DateTime startTime = System.DateTime.Now;
+                const int timeoutSeconds = 180; // 3分タイムアウト
+
                 while (!process.HasExited)
                 {
                     if (cancellationToken.IsCancellationRequested)
@@ -194,6 +205,22 @@ namespace PointCloudWorkbench
                         }
                         throw new OperationCanceledException(cancellationToken);
                     }
+
+                    // タイムアウト検知
+                    if ((System.DateTime.Now - startTime).TotalSeconds > timeoutSeconds)
+                    {
+                        try
+                        {
+                            process.Kill();
+                            UnityEngine.Debug.LogError($"[PythonBridge] Pythonプロセスがタイムアウト時間 ({timeoutSeconds}秒) を超過したため、強制終了しました。");
+                        }
+                        catch (Exception ex)
+                        {
+                            UnityEngine.Debug.LogError($"[PythonBridge] タイムアウト強制終了エラー: {ex.Message}");
+                        }
+                        throw new TimeoutException($"Pythonノイズフィルタの処理が {timeoutSeconds}秒 以上応答しなかったため、タイムアウトしました。\n[出力ログ]\n{outputLog.ToString()}\n[エラーログ]\n{errorLog.ToString()}");
+                    }
+
                     // 100msウェイト
                     await Task.Delay(100);
                 }
@@ -231,10 +258,11 @@ namespace PointCloudWorkbench
             float[] sorScore = LoadBinaryFloats(Path.Combine(outputDir, "sor_score.bin"), count);
             float[] densityScore = LoadBinaryFloats(Path.Combine(outputDir, "density_score.bin"), count);
             int[] radiusNeighbor = LoadBinaryInts(Path.Combine(outputDir, "radius_neighbor_count.bin"), count);
+            float[] ccNoiseScore = LoadBinaryFloats(Path.Combine(outputDir, "cc_noise_score.bin"), count);
             int[] clusterId = LoadBinaryInts(Path.Combine(outputDir, "cluster_id.bin"), count);
             int[] reason = LoadBinaryInts(Path.Combine(outputDir, "reason.bin"), count);
 
-            return new NoiseFilterResult(count, removeMask, sorScore, densityScore, radiusNeighbor, clusterId, reason);
+            return new NoiseFilterResult(count, removeMask, sorScore, densityScore, radiusNeighbor, ccNoiseScore, clusterId, reason);
         }
 
         private static byte[] LoadBinaryBytes(string path, int expectedCount)

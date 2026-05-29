@@ -12,7 +12,8 @@ namespace PointCloudWorkbench
         ROR = 2,
         LowDensity = 3,
         SmallCluster = 4,
-        Manual = 5
+        CC_Noise = 5,
+        Manual = 6
     }
 
     /// <summary>
@@ -46,6 +47,11 @@ namespace PointCloudWorkbench
         public int[] radiusNeighborCount { get; private set; }
 
         /// <summary>
+        /// CC (CloudCompare) 平面残差ノイズスコア配列
+        /// </summary>
+        public float[] ccNoiseScore { get; private set; }
+
+        /// <summary>
         /// DBSCANによるクラスタID配列 (-1はノイズ)
         /// </summary>
         public int[] clusterId { get; private set; }
@@ -62,17 +68,19 @@ namespace PointCloudWorkbench
             sorScore = new float[count];
             densityScore = new float[count];
             radiusNeighborCount = new int[count];
+            ccNoiseScore = new float[count];
             clusterId = new int[count];
             reason = new int[count];
         }
 
-        public NoiseFilterResult(int count, byte[] mask, float[] sor, float[] density, int[] ror, int[] clusters, int[] reasons)
+        public NoiseFilterResult(int count, byte[] mask, float[] sor, float[] density, int[] ror, float[] cc, int[] clusters, int[] reasons)
         {
             pointCount = count;
             removeMask = mask;
             sorScore = sor;
             densityScore = density;
             radiusNeighborCount = ror;
+            ccNoiseScore = cc;
             clusterId = clusters;
             reason = reasons;
         }

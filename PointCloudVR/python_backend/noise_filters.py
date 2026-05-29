@@ -34,7 +34,7 @@ def estimate_base_spacing(points: np.ndarray, k: int = 8) -> float:
         sample_points = points
         
     tree = cKDTree(sample_points)
-    dists, _ = tree.query(sample_points, k=k+1, workers=-1)
+    dists, _ = tree.query(sample_points, k=k+1)
     # 自身(距離0)を除いた隣接点への距離
     dists = dists[:, 1:]
     mean_dists = np.mean(dists, axis=1)
@@ -55,7 +55,7 @@ def compute_sor(points: np.ndarray, tree: cKDTree = None, nb_neighbors: int = 20
         
     if tree is None:
         tree = cKDTree(points)
-    dists, _ = tree.query(points, k=nb_neighbors + 1, workers=-1)
+    dists, _ = tree.query(points, k=nb_neighbors + 1)
     mean_dists = np.mean(dists[:, 1:], axis=1)
     
     mean = np.mean(mean_dists)
@@ -89,7 +89,7 @@ def compute_ror(points: np.ndarray, base_spacing: float, tree: cKDTree = None, r
     radius = base_spacing * radius_multiplier
     if tree is None:
         tree = cKDTree(points)
-    counts = tree.query_ball_point(points, r=radius, return_length=True, workers=-1)
+    counts = tree.query_ball_point(points, r=radius, return_length=True)
     
     # 自身を除いた近傍点数
     neighbor_counts = (counts - 1).clip(min=0)
@@ -115,12 +115,74 @@ def compute_density(points: np.ndarray, tree: cKDTree = None, k: int = 8) -> dic
         
     if tree is None:
         tree = cKDTree(points)
-    dists, _ = tree.query(points, k=k+1, workers=-1)
+    dists, _ = tree.query(points, k=k+1)
     mean_dists = np.mean(dists[:, 1:], axis=1)
     density_score = 1.0 / (mean_dists + 1e-6)
     
     return {
         'density_score': density_score.astype(np.float32)
+    }
+
+def compute_cc_noise(points: np.ndarray, tree: cKDTree = None, k: int = 20, 
+                     relative_sigma: float = 1.0, absolute_error: float = 0.0) -> dict:
+    """
+    CloudCompare風の局所平面残差ノイズフィルタを計算します。
+    各点のk近傍に対して局所平面を推定し、平面からの残差距離をスコア化します。
+    """
+    n_points = len(points)
+    if n_points == 0:
+        return {'remove_mask': np.array([], dtype=bool), 'cc_noise_score': np.array([], dtype=np.float32)}
+        
+    if tree is None:
+        tree = cKDTree(points)
+        
+    # k-NN 探索 (自身を含むため k + 1)
+    dists, indices = tree.query(points, k=k + 1)
+    
+    # 近傍点の座標を取得: shape [N, k+1, 3]
+    neighbors = points[indices]
+    
+    # 各近傍点群の重心を計算: shape [N, 3]
+    means = np.mean(neighbors, axis=1)
+    
+    # 重心からの偏差: shape [N, k+1, 3]
+    deviations = neighbors - means[:, np.newaxis, :]
+    
+    # 共分散行列の算出: shape [N, 3, 3]
+    covs = np.matmul(deviations.transpose(0, 2, 1), deviations) / (k + 1)
+    
+    # 共分散行列の一括固有値解析 (eigenvalues: [N, 3], eigenvectors: [N, 3, 3])
+    eigenvalues, eigenvectors = np.linalg.eigh(covs)
+    
+    # 最小固有値に対応する固有ベクトル（法線ベクトル）は shape [N, 3]
+    normals = eigenvectors[:, :, 0]
+    
+    # 対象点 p_i から重心 means[i] へのベクトルと法線の内積が平面からの残差になる
+    diff = points - means
+    scores = np.abs(np.sum(diff * normals, axis=1)).astype(np.float32)
+    
+    # 統計情報の算出（近傍点群の平面からの距離の平均と標準偏差）
+    nb_diffs = neighbors - means[:, np.newaxis, :]
+    nb_dists = np.abs(np.sum(nb_diffs * normals[:, np.newaxis, :], axis=2))
+    
+    nb_means = np.mean(nb_dists, axis=1)
+    nb_stds = np.std(nb_dists, axis=1)
+    
+    # 閾値判定
+    remove_mask = np.zeros(n_points, dtype=bool)
+    
+    # 相対閾値（relative_sigma > 0 の場合）
+    if relative_sigma > 0.0:
+        threshold_rel = nb_means + relative_sigma * nb_stds
+        remove_mask = remove_mask | (scores > threshold_rel)
+        
+    # 絶対閾値（absolute_error > 0 の場合）
+    if absolute_error > 0.0:
+        remove_mask = remove_mask | (scores > absolute_error)
+        
+    return {
+        'remove_mask': remove_mask.astype(bool),
+        'cc_noise_score': scores.astype(np.float32)
     }
 
 def compute_dbscan(points: np.ndarray, base_spacing: float, eps_multiplier: float = 4.0,
@@ -191,20 +253,28 @@ def run_all_filters(points: np.ndarray, params: dict, enabled_filters: set, mode
     
     # 共通の cKDTree を1度だけ構築 (全体の90%以上の近傍検索処理で再利用)
     tree = None
-    if any(f in enabled_filters for f in ["sor", "ror", "density"]):
+    if any(f in enabled_filters for f in ["sor", "ror", "density", "cc_noise"]):
         print("近傍探索用の共通 cKDTree を構築中...")
+        t0 = time.time()
         tree = cKDTree(points)
+        print(f"cKDTree 構築完了. (所要時間: {time.time() - t0:.2f}秒)")
     
     # 1. 基準点間隔の推定 (SOR/ROR/DBSCANの各種半径計算に使用されるため、いずれかが有効な場合に計算)
     if any(f in enabled_filters for f in ["sor", "ror", "dbscan"]):
+        print("基準点間隔を推定中...")
+        t0 = time.time()
         base_spacing = estimate_base_spacing(points)
+        print(f"基準点間隔の推定完了: {base_spacing:.6f} m (所要時間: {time.time() - t0:.2f}秒)")
     else:
         base_spacing = 0.01 # デフォルトのフォールバック値
     
     # 2. SOR
     if "sor" in enabled_filters:
+        print("SOR (統計的ノイズ除去) を実行中...")
+        t0 = time.time()
         sor_params = params.get('sor', {'nb_neighbors': 20, 'std_ratio': 1.5})
         sor_res = compute_sor(points, tree, nb_neighbors=sor_params['nb_neighbors'], std_ratio=sor_params['std_ratio'])
+        print(f"SOR 完了. (所要時間: {time.time() - t0:.2f}秒)")
     else:
         sor_res = {
             'remove_mask': np.zeros(n_points, dtype=bool),
@@ -213,8 +283,11 @@ def run_all_filters(points: np.ndarray, params: dict, enabled_filters: set, mode
     
     # 3. ROR
     if "ror" in enabled_filters:
+        print("ROR (半径外れ値除去) を実行中...")
+        t0 = time.time()
         ror_params = params.get('ror', {'radius_multiplier': 3.0, 'min_neighbors': 8})
         ror_res = compute_ror(points, base_spacing, tree, radius_multiplier=ror_params['radius_multiplier'], min_neighbors=ror_params['min_neighbors'])
+        print(f"ROR 完了. (所要時間: {time.time() - t0:.2f}秒)")
     else:
         ror_res = {
             'remove_mask': np.zeros(n_points, dtype=bool),
@@ -223,11 +296,27 @@ def run_all_filters(points: np.ndarray, params: dict, enabled_filters: set, mode
     
     # 4. 密度スコア
     if "density" in enabled_filters:
+        print("低密度ノイズ判定を実行中...")
+        t0 = time.time()
         density_params = params.get('density', {'k': 8})
         density_res = compute_density(points, tree, k=density_params['k'])
+        print(f"低密度ノイズ判定完了. (所要時間: {time.time() - t0:.2f}秒)")
     else:
         density_res = {
             'density_score': np.zeros(n_points, dtype=np.float32)
+        }
+
+    # 4.5. CC風ノイズフィルタ
+    if "cc_noise" in enabled_filters:
+        print("CC風局所平面ノイズフィルタを実行中...")
+        t0 = time.time()
+        cc_params = params.get('cc_noise', {'k': 20, 'relative_sigma': 1.0, 'absolute_error': 0.0})
+        cc_res = compute_cc_noise(points, tree, k=cc_params['k'], relative_sigma=cc_params['relative_sigma'], absolute_error=cc_params['absolute_error'])
+        print(f"CC風ノイズフィルタ完了. (所要時間: {time.time() - t0:.2f}秒)")
+    else:
+        cc_res = {
+            'remove_mask': np.zeros(n_points, dtype=bool),
+            'cc_noise_score': np.zeros(n_points, dtype=np.float32)
         }
     
     # 5. DBSCAN (自動Downsample判定とタイムアウト管理)
@@ -244,6 +333,8 @@ def run_all_filters(points: np.ndarray, params: dict, enabled_filters: set, mode
     dbscan_timeout = False
     
     if "dbscan" in enabled_filters:
+        print("DBSCAN (クラスタノイズ除去) を実行中...")
+        t0 = time.time()
         # モード決定
         if mode == 'full':
             dbscan_mode = decide_dbscan_mode(n_points)
@@ -276,7 +367,7 @@ def run_all_filters(points: np.ndarray, params: dict, enabled_filters: set, mode
                 # 元の点数 N に対する結果へ伝播（KDTree 1-NN）
                 if len(points_ds) > 0:
                     tree_ds = cKDTree(points_ds)
-                    _, nn_indices = tree_ds.query(points, k=1, workers=-1)
+                    _, nn_indices = tree_ds.query(points, k=1)
                     cluster_id = dbscan_res['cluster_id'][nn_indices]
                     remove_mask_dbscan = dbscan_res['remove_mask'][nn_indices]
                 else:
@@ -307,6 +398,7 @@ def run_all_filters(points: np.ndarray, params: dict, enabled_filters: set, mode
             cluster_id = dbscan_res['cluster_id']
             remove_mask_dbscan = dbscan_res['remove_mask']
             dbscan_timeout = dbscan_res['timeout']
+        print(f"DBSCAN 完了. モード: {dbscan_mode}, 解析点数: {dbscan_analysis_count} (所要時間: {time.time() - t0:.2f}秒)")
     else:
         cluster_id = np.full(n_points, -1, dtype=np.int32)
         remove_mask_dbscan = np.zeros(n_points, dtype=bool)
@@ -318,14 +410,16 @@ def run_all_filters(points: np.ndarray, params: dict, enabled_filters: set, mode
     # 7. 全削除マスクのマージ
     remove_mask_sor = sor_res['remove_mask']
     remove_mask_ror = ror_res['remove_mask']
+    remove_mask_cc = cc_res['remove_mask']
     
-    final_remove_mask = remove_mask_sor | remove_mask_ror | remove_mask_dbscan | remove_mask_density
+    final_remove_mask = remove_mask_sor | remove_mask_ror | remove_mask_cc | remove_mask_dbscan | remove_mask_density
     
     # 8. 原因 (reason) の決定
-    # 優先順位: SOR(1) > ROR(2) > SmallCluster(4) > LowDensity(3)
+    # 優先順位: SOR(1) > ROR(2) > CC_Noise(5) > SmallCluster(4) > LowDensity(3)
     reason = np.zeros(n_points, dtype=np.int32)
     reason[remove_mask_density] = 3   # LowDensity
     reason[remove_mask_dbscan] = 4    # SmallCluster
+    reason[remove_mask_cc] = 5        # CC_Noise (その他/ピンク)
     reason[remove_mask_ror] = 2       # ROR
     reason[remove_mask_sor] = 1       # SOR
     
@@ -338,6 +432,7 @@ def run_all_filters(points: np.ndarray, params: dict, enabled_filters: set, mode
         'sor_score': sor_res['sor_score'],
         'density_score': density_res['density_score'],
         'radius_neighbor_count': ror_res['radius_neighbor_count'],
+        'cc_noise_score': cc_res['cc_noise_score'],
         'cluster_id': cluster_id,
         'reason': reason,
         'dbscan_mode': dbscan_mode,
@@ -347,5 +442,6 @@ def run_all_filters(points: np.ndarray, params: dict, enabled_filters: set, mode
         'removed_by_sor_count': int(np.sum(reason == 1)),
         'removed_by_ror_count': int(np.sum(reason == 2)),
         'removed_by_low_density_count': int(np.sum(reason == 3)),
-        'removed_by_small_cluster_count': int(np.sum(reason == 4))
+        'removed_by_small_cluster_count': int(np.sum(reason == 4)),
+        'removed_by_cc_noise_count': int(np.sum(reason == 5))
     }

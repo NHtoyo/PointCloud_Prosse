@@ -18,9 +18,15 @@ namespace PointCloudWorkbench
         public float sorStd = 1.5f;
 
         // ROR (半径外れ値除去) パラメータ
-        public bool runRor = true;
+        public bool runRor = false; // デフォルトOFF（補助扱い）
         public float rorMul = 3.0f;
         public int rorMin = 8;
+
+        // CC (局所平面推定ノイズ除去) パラメータ
+        public bool runCc = true; // デフォルトON（主役）
+        public int ccK = 20;
+        public float ccSigma = 1.0f;
+        public float ccError = 0.0f;
 
         // DBSCAN (小クラスタ除去) パラメータ
         public bool runDbscan = true;
@@ -36,6 +42,7 @@ namespace PointCloudWorkbench
         // 非同期スレッド完了検知用フラグ
         private volatile bool filterFinishedFlag = false;
         private volatile bool filterFailedFlag = false;
+        private volatile string asyncErrorMessage = "";
         private NoiseFilterResult asyncResult = null;
 
         void Start()
@@ -65,7 +72,7 @@ namespace PointCloudWorkbench
             if (filterFailedFlag)
             {
                 filterFailedFlag = false;
-                PointCloudProgressManager.Instance.Complete();
+                PointCloudProgressManager.Instance.ShowError("空中モヤ・浮遊点ノイズ除去エラー", asyncErrorMessage);
             }
         }
 
@@ -113,7 +120,7 @@ namespace PointCloudWorkbench
             GUILayout.Space(5);
 
             // --- 3. ROR (半径外れ値除去) ---
-            runRor = GUILayout.Toggle(runRor, " 半径外れ値除去 (ROR) を有効化", textStyle);
+            runRor = GUILayout.Toggle(runRor, " 半径外れ値除去 (ROR) を有効化 (補助)", textStyle);
             if (runRor)
             {
                 GUILayout.Label($"    検索半径倍率 (RadiusMul): {rorMul:F2}", textStyle);
@@ -121,6 +128,21 @@ namespace PointCloudWorkbench
 
                 GUILayout.Label($"    最小隣接点数 (MinNeighbors): {rorMin}", textStyle);
                 rorMin = Mathf.RoundToInt(GUILayout.HorizontalSlider(rorMin, 1f, 30f));
+            }
+            GUILayout.Space(5);
+
+            // --- 3.5. CC (局所平面推定ノイズ除去) ---
+            runCc = GUILayout.Toggle(runCc, " 平面推定ノイズ除去 (CC風) を有効化", textStyle);
+            if (runCc)
+            {
+                GUILayout.Label($"    隣接点数 (k): {ccK}", textStyle);
+                ccK = Mathf.RoundToInt(GUILayout.HorizontalSlider(ccK, 5f, 50f));
+
+                GUILayout.Label($"    相対シグマ閾値 (Sigma): {ccSigma:F2}", textStyle);
+                ccSigma = GUILayout.HorizontalSlider(ccSigma, 0.1f, 3.0f);
+
+                GUILayout.Label($"    絶対誤差閾値 (Error): {ccError:F4} m", textStyle);
+                ccError = GUILayout.HorizontalSlider(ccError, 0.0f, 0.1f);
             }
             GUILayout.Space(5);
 
@@ -225,6 +247,7 @@ namespace PointCloudWorkbench
                         voxelSize,
                         runSor, sorNb, sorStd,
                         runRor, rorMul, rorMin,
+                        runCc, ccK, ccSigma, ccError,
                         runDbscan, dbscanEps, dbscanMin, dbscanCluster, dbscanTarget,
                         token
                     );
@@ -242,6 +265,7 @@ namespace PointCloudWorkbench
                 catch (System.Exception ex)
                 {
                     UnityEngine.Debug.LogError($"[NoiseFilterUI] 解析処理エラー: {ex.Message}");
+                    asyncErrorMessage = ex.Message;
                     filterFailedFlag = true;
                 }
             });
