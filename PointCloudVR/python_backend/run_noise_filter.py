@@ -35,8 +35,15 @@ def main():
     parser.add_argument("--dbscan_cluster", type=int, default=200, help="小クラスタと判定する閾値サイズ (default: 200)")
     parser.add_argument("--dbscan_target", type=int, default=200000, help="DBSCAN自動ダウンサンプル時の目標点数 (default: 200000)")
     parser.add_argument("--dbscan_timeout", type=int, default=120, help="DBSCANのタイムアウト秒数 (default: 120)")
+    parser.add_argument("--filters", nargs="*", choices=["sor", "ror", "dbscan", "density", "none"], default=None,
+                        help="有効にするフィルタのリスト (noneを指定した場合はすべて無効)")
 
     args = parser.parse_args()
+
+    # 有効フィルタ集合のパース
+    enabled_filters = set(args.filters or ["sor", "ror", "dbscan", "density"])
+    if "none" in enabled_filters:
+        enabled_filters = set()
     
     start_time = time.time()
     
@@ -100,7 +107,7 @@ def main():
         print(f"ダウンサンプリング完了. 点数: {analysis_count:,} (比率: {analysis_count/original_count:.2%})")
         
         # ダウンサンプルした点群に対して全フィルタを実行
-        results = noise_filters.run_all_filters(points_ds, params, mode='downsample')
+        results = noise_filters.run_all_filters(points_ds, params, enabled_filters, mode='downsample')
         
         # プレビュー表示用として、ダウンサンプルされた点群自身も PLY として出力ディレクトリに保存する
         preview_ply_path = os.path.join(args.output_dir, "preview.ply")
@@ -115,7 +122,7 @@ def main():
     else:
         print("Full モードで処理を開始します...")
         # 元点群全体に対して実行（DBSCANは点数に応じて自動でDownsampleしてマッピング）
-        results = noise_filters.run_all_filters(points, params, mode='full')
+        results = noise_filters.run_all_filters(points, params, enabled_filters, mode='full')
         analysis_count = original_count
         
         if results['dbscan_mode'] == 'downsample':

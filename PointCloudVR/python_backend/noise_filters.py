@@ -40,7 +40,7 @@ def estimate_base_spacing(points: np.ndarray, k: int = 8) -> float:
     mean_dists = np.mean(dists, axis=1)
     return float(np.median(mean_dists))
 
-def compute_sor(points: np.ndarray, nb_neighbors: int = 20, std_ratio: float = 1.5) -> dict:
+def compute_sor(points: np.ndarray, tree: cKDTree = None, nb_neighbors: int = 20, std_ratio: float = 1.5) -> dict:
     """
     SOR (Statistical Outlier Removal) を計算します。
     
@@ -53,7 +53,8 @@ def compute_sor(points: np.ndarray, nb_neighbors: int = 20, std_ratio: float = 1
     if len(points) == 0:
         return {'remove_mask': np.array([], dtype=bool), 'sor_score': np.array([], dtype=np.float32)}
         
-    tree = cKDTree(points)
+    if tree is None:
+        tree = cKDTree(points)
     dists, _ = tree.query(points, k=nb_neighbors + 1, workers=-1)
     mean_dists = np.mean(dists[:, 1:], axis=1)
     
@@ -72,7 +73,7 @@ def compute_sor(points: np.ndarray, nb_neighbors: int = 20, std_ratio: float = 1
         'sor_score': sor_score.astype(np.float32)
     }
 
-def compute_ror(points: np.ndarray, base_spacing: float, radius_multiplier: float = 3.0, min_neighbors: int = 8) -> dict:
+def compute_ror(points: np.ndarray, base_spacing: float, tree: cKDTree = None, radius_multiplier: float = 3.0, min_neighbors: int = 8) -> dict:
     """
     ROR (Radius Outlier Removal) を計算します。
     
@@ -86,7 +87,8 @@ def compute_ror(points: np.ndarray, base_spacing: float, radius_multiplier: floa
         return {'remove_mask': np.array([], dtype=bool), 'radius_neighbor_count': np.array([], dtype=np.int32)}
         
     radius = base_spacing * radius_multiplier
-    tree = cKDTree(points)
+    if tree is None:
+        tree = cKDTree(points)
     counts = tree.query_ball_point(points, r=radius, return_length=True, workers=-1)
     
     # 自身を除いた近傍点数
@@ -98,7 +100,7 @@ def compute_ror(points: np.ndarray, base_spacing: float, radius_multiplier: floa
         'radius_neighbor_count': neighbor_counts.astype(np.int32)
     }
 
-def compute_density(points: np.ndarray, k: int = 8) -> dict:
+def compute_density(points: np.ndarray, tree: cKDTree = None, k: int = 8) -> dict:
     """
     各点の局所密度スコアを計算します。
     density_score = 1 / (k近傍平均距離 + 1e-6)
@@ -111,7 +113,8 @@ def compute_density(points: np.ndarray, k: int = 8) -> dict:
     if len(points) == 0:
         return {'density_score': np.array([], dtype=np.float32)}
         
-    tree = cKDTree(points)
+    if tree is None:
+        tree = cKDTree(points)
     dists, _ = tree.query(points, k=k+1, workers=-1)
     mean_dists = np.mean(dists[:, 1:], axis=1)
     density_score = 1.0 / (mean_dists + 1e-6)
@@ -121,7 +124,7 @@ def compute_density(points: np.ndarray, k: int = 8) -> dict:
     }
 
 def compute_dbscan(points: np.ndarray, base_spacing: float, eps_multiplier: float = 4.0,
-                   min_points: int = 10, min_cluster_size: int = 200, timeout_sec: int = 120) -> dict:
+                   min_points: int = 10, min_cluster_size: int = 200) -> dict:
     """
     DBSCANクラスタリングを同期的に実行し、ノイズ点および小クラスタ点（削除候補）を検出します。
     
@@ -171,13 +174,14 @@ def compute_dbscan(points: np.ndarray, base_spacing: float, eps_multiplier: floa
         'timeout': False
     }
 
-def run_all_filters(points: np.ndarray, params: dict, mode: str = 'full') -> dict:
+def run_all_filters(points: np.ndarray, params: dict, enabled_filters: set, mode: str = 'full') -> dict:
     """
     指定されたパラメータとモードに従い、すべてのフィルタを実行してマージ結果を返します。
     
     Args:
         points (np.ndarray): 点群の3D座標 [N, 3]
         params (dict): 各種フィルタのパラメータ辞書
+        enabled_filters (set): 有効にするフィルタ（"sor", "ror", "dbscan", "density" 等）
         mode (str): 'full' (元点群全体) または 'downsample' (ダウンサンプル前提)
         
     Returns:
@@ -185,106 +189,131 @@ def run_all_filters(points: np.ndarray, params: dict, mode: str = 'full') -> dic
     """
     n_points = len(points)
     
-    # 1. 基準点間隔の推定
-    base_spacing = estimate_base_spacing(points)
+    # 共通の cKDTree を1度だけ構築 (全体の90%以上の近傍検索処理で再利用)
+    tree = None
+    if any(f in enabled_filters for f in ["sor", "ror", "density"]):
+        print("近傍探索用の共通 cKDTree を構築中...")
+        tree = cKDTree(points)
+    
+    # 1. 基準点間隔の推定 (SOR/ROR/DBSCANの各種半径計算に使用されるため、いずれかが有効な場合に計算)
+    if any(f in enabled_filters for f in ["sor", "ror", "dbscan"]):
+        base_spacing = estimate_base_spacing(points)
+    else:
+        base_spacing = 0.01 # デフォルトのフォールバック値
     
     # 2. SOR
-    sor_params = params.get('sor', {'nb_neighbors': 20, 'std_ratio': 1.5})
-    sor_res = compute_sor(points, nb_neighbors=sor_params['nb_neighbors'], std_ratio=sor_params['std_ratio'])
+    if "sor" in enabled_filters:
+        sor_params = params.get('sor', {'nb_neighbors': 20, 'std_ratio': 1.5})
+        sor_res = compute_sor(points, tree, nb_neighbors=sor_params['nb_neighbors'], std_ratio=sor_params['std_ratio'])
+    else:
+        sor_res = {
+            'remove_mask': np.zeros(n_points, dtype=bool),
+            'sor_score': np.zeros(n_points, dtype=np.float32)
+        }
     
     # 3. ROR
-    ror_params = params.get('ror', {'radius_multiplier': 3.0, 'min_neighbors': 8})
-    ror_res = compute_ror(points, base_spacing, radius_multiplier=ror_params['radius_multiplier'], min_neighbors=ror_params['min_neighbors'])
+    if "ror" in enabled_filters:
+        ror_params = params.get('ror', {'radius_multiplier': 3.0, 'min_neighbors': 8})
+        ror_res = compute_ror(points, base_spacing, tree, radius_multiplier=ror_params['radius_multiplier'], min_neighbors=ror_params['min_neighbors'])
+    else:
+        ror_res = {
+            'remove_mask': np.zeros(n_points, dtype=bool),
+            'radius_neighbor_count': np.zeros(n_points, dtype=np.int32)
+        }
     
     # 4. 密度スコア
-    density_params = params.get('density', {'k': 8})
-    density_res = compute_density(points, k=density_params['k'])
+    if "density" in enabled_filters:
+        density_params = params.get('density', {'k': 8})
+        density_res = compute_density(points, tree, k=density_params['k'])
+    else:
+        density_res = {
+            'density_score': np.zeros(n_points, dtype=np.float32)
+        }
     
     # 5. DBSCAN (自動Downsample判定とタイムアウト管理)
     dbscan_params = params.get('dbscan', {
         'eps_multiplier': 4.0,
         'min_points': 10,
         'min_cluster_size': 200,
-        'timeout_sec': 120,
         'target_points': 200000
     })
     
     dbscan_mode = 'full'
     dbscan_voxel_size = None
     dbscan_analysis_count = n_points
-    
-    # モード決定
-    if mode == 'full':
-        dbscan_mode = decide_dbscan_mode(n_points)
-    else:
-        dbscan_mode = 'downsample'
-        
     dbscan_timeout = False
     
-    if dbscan_mode == 'downsample':
-        # 自動ダウンサンプルの算出
-        target = dbscan_params.get('target_points', 200000)
-        if n_points > target:
-            ratio = n_points / target
-            dbscan_voxel_size = float(base_spacing * (ratio ** (1.0 / 3.0)))
-            
-            pcd = o3d.geometry.PointCloud()
-            pcd.points = o3d.utility.Vector3dVector(points.astype(np.float64))
-            pcd_ds = pcd.voxel_down_sample(dbscan_voxel_size)
-            points_ds = np.asarray(pcd_ds.points).astype(np.float32)
-            dbscan_analysis_count = len(points_ds)
-            
-            # ダウンサンプルされた点群でDBSCAN実行
-            dbscan_res = compute_dbscan(
-                points_ds,
-                base_spacing,
-                eps_multiplier=dbscan_params['eps_multiplier'],
-                min_points=dbscan_params['min_points'],
-                min_cluster_size=dbscan_params['min_cluster_size'],
-                timeout_sec=dbscan_params['timeout_sec']
-            )
-            dbscan_timeout = dbscan_res['timeout']
-            
-            # 元の点数 N に対する結果へ伝播（KDTree 1-NN）
-            if len(points_ds) > 0:
-                tree_ds = cKDTree(points_ds)
-                _, nn_indices = tree_ds.query(points, k=1, workers=-1)
-                cluster_id = dbscan_res['cluster_id'][nn_indices]
-                remove_mask_dbscan = dbscan_res['remove_mask'][nn_indices]
-            else:
-                cluster_id = np.full(n_points, -1, dtype=np.int32)
-                remove_mask_dbscan = np.zeros(n_points, dtype=bool)
+    if "dbscan" in enabled_filters:
+        # モード決定
+        if mode == 'full':
+            dbscan_mode = decide_dbscan_mode(n_points)
         else:
-            # 点数が目標値以下であればそのままFull実行
-            dbscan_mode = 'full'
+            dbscan_mode = 'downsample'
+            
+        if dbscan_mode == 'downsample':
+            # 自動ダウンサンプルの算出
+            target = dbscan_params.get('target_points', 200000)
+            if n_points > target:
+                ratio = n_points / target
+                dbscan_voxel_size = float(base_spacing * (ratio ** (1.0 / 3.0)))
+                
+                pcd = o3d.geometry.PointCloud()
+                pcd.points = o3d.utility.Vector3dVector(points.astype(np.float64))
+                pcd_ds = pcd.voxel_down_sample(dbscan_voxel_size)
+                points_ds = np.asarray(pcd_ds.points).astype(np.float32)
+                dbscan_analysis_count = len(points_ds)
+                
+                # ダウンサンプルされた点群でDBSCAN実行
+                dbscan_res = compute_dbscan(
+                    points_ds,
+                    base_spacing,
+                    eps_multiplier=dbscan_params['eps_multiplier'],
+                    min_points=dbscan_params['min_points'],
+                    min_cluster_size=dbscan_params['min_cluster_size']
+                )
+                dbscan_timeout = dbscan_res['timeout']
+                
+                # 元の点数 N に対する結果へ伝播（KDTree 1-NN）
+                if len(points_ds) > 0:
+                    tree_ds = cKDTree(points_ds)
+                    _, nn_indices = tree_ds.query(points, k=1, workers=-1)
+                    cluster_id = dbscan_res['cluster_id'][nn_indices]
+                    remove_mask_dbscan = dbscan_res['remove_mask'][nn_indices]
+                else:
+                    cluster_id = np.full(n_points, -1, dtype=np.int32)
+                    remove_mask_dbscan = np.zeros(n_points, dtype=bool)
+            else:
+                # 点数が目標値以下であればそのままFull実行
+                dbscan_mode = 'full'
+                dbscan_res = compute_dbscan(
+                    points,
+                    base_spacing,
+                    eps_multiplier=dbscan_params['eps_multiplier'],
+                    min_points=dbscan_params['min_points'],
+                    min_cluster_size=dbscan_params['min_cluster_size']
+                )
+                cluster_id = dbscan_res['cluster_id']
+                remove_mask_dbscan = dbscan_res['remove_mask']
+                dbscan_timeout = dbscan_res['timeout']
+        else:
+            # Fullモードでの実行
             dbscan_res = compute_dbscan(
                 points,
                 base_spacing,
                 eps_multiplier=dbscan_params['eps_multiplier'],
                 min_points=dbscan_params['min_points'],
-                min_cluster_size=dbscan_params['min_cluster_size'],
-                timeout_sec=dbscan_params['timeout_sec']
+                min_cluster_size=dbscan_params['min_cluster_size']
             )
             cluster_id = dbscan_res['cluster_id']
             remove_mask_dbscan = dbscan_res['remove_mask']
             dbscan_timeout = dbscan_res['timeout']
     else:
-        # Fullモードでの実行
-        dbscan_res = compute_dbscan(
-            points,
-            base_spacing,
-            eps_multiplier=dbscan_params['eps_multiplier'],
-            min_points=dbscan_params['min_points'],
-            min_cluster_size=dbscan_params['min_cluster_size'],
-            timeout_sec=dbscan_params['timeout_sec']
-        )
-        cluster_id = dbscan_res['cluster_id']
-        remove_mask_dbscan = dbscan_res['remove_mask']
-        dbscan_timeout = dbscan_res['timeout']
+        cluster_id = np.full(n_points, -1, dtype=np.int32)
+        remove_mask_dbscan = np.zeros(n_points, dtype=bool)
         
     # 6. 低密度ノイズ判定マスク (低密度閾値が指定されている場合のみ)
     density_threshold = params.get('density', {}).get('threshold', 0.0)
-    remove_mask_density = density_res['density_score'] < density_threshold
+    remove_mask_density = (density_res['density_score'] < density_threshold) if "density" in enabled_filters else np.zeros(n_points, dtype=bool)
     
     # 7. 全削除マスクのマージ
     remove_mask_sor = sor_res['remove_mask']

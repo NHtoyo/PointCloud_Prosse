@@ -85,10 +85,12 @@ namespace PointCloudWorkbench
             {
                 processMode = "full";
             }
+            GUI.enabled = false; // 点数不一致バグ回避のため一時的に無効化
             if (GUILayout.Button("Downsample (プレビュー)", processMode == "downsample" ? activeButtonStyle : buttonStyle, GUILayout.Width((width - 35) / 2f)))
             {
                 processMode = "downsample";
             }
+            GUI.enabled = true;
             GUILayout.EndHorizontal();
 
             if (processMode == "downsample")
