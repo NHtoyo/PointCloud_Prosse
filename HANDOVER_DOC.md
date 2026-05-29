@@ -185,6 +185,8 @@ Unity上において数千万点規模の大規模な点群データ（PLY形式
   - **対策（タイムアウト制限）**: `PythonBridge.cs` の監視ループにおいて、開始時から **180秒（3分）** が経過してもプロセスが終了しない場合、強制的にプロセスを Kill (`process.Kill()`) し、`TimeoutException` をスローする安全機構を導入。
   - **対策（リアルタイムログ）**: Python起動引数に `-u` (unbuffered) を追加して標準出力のバッファリングを解除し、`process.OutputDataReceived` および `process.ErrorDataReceived` で受け取った内容を即座に Unity の `UnityEngine.Debug.Log` / `LogError` へ出力することで、動作ログやエラーTracebackが即座にコンソールで見えるように改善。
   - **対策（エラーモーダル画面の提示）**: 非同期処理で例外をキャッチした際、単に進捗表示を非表示にするのではなく、`PointCloudProgressManager` に `IsError` 状態とエラーメッセージ（`ErrorMessage`）を格納。`PointCloudEditorUI.cs` の OnGUI 描画処理にて、エラー状態を検知した場合は「❌ 解析エラー」の専用ダイアログに切り替え、エラーのスクロール表示および「閉じる」ボタンを表示。これにより、ユーザーが明示的にエラーを確認し、モーダルを閉じてUnityの操作に復帰できる安全なエラーハンドリングフローを確立。
-  - **設計ポリシー**: 今後、Pythonプロセスを呼び出す新規機能を追加する際は、必ず `PythonBridge` 経由で行うか、同様に「バッファリングなしの起動（`-u`）」、「タイムアウトによる強制終了（Kill）」、および「進捗モーダルのエラーパネル表示」を一律で実装することを開発規律とする。
+- **OnGUIトグル（チェックボックス）のスタイル不具合修正**:
+  - `PointCloudEditorUI.cs` および `NoiseFilterUI.cs` において、`GUILayout.Toggle` のスタイルに `textStyle`（ラベル用スタイル）を直接指定していたため、チェックボックスのマーク（ON/OFF状態を示すチェック画像）が表示されなくなっていた問題を修正。
+  - `GUI.skin.toggle` を継承した専用の `toggleStyle` を定義・初期化し、`DrawNoiseFilterSection` を介して `NoiseFilterUI` 側の各トグルに適用することで、チェックマークが正常に表示されるように修正。これにより、各フィルタが有効（ON）か無効（OFF）かを視覚的に判別できるようになりました。
 
 
