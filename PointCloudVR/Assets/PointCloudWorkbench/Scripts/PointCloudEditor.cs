@@ -56,6 +56,22 @@ public class PointCloudEditor : MonoBehaviour
     // UI Component Reference
     private PointCloudEditorUI editorUI;
 
+    // キャッシュ用配列群 (接続探索の GC Alloc / new 回避用)
+    private int[] connQueue = null;
+
+    // CloudCompare風のセル単位接続探索用キャッシュ
+    private int[] connCellBucketHead = null;
+    private int[] connCellNext = null;
+    private int[] connCellX = null;
+    private int[] connCellY = null;
+    private int[] connCellZ = null;
+    private int[] connCellPointHead = null;
+    private int[] connPointNextInCell = null;
+    private int[] connCellQueue = null;
+    private bool[] connCellVisited = null;
+
+
+
     // Properties for UI access
     public bool IsDrawingMarquee => isDrawingMarquee;
     public Vector2 MarqueeStart => marqueeStart;
@@ -104,7 +120,14 @@ public class PointCloudEditor : MonoBehaviour
         if (finishedConnectionFlag)
         {
             finishedConnectionFlag = false;
-            targetRenderer.UpdatePointBuffer();
+            try
+            {
+                targetRenderer.UpdatePointBuffer();
+            }
+            catch (System.Exception ex)
+            {
+                Debug.LogError($"[PointCloudEditor] UpdatePointBuffer failed: {ex.Message}");
+            }
             statsDirty = true;
             PointCloudProgressManager.Instance.Complete();
         }
@@ -1052,94 +1075,140 @@ public class PointCloudEditor : MonoBehaviour
             try
             {
                 var token = pm.CancellationToken;
-                bool[] visited = new bool[points.Length];
-                List<int> connectedIndices = new List<int>(maxLimit);
-                
+                int numPoints = points.Length;
+                int numBuckets = numPoints;
+
                 var sw = System.Diagnostics.Stopwatch.StartNew();
+                pm.Update(0f, "セル接続グリッド構築中...");
+
+                float cellSize = localRadius;
+                if (cellSize < 0.0001f) cellSize = 0.0001f;
+                float invCellSize = 1f / cellSize;
+
+                lock (this)
+                {
+                    if (connQueue == null || connQueue.Length < numPoints)
+                    {
+                        connQueue = new int[numPoints];
+                    }
+                    if (connCellBucketHead == null || connCellBucketHead.Length < numBuckets)
+                    {
+                        connCellBucketHead = new int[numBuckets];
+                    }
+                    if (connCellNext == null || connCellNext.Length < numPoints ||
+                        connCellX == null || connCellY == null || connCellZ == null ||
+                        connCellPointHead == null || connPointNextInCell == null ||
+                        connCellQueue == null || connCellVisited == null)
+                    {
+                        connCellNext = new int[numPoints];
+                        connCellX = new int[numPoints];
+                        connCellY = new int[numPoints];
+                        connCellZ = new int[numPoints];
+                        connCellPointHead = new int[numPoints];
+                        connPointNextInCell = new int[numPoints];
+                        connCellQueue = new int[numPoints];
+                        connCellVisited = new bool[numPoints];
+                    }
+                }
+
+                System.Array.Fill(connCellBucketHead, -1, 0, numBuckets);
+                System.Array.Fill(connCellNext, -1, 0, numPoints);
+                System.Array.Fill(connCellPointHead, -1, 0, numPoints);
+                System.Array.Fill(connPointNextInCell, -1, 0, numPoints);
+                System.Array.Clear(connCellVisited, 0, numPoints);
+
+                int cellCount = 0;
+                int startCell = -1;
+
+                for (int i = 0; i < numPoints; i++)
+                {
+                    if (token.IsCancellationRequested) break;
+                    if ((points[i].label & 0x20000) != 0) continue;
+
+                    Vector3 pos = positions[i];
+                    int vx = Mathf.FloorToInt(pos.x * invCellSize);
+                    int vy = Mathf.FloorToInt(pos.y * invCellSize);
+                    int vz = Mathf.FloorToInt(pos.z * invCellSize);
+                    int h = GetVoxelHash(vx, vy, vz, numBuckets);
+
+                    int cell = connCellBucketHead[h];
+                    while (cell != -1)
+                    {
+                        if (connCellX[cell] == vx && connCellY[cell] == vy && connCellZ[cell] == vz)
+                        {
+                            break;
+                        }
+                        cell = connCellNext[cell];
+                    }
+
+                    if (cell == -1)
+                    {
+                        cell = cellCount++;
+                        connCellX[cell] = vx;
+                        connCellY[cell] = vy;
+                        connCellZ[cell] = vz;
+                        connCellNext[cell] = connCellBucketHead[h];
+                        connCellBucketHead[h] = cell;
+                    }
+
+                    connPointNextInCell[i] = connCellPointHead[cell];
+                    connCellPointHead[cell] = i;
+
+                    if (i == startIdx)
+                    {
+                        startCell = cell;
+                    }
+                }
+
+                if (token.IsCancellationRequested || startCell < 0) return;
+
+                pm.Update(0.1f, "セル接続探索中...");
+
+                int cellHead = 0;
+                int cellTail = 0;
+                int qTail = 0;
+                long visitedCells = 0;
                 long lastProgressUpdate = 0;
 
-                // 1. Spatial Hashing: Build Voxel Grid for fast neighborhood search
-                pm.Update(0f, "ボクセルハッシュを構築中...");
-                float voxelSize = localRadius;
-                if (voxelSize < 0.0001f) voxelSize = 0.0001f;
-                float invVoxelSize = 1f / voxelSize;
+                connCellQueue[cellTail++] = startCell;
+                connCellVisited[startCell] = true;
 
-                Dictionary<Vector3Int, List<int>> voxelMap = new Dictionary<Vector3Int, List<int>>();
-                
-                for (int i = 0; i < points.Length; i++)
+                while (cellHead < cellTail && qTail < maxLimit)
                 {
                     if (token.IsCancellationRequested) break;
-                    if ((points[i].label & 0x20000) != 0) continue; // Skip hidden/deleted points
-                    
-                    Vector3 pos = positions[i];
-                    Vector3Int voxelIdx = new Vector3Int(
-                        Mathf.FloorToInt(pos.x * invVoxelSize),
-                        Mathf.FloorToInt(pos.y * invVoxelSize),
-                        Mathf.FloorToInt(pos.z * invVoxelSize)
-                    );
 
-                    if (!voxelMap.TryGetValue(voxelIdx, out List<int> list))
+                    int cell = connCellQueue[cellHead++];
+                    visitedCells++;
+
+                    for (int pointIdx = connCellPointHead[cell]; pointIdx != -1 && qTail < maxLimit; pointIdx = connPointNextInCell[pointIdx])
                     {
-                        list = new List<int>();
-                        voxelMap[voxelIdx] = list;
+                        connQueue[qTail++] = pointIdx;
                     }
-                    list.Add(i);
-                }
 
-                // 2. BFS using Spatial Hashing
-                pm.Update(0.1f, "探索中...");
-                Queue<int> queue = new Queue<int>();
-                
-                queue.Enqueue(startIdx);
-                visited[startIdx] = true;
-                
-                float radSq = localRadius * localRadius;
-                
-                // Pre-compute 27-neighbor offsets
-                Vector3Int[] offsets = new Vector3Int[27];
-                int offsetIdx = 0;
-                for (int x = -1; x <= 1; x++)
-                for (int y = -1; y <= 1; y++)
-                for (int z = -1; z <= 1; z++)
-                {
-                    offsets[offsetIdx++] = new Vector3Int(x, y, z);
-                }
+                    int cx = connCellX[cell];
+                    int cy = connCellY[cell];
+                    int cz = connCellZ[cell];
 
-                while (queue.Count > 0 && connectedIndices.Count < maxLimit)
-                {
-                    if (token.IsCancellationRequested) break;
-
-                    int currentIdx = queue.Dequeue();
-                    connectedIndices.Add(currentIdx);
-                    
-                    if (connectedIndices.Count >= maxLimit) break;
-
-                    Vector3 center = positions[currentIdx];
-                    Vector3Int centerVoxel = new Vector3Int(
-                        Mathf.FloorToInt(center.x * invVoxelSize),
-                        Mathf.FloorToInt(center.y * invVoxelSize),
-                        Mathf.FloorToInt(center.z * invVoxelSize)
-                    );
-
-                    // Search in 27 neighboring voxels
-                    for (int i = 0; i < 27; i++)
+                    for (int dx = -1; dx <= 1; dx++)
+                    for (int dy = -1; dy <= 1; dy++)
+                    for (int dz = -1; dz <= 1; dz++)
                     {
-                        Vector3Int neighborVoxel = centerVoxel + offsets[i];
-                        if (voxelMap.TryGetValue(neighborVoxel, out List<int> candidates))
+                        if (dx == 0 && dy == 0 && dz == 0) continue;
+
+                        int h = GetVoxelHash(cx + dx, cy + dy, cz + dz, numBuckets);
+                        int neighbor = connCellBucketHead[h];
+                        while (neighbor != -1)
                         {
-                            int count = candidates.Count;
-                            for (int j = 0; j < count; j++)
+                            if (!connCellVisited[neighbor] &&
+                                connCellX[neighbor] == cx + dx &&
+                                connCellY[neighbor] == cy + dy &&
+                                connCellZ[neighbor] == cz + dz)
                             {
-                                int candidateIdx = candidates[j];
-                                if (!visited[candidateIdx])
-                                {
-                                    if ((positions[candidateIdx] - center).sqrMagnitude <= radSq)
-                                    {
-                                        visited[candidateIdx] = true; // Mark visited immediately to prevent duplicates in queue
-                                        queue.Enqueue(candidateIdx);
-                                    }
-                                }
+                                connCellVisited[neighbor] = true;
+                                connCellQueue[cellTail++] = neighbor;
+                                break;
                             }
+                            neighbor = connCellNext[neighbor];
                         }
                     }
 
@@ -1147,23 +1216,23 @@ public class PointCloudEditor : MonoBehaviour
                     if (elapsed - lastProgressUpdate > 100)
                     {
                         lastProgressUpdate = elapsed;
-                        float progress = 0.1f + 0.8f * ((float)connectedIndices.Count / maxLimit);
-                        pm.Update(progress, $"接続点を探索中... ({connectedIndices.Count:N0} / {maxLimit:N0} 点)");
+                        float progress = 0.1f + 0.8f * ((float)qTail / maxLimit);
+                        pm.Update(progress, $"セル接続探索中... 選択候補: {qTail:N0} / {maxLimit:N0} 点, セル: {visitedCells:N0}");
                     }
                 }
 
-                if (!token.IsCancellationRequested)
+                if (!token.IsCancellationRequested && qTail > 0)
                 {
                     pm.Update(0.95f, "選択データを点群に適用中...");
-                    for (int i = 0; i < connectedIndices.Count; i++)
+                    for (int i = 0; i < qTail; i++)
                     {
-                        int idx = connectedIndices[i];
+                        int idx = connQueue[i];
                         int label = points[idx].label;
                         if (selecting) label |= 0x10000;
                         else label &= ~0x10000;
                         points[idx].label = label;
                     }
-                    Debug.Log($"[PointCloudEditor] Connection selection completed. Found {connectedIndices.Count} points.");
+                    Debug.Log($"[PointCloudEditor] Cell connection selection completed. Found {qTail} points in {visitedCells} cells. Elapsed: {sw.ElapsedMilliseconds} ms.");
                 }
             }
             catch (System.Exception ex)
@@ -1175,6 +1244,12 @@ public class PointCloudEditor : MonoBehaviour
                 finishedConnectionFlag = true;
             }
         });
+    }
+
+    private static int GetVoxelHash(int x, int y, int z, int numBuckets)
+    {
+        long hash = ((long)x * 73856093) ^ ((long)y * 19349663) ^ ((long)z * 83492791);
+        return (int)((hash & 0x7FFFFFFFFFFFFFFF) % numBuckets);
     }
 
     public void ApplyRansacSelection()
