@@ -225,8 +225,37 @@ public class PointCloudEditorUI : MonoBehaviour
             editor.connectionRadius = GUILayout.HorizontalSlider(editor.connectionRadius, 0.005f, 0.2f);
 
             GUILayout.Label($"  最大接続制限点数: {editor.maxConnectionPoints:N0} 点", textStyle);
-            float maxPts = GUILayout.HorizontalSlider((float)editor.maxConnectionPoints, 1000f, 200000f);
-            editor.maxConnectionPoints = Mathf.RoundToInt(maxPts / 1000f) * 1000;
+            
+            // 対数スライダー（1,000 点 〜 5,000,000 点）
+            float logMin = Mathf.Log10(1000f);
+            float logMax = Mathf.Log10(5000000f);
+            float currentVal = Mathf.Clamp(editor.maxConnectionPoints, 1000f, 5000000f);
+            float t = (Mathf.Log10(currentVal) - logMin) / (logMax - logMin);
+            
+            t = GUILayout.HorizontalSlider(t, 0f, 1f);
+            
+            float rawVal = Mathf.Pow(10f, logMin + t * (logMax - logMin));
+            
+            // キリの良い値に段階的に丸める
+            int roundedVal;
+            if (rawVal < 10000f)
+            {
+                roundedVal = Mathf.RoundToInt(rawVal / 1000f) * 1000;
+            }
+            else if (rawVal < 100000f)
+            {
+                roundedVal = Mathf.RoundToInt(rawVal / 5000f) * 5000;
+            }
+            else if (rawVal < 1000000f)
+            {
+                roundedVal = Mathf.RoundToInt(rawVal / 50000f) * 50000;
+            }
+            else
+            {
+                roundedVal = Mathf.RoundToInt(rawVal / 100000f) * 100000;
+            }
+            
+            editor.maxConnectionPoints = Mathf.Clamp(roundedVal, 1000, 5000000);
             
             GUILayout.Label("操作方法: 点群の任意の点を選択すると、隣接する点が自動追跡選択されます。", textStyle);
             GUILayout.Space(5);
