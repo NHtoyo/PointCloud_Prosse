@@ -189,4 +189,13 @@ Unity上において数千万点規模の大規模な点群データ（PLY形式
   - `PointCloudEditorUI.cs` および `NoiseFilterUI.cs` において、`GUILayout.Toggle` のスタイルに `textStyle`（ラベル用スタイル）を直接指定していたため、チェックボックスのマーク（ON/OFF状態を示すチェック画像）が表示されなくなっていた問題を修正。
   - `GUI.skin.toggle` を継承した専用の `toggleStyle` を定義・初期化し、`DrawNoiseFilterSection` を介して `NoiseFilterUI` 側の各トグルに適用することで、チェックマークが正常に表示されるように修正。これにより、各フィルタが有効（ON）か無効（OFF）かを視覚的に判別できるようになりました。
 
+- **CloudCompare互換の局所平面推定ノイズ除去UIおよびC#ブリッジの改修**:
+  - `noise_filters.py` における `compute_cc_noise` の改良（チャンク分割処理による省メモリ化、KNN/Radiusモード、しきい値判定モード、孤立点除去オプションの拡張）に合わせ、C#ブリッジおよびUnity UIを刷新。
+  - **PythonBridge / CLI**: `PythonBridge.cs` および `run_noise_filter.py` に `--cc_use_knn`, `--cc_radius`, `--cc_remove_isolated`, `--cc_use_relative` のパラメータ受け渡し・パースを追加。
+  - **Unity UI (`NoiseFilterUI.cs`)**:
+    - 「平面推定ノイズ除去」セクションを最上部（主役）に配置変更し、植物点群での誤消去に対する警告ラベルを追加。
+    - 近傍モード（KNN/Radius）としきい値モード（相対シグマ/絶対誤差）の切り替えを、相互排他的トグルボタンで実装。
+    - 選択されたモードに連動し、対応するパラメータ設定スライダー（近傍数 `k` または 近傍半径 `radius`、および標準偏差倍率 `Sigma` または 絶対誤差 `Error`）のみを動的表示するように改修。
+    - 「近傍不足の孤立点も除去する」オプションをUI上に追加。
+
 

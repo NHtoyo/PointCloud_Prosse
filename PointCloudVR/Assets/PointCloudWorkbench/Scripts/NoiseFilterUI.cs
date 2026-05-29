@@ -24,9 +24,13 @@ namespace PointCloudWorkbench
 
         // CC (局所平面推定ノイズ除去) パラメータ
         public bool runCc = true; // デフォルトON（主役）
+        public bool ccUseKnn = true;
         public int ccK = 20;
+        public float ccRadius = 0.05f;
+        public bool ccRemoveIsolated = false;
+        public bool ccUseRelative = true;
         public float ccSigma = 1.0f;
-        public float ccError = 0.0f;
+        public float ccError = 0.01f;
 
         // DBSCAN (小クラスタ除去) パラメータ
         public bool runDbscan = true;
@@ -107,7 +111,76 @@ namespace PointCloudWorkbench
             }
             GUILayout.Space(5);
 
-            // --- 2. SOR (統計的外れ値除去) ---
+            // --- 2. CC (平面推定ノイズ除去 - 推奨・主役) ---
+            runCc = GUILayout.Toggle(runCc, " 平面推定ノイズ除去 (CC風・推奨) を有効化", toggleStyle);
+            if (runCc)
+            {
+                // 植物点群向けの警告注意メッセージラベル
+                var prevColor = GUI.contentColor;
+                GUI.contentColor = new Color(0.95f, 0.65f, 0.2f); // オレンジイエロー
+                GUILayout.Label("    【注意】局所平面から大きく浮いた点を候補化します。\n    ※ 細い葉先や花を誤消去しやすいため、しきい値設定に注意してください。", textStyle);
+                GUI.contentColor = prevColor;
+
+                // 近傍モードトグル
+                GUILayout.BeginHorizontal();
+                GUILayout.Label("    近傍モード:", textStyle, GUILayout.Width(100));
+                bool selectedKnn = GUILayout.Toggle(ccUseKnn, "KNN (近傍点数)", toggleStyle);
+                bool selectedRadius = GUILayout.Toggle(!ccUseKnn, "Radius (近傍半径)", toggleStyle);
+                if (selectedKnn != ccUseKnn)
+                {
+                    ccUseKnn = selectedKnn;
+                }
+                else if (selectedRadius == ccUseKnn)
+                {
+                    ccUseKnn = !selectedRadius;
+                }
+                GUILayout.EndHorizontal();
+
+                // 近傍モード値スライダー
+                if (ccUseKnn)
+                {
+                    GUILayout.Label($"      近傍点数 (k): {ccK}", textStyle);
+                    ccK = Mathf.RoundToInt(GUILayout.HorizontalSlider(ccK, 3f, 50f));
+                }
+                else
+                {
+                    GUILayout.Label($"      近傍半径 (radius): {ccRadius:F3} m", textStyle);
+                    ccRadius = GUILayout.HorizontalSlider(ccRadius, 0.005f, 0.2f);
+                }
+
+                // しきい値モードトグル
+                GUILayout.BeginHorizontal();
+                GUILayout.Label("    閾値モード:", textStyle, GUILayout.Width(100));
+                bool selectedRel = GUILayout.Toggle(ccUseRelative, "相対シグマ", toggleStyle);
+                bool selectedAbs = GUILayout.Toggle(!ccUseRelative, "絶対誤差", toggleStyle);
+                if (selectedRel != ccUseRelative)
+                {
+                    ccUseRelative = selectedRel;
+                }
+                else if (selectedAbs == ccUseRelative)
+                {
+                    ccUseRelative = !selectedAbs;
+                }
+                GUILayout.EndHorizontal();
+
+                // しきい値値スライダー
+                if (ccUseRelative)
+                {
+                    GUILayout.Label($"      標準偏差倍率 (Sigma): {ccSigma:F2}", textStyle);
+                    ccSigma = GUILayout.HorizontalSlider(ccSigma, 0.1f, 3.0f);
+                }
+                else
+                {
+                    GUILayout.Label($"      絶対誤差閾値 (Error): {ccError:F4} m", textStyle);
+                    ccError = GUILayout.HorizontalSlider(ccError, 0.0001f, 0.05f);
+                }
+
+                // 孤立点除去トグル
+                ccRemoveIsolated = GUILayout.Toggle(ccRemoveIsolated, "    近傍不足の孤立点も除去する", toggleStyle);
+            }
+            GUILayout.Space(5);
+
+            // --- 3. SOR (統計的外れ値除去) ---
             runSor = GUILayout.Toggle(runSor, " 統計的ノイズ除去 (SOR) を有効化", toggleStyle);
             if (runSor)
             {
@@ -119,7 +192,7 @@ namespace PointCloudWorkbench
             }
             GUILayout.Space(5);
 
-            // --- 3. ROR (半径外れ値除去) ---
+            // --- 4. ROR (半径外れ値除去 - 補助) ---
             runRor = GUILayout.Toggle(runRor, " 半径外れ値除去 (ROR) を有効化 (補助)", toggleStyle);
             if (runRor)
             {
@@ -131,22 +204,7 @@ namespace PointCloudWorkbench
             }
             GUILayout.Space(5);
 
-            // --- 3.5. CC (局所平面推定ノイズ除去) ---
-            runCc = GUILayout.Toggle(runCc, " 平面推定ノイズ除去 (CC風) を有効化", toggleStyle);
-            if (runCc)
-            {
-                GUILayout.Label($"    隣接点数 (k): {ccK}", textStyle);
-                ccK = Mathf.RoundToInt(GUILayout.HorizontalSlider(ccK, 5f, 50f));
-
-                GUILayout.Label($"    相対シグマ閾値 (Sigma): {ccSigma:F2}", textStyle);
-                ccSigma = GUILayout.HorizontalSlider(ccSigma, 0.1f, 3.0f);
-
-                GUILayout.Label($"    絶対誤差閾値 (Error): {ccError:F4} m", textStyle);
-                ccError = GUILayout.HorizontalSlider(ccError, 0.0f, 0.1f);
-            }
-            GUILayout.Space(5);
-
-            // --- 4. DBSCAN (クラスタノイズ除去) ---
+            // --- 5. DBSCAN (クラスタノイズ除去) ---
             runDbscan = GUILayout.Toggle(runDbscan, " クラスタノイズ除去 (DBSCAN) を有効化", toggleStyle);
             if (runDbscan)
             {
@@ -247,7 +305,7 @@ namespace PointCloudWorkbench
                         voxelSize,
                         runSor, sorNb, sorStd,
                         runRor, rorMul, rorMin,
-                        runCc, ccK, ccSigma, ccError,
+                        runCc, ccK, ccSigma, ccError, ccUseKnn, ccRadius, ccRemoveIsolated, ccUseRelative,
                         runDbscan, dbscanEps, dbscanMin, dbscanCluster, dbscanTarget,
                         token
                     );

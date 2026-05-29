@@ -18,6 +18,16 @@ import pointcloud_io
 import noise_filters
 import result_writer
 
+def str_to_bool(value):
+    if isinstance(value, bool):
+        return value
+    if value.lower() in ('yes', 'true', 't', 'y', '1'):
+        return True
+    elif value.lower() in ('no', 'false', 'f', 'n', '0'):
+        return False
+    else:
+        raise argparse.ArgumentTypeError('Boolean value expected.')
+
 def main():
     parser = argparse.ArgumentParser(description="NeRF Point Cloud Noise Filter Backend CLI")
     
@@ -41,6 +51,10 @@ def main():
     parser.add_argument("--cc_k", type=int, default=20, help="CC平面フィルタの近傍点数 (default: 20)")
     parser.add_argument("--cc_sigma", type=float, default=1.0, help="CC平面フィルタの相対シグマ閾値 (default: 1.0)")
     parser.add_argument("--cc_error", type=float, default=0.0, help="CC平面フィルタの絶対誤差閾値 (default: 0.0)")
+    parser.add_argument("--cc_use_knn", type=str_to_bool, default=True, help="CC平面フィルタでKNNモードを使用するか (default: True)")
+    parser.add_argument("--cc_radius", type=float, default=0.05, help="CC平面フィルタのRadiusモード時の近傍半径 (default: 0.05)")
+    parser.add_argument("--cc_remove_isolated", type=str_to_bool, default=False, help="CC平面フィルタのRadiusモードで孤立点を除去するか (default: False)")
+    parser.add_argument("--cc_use_relative", type=str_to_bool, default=True, help="CC平面フィルタで相対シグマ閾値を使用するか (default: True)")
     parser.add_argument("--dbscan_eps", type=float, default=4.0, help="DBSCANのepsマルチプライヤ (default: 4.0)")
     parser.add_argument("--dbscan_min", type=int, default=10, help="DBSCANのコア点条件最小点数 (default: 10)")
     parser.add_argument("--dbscan_cluster", type=int, default=200, help="小クラスタと判定する閾値サイズ (default: 200)")
@@ -78,7 +92,14 @@ def main():
         "sor": {"nb_neighbors": args.sor_nb, "std_ratio": args.sor_std},
         "ror": {"radius_multiplier": args.ror_mul, "min_neighbors": args.ror_min},
         "density": {"k": args.density_k, "threshold": args.density_thresh},
-        "cc_noise": {"k": args.cc_k, "relative_sigma": args.cc_sigma, "absolute_error": args.cc_error},
+        "cc_noise": {
+            "k": args.cc_k,
+            "relative_sigma": args.cc_sigma if args.cc_use_relative else 0.0,
+            "absolute_error": args.cc_error if not args.cc_use_relative else 0.0,
+            "use_knn": args.cc_use_knn,
+            "radius": args.cc_radius,
+            "remove_isolated_points": args.cc_remove_isolated
+        },
         "dbscan": {
             "eps_multiplier": args.dbscan_eps,
             "min_points": args.dbscan_min,

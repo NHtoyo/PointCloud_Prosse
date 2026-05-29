@@ -1,3 +1,4 @@
+import math
 import numpy as np
 import open3d as o3d
 from scipy.spatial import cKDTree
@@ -123,63 +124,132 @@ def compute_density(points: np.ndarray, tree: cKDTree = None, k: int = 8) -> dic
         'density_score': density_score.astype(np.float32)
     }
 
-def compute_cc_noise(points: np.ndarray, tree: cKDTree = None, k: int = 20, 
-                     relative_sigma: float = 1.0, absolute_error: float = 0.0) -> dict:
+def compute_cc_noise(points: np.ndarray,
+                     tree: cKDTree = None,
+                     k: int = 20,
+                     relative_sigma: float = 1.0,
+                     absolute_error: float = 0.0,
+                     use_knn: bool = True,
+                     radius: float = None,
+                     remove_isolated_points: bool = False,
+                     chunk_size: int = 25000) -> dict:
     """
     CloudCompare風の局所平面残差ノイズフィルタを計算します。
-    各点のk近傍に対して局所平面を推定し、平面からの残差距離をスコア化します。
+
+    - KNN もしくは Radius の近傍で局所平面を推定
+    - 点と局所平面の距離をスコア化
+    - REL モードでは近傍残差分布に対する相対閾値
+    - ABS モードでは絶対誤差閾値
+    - 近傍不足点は remove_isolated_points=True の場合のみ除去
     """
     n_points = len(points)
     if n_points == 0:
-        return {'remove_mask': np.array([], dtype=bool), 'cc_noise_score': np.array([], dtype=np.float32)}
-        
+        return {
+            'remove_mask': np.array([], dtype=bool),
+            'cc_noise_score': np.array([], dtype=np.float32)
+        }
+
     if tree is None:
         tree = cKDTree(points)
-        
-    # k-NN 探索 (自身を含むため k + 1)
-    dists, indices = tree.query(points, k=k + 1)
-    
-    # 近傍点の座標を取得: shape [N, k+1, 3]
-    neighbors = points[indices]
-    
-    # 各近傍点群の重心を計算: shape [N, 3]
-    means = np.mean(neighbors, axis=1)
-    
-    # 重心からの偏差: shape [N, k+1, 3]
-    deviations = neighbors - means[:, np.newaxis, :]
-    
-    # 共分散行列の算出: shape [N, 3, 3]
-    covs = np.matmul(deviations.transpose(0, 2, 1), deviations) / (k + 1)
-    
-    # 共分散行列の一括固有値解析 (eigenvalues: [N, 3], eigenvectors: [N, 3, 3])
-    eigenvalues, eigenvectors = np.linalg.eigh(covs)
-    
-    # 最小固有値に対応する固有ベクトル（法線ベクトル）は shape [N, 3]
-    normals = eigenvectors[:, :, 0]
-    
-    # 対象点 p_i から重心 means[i] へのベクトルと法線の内積が平面からの残差になる
-    diff = points - means
-    scores = np.abs(np.sum(diff * normals, axis=1)).astype(np.float32)
-    
-    # 統計情報の算出（近傍点群の平面からの距離の平均と標準偏差）
-    nb_diffs = neighbors - means[:, np.newaxis, :]
-    nb_dists = np.abs(np.sum(nb_diffs * normals[:, np.newaxis, :], axis=2))
-    
-    nb_means = np.mean(nb_dists, axis=1)
-    nb_stds = np.std(nb_dists, axis=1)
-    
-    # 閾値判定
+
+    scores = np.zeros(n_points, dtype=np.float32)
     remove_mask = np.zeros(n_points, dtype=bool)
-    
-    # 相対閾値（relative_sigma > 0 の場合）
-    if relative_sigma > 0.0:
-        threshold_rel = nb_means + relative_sigma * nb_stds
-        remove_mask = remove_mask | (scores > threshold_rel)
-        
-    # 絶対閾値（absolute_error > 0 の場合）
-    if absolute_error > 0.0:
-        remove_mask = remove_mask | (scores > absolute_error)
-        
+
+    if use_knn:
+        k = max(int(k), 3)
+        chunk_size = max(int(chunk_size), 1024)
+        total_chunks = math.ceil(n_points / chunk_size)
+
+        for chunk_index, start in enumerate(range(0, n_points, chunk_size), start=1):
+            end = min(start + chunk_size, n_points)
+            chunk_points = points[start:end]
+
+            dists, indices = tree.query(chunk_points, k=k + 1)
+            if k == 1:
+                dists = dists[:, np.newaxis]
+                indices = indices[:, np.newaxis]
+
+            neighbors = points[indices]
+            means = np.mean(neighbors, axis=1)
+            deviations = neighbors - means[:, np.newaxis, :]
+            covs = np.matmul(deviations.transpose(0, 2, 1), deviations) / neighbors.shape[1]
+
+            try:
+                _, eigenvectors = np.linalg.eigh(covs)
+            except np.linalg.LinAlgError:
+                # 数値不安定なケースは念のため単点ごとにフォールバック
+                eigenvectors = np.zeros((end - start, 3, 3), dtype=np.float64)
+                for local_i in range(end - start):
+                    try:
+                        _, vecs = np.linalg.eigh(covs[local_i])
+                    except np.linalg.LinAlgError:
+                        vecs = np.eye(3, dtype=np.float64)
+                    eigenvectors[local_i] = vecs
+
+            normals = eigenvectors[:, :, 0]
+            diff = chunk_points - means
+            chunk_scores = np.abs(np.sum(diff * normals, axis=1))
+
+            nb_dists = np.abs(np.sum(deviations * normals[:, np.newaxis, :], axis=2))
+            nb_means = np.mean(nb_dists, axis=1)
+            nb_stds = np.std(nb_dists, axis=1)
+
+            chunk_remove_mask = np.zeros(end - start, dtype=bool)
+            if relative_sigma > 0.0:
+                threshold_rel = nb_means + relative_sigma * nb_stds
+                chunk_remove_mask |= (chunk_scores > threshold_rel)
+            if absolute_error > 0.0:
+                chunk_remove_mask |= (chunk_scores > absolute_error)
+
+            scores[start:end] = chunk_scores.astype(np.float32)
+            remove_mask[start:end] = chunk_remove_mask
+
+            if total_chunks > 1:
+                print(f"  CC局所平面解析 {chunk_index}/{total_chunks} チャンク完了")
+    else:
+        if radius is None or radius <= 0.0:
+            raise ValueError("CloudCompare風の Radius モードでは radius > 0 が必要です。")
+
+        chunk_size = max(int(chunk_size), 2048)
+        total_chunks = math.ceil(n_points / chunk_size)
+
+        for chunk_index, start in enumerate(range(0, n_points, chunk_size), start=1):
+            end = min(start + chunk_size, n_points)
+            chunk_points = points[start:end]
+            neighbor_lists = tree.query_ball_point(chunk_points, r=radius)
+
+            for local_i, neighbor_ids in enumerate(neighbor_lists):
+                global_i = start + local_i
+                if len(neighbor_ids) < 3:
+                    if remove_isolated_points:
+                        remove_mask[global_i] = True
+                    continue
+
+                neighbors = points[np.asarray(neighbor_ids, dtype=np.int32)]
+                mean = neighbors.mean(axis=0)
+                deviations = neighbors - mean
+                cov = deviations.T @ deviations / len(neighbor_ids)
+
+                try:
+                    _, vecs = np.linalg.eigh(cov)
+                    normal = vecs[:, 0]
+                except np.linalg.LinAlgError:
+                    if remove_isolated_points:
+                        remove_mask[global_i] = True
+                    continue
+
+                score = abs(np.dot(points[global_i] - mean, normal))
+                residuals = np.abs(deviations @ normal)
+                rel_threshold = residuals.mean() + relative_sigma * residuals.std() if relative_sigma > 0.0 else np.inf
+                abs_threshold = absolute_error if absolute_error > 0.0 else np.inf
+
+                scores[global_i] = np.float32(score)
+                if score > min(rel_threshold, abs_threshold):
+                    remove_mask[global_i] = True
+
+            if total_chunks > 1:
+                print(f"  CC局所平面解析 {chunk_index}/{total_chunks} チャンク完了")
+
     return {
         'remove_mask': remove_mask.astype(bool),
         'cc_noise_score': scores.astype(np.float32)
@@ -236,7 +306,7 @@ def compute_dbscan(points: np.ndarray, base_spacing: float, eps_multiplier: floa
         'timeout': False
     }
 
-def run_all_filters(points: np.ndarray, params: dict, enabled_filters: set, mode: str = 'full') -> dict:
+def run_all_filters(points: np.ndarray, params: dict, enabled_filters: set = None, mode: str = 'full') -> dict:
     """
     指定されたパラメータとモードに従い、すべてのフィルタを実行してマージ結果を返します。
     
@@ -250,6 +320,8 @@ def run_all_filters(points: np.ndarray, params: dict, enabled_filters: set, mode
         dict: 処理結果をマージした辞書
     """
     n_points = len(points)
+    if enabled_filters is None:
+        enabled_filters = {"sor", "cc_noise", "dbscan"}
     
     # 共通の cKDTree を1度だけ構築 (全体の90%以上の近傍検索処理で再利用)
     tree = None
@@ -311,7 +383,17 @@ def run_all_filters(points: np.ndarray, params: dict, enabled_filters: set, mode
         print("CC風局所平面ノイズフィルタを実行中...")
         t0 = time.time()
         cc_params = params.get('cc_noise', {'k': 20, 'relative_sigma': 1.0, 'absolute_error': 0.0})
-        cc_res = compute_cc_noise(points, tree, k=cc_params['k'], relative_sigma=cc_params['relative_sigma'], absolute_error=cc_params['absolute_error'])
+        cc_res = compute_cc_noise(
+            points,
+            tree,
+            k=cc_params.get('k', 20),
+            relative_sigma=cc_params.get('relative_sigma', 1.0),
+            absolute_error=cc_params.get('absolute_error', 0.0),
+            use_knn=cc_params.get('use_knn', True),
+            radius=cc_params.get('radius', None),
+            remove_isolated_points=cc_params.get('remove_isolated_points', False),
+            chunk_size=cc_params.get('chunk_size', 25000)
+        )
         print(f"CC風ノイズフィルタ完了. (所要時間: {time.time() - t0:.2f}秒)")
     else:
         cc_res = {

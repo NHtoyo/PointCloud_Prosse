@@ -64,7 +64,7 @@ namespace PointCloudWorkbench
             float? voxelSize,
             bool runSor, int sorNb, float sorStd,
             bool runRor, float rorMul, int rorMin,
-            bool runCc, int ccK, float ccSigma, float ccError,
+            bool runCc, int ccK, float ccSigma, float ccError, bool ccUseKnn, float ccRadius, bool ccRemoveIsolated, bool ccUseRelative,
             bool runDbscan, float dbscanEps, int dbscanMin, int dbscanCluster, int dbscanTarget,
             CancellationToken cancellationToken = default)
         {
@@ -115,6 +115,10 @@ namespace PointCloudWorkbench
             argsBuilder.Append($" --cc_k {ccK}");
             argsBuilder.Append($" --cc_sigma {ccSigma.ToString(System.Globalization.CultureInfo.InvariantCulture)}");
             argsBuilder.Append($" --cc_error {ccError.ToString(System.Globalization.CultureInfo.InvariantCulture)}");
+            argsBuilder.Append($" --cc_use_knn {(ccUseKnn ? "true" : "false")}");
+            argsBuilder.Append($" --cc_radius {ccRadius.ToString(System.Globalization.CultureInfo.InvariantCulture)}");
+            argsBuilder.Append($" --cc_remove_isolated {(ccRemoveIsolated ? "true" : "false")}");
+            argsBuilder.Append($" --cc_use_relative {(ccUseRelative ? "true" : "false")}");
             argsBuilder.Append($" --dbscan_eps {dbscanEps.ToString(System.Globalization.CultureInfo.InvariantCulture)}");
             argsBuilder.Append($" --dbscan_min {dbscanMin}");
             argsBuilder.Append($" --dbscan_cluster {dbscanCluster}");
