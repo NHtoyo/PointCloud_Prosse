@@ -79,7 +79,7 @@ namespace PointCloudWorkbench
         /// <summary>
         /// PointCloudEditorUI から呼び出され、 OnGUI のスクロールビュー内に項目を描画します。
         /// </summary>
-        public void DrawNoiseFilterSection(float width, GUIStyle textStyle, GUIStyle buttonStyle, GUIStyle activeButtonStyle)
+        public void DrawNoiseFilterSection(float width, GUIStyle textStyle, GUIStyle toggleStyle, GUIStyle buttonStyle, GUIStyle activeButtonStyle)
         {
             if (editor == null || editor.targetRenderer == null) return;
 
@@ -108,7 +108,7 @@ namespace PointCloudWorkbench
             GUILayout.Space(5);
 
             // --- 2. SOR (統計的外れ値除去) ---
-            runSor = GUILayout.Toggle(runSor, " 統計的ノイズ除去 (SOR) を有効化", textStyle);
+            runSor = GUILayout.Toggle(runSor, " 統計的ノイズ除去 (SOR) を有効化", toggleStyle);
             if (runSor)
             {
                 GUILayout.Label($"    隣接点数 (Neighbors): {sorNb}", textStyle);
@@ -120,7 +120,7 @@ namespace PointCloudWorkbench
             GUILayout.Space(5);
 
             // --- 3. ROR (半径外れ値除去) ---
-            runRor = GUILayout.Toggle(runRor, " 半径外れ値除去 (ROR) を有効化 (補助)", textStyle);
+            runRor = GUILayout.Toggle(runRor, " 半径外れ値除去 (ROR) を有効化 (補助)", toggleStyle);
             if (runRor)
             {
                 GUILayout.Label($"    検索半径倍率 (RadiusMul): {rorMul:F2}", textStyle);
@@ -132,7 +132,7 @@ namespace PointCloudWorkbench
             GUILayout.Space(5);
 
             // --- 3.5. CC (局所平面推定ノイズ除去) ---
-            runCc = GUILayout.Toggle(runCc, " 平面推定ノイズ除去 (CC風) を有効化", textStyle);
+            runCc = GUILayout.Toggle(runCc, " 平面推定ノイズ除去 (CC風) を有効化", toggleStyle);
             if (runCc)
             {
                 GUILayout.Label($"    隣接点数 (k): {ccK}", textStyle);
@@ -147,7 +147,7 @@ namespace PointCloudWorkbench
             GUILayout.Space(5);
 
             // --- 4. DBSCAN (クラスタノイズ除去) ---
-            runDbscan = GUILayout.Toggle(runDbscan, " クラスタノイズ除去 (DBSCAN) を有効化", textStyle);
+            runDbscan = GUILayout.Toggle(runDbscan, " クラスタノイズ除去 (DBSCAN) を有効化", toggleStyle);
             if (runDbscan)
             {
                 GUILayout.Label($"    近傍半径倍率 (EpsMul): {dbscanEps:F2}", textStyle);

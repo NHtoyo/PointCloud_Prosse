@@ -14,6 +14,7 @@ public class PointCloudEditorUI : MonoBehaviour
     private GUIStyle buttonStyle;
     private GUIStyle activeButtonStyle;
     private GUIStyle textStyle;
+    private GUIStyle toggleStyle;
     private bool stylesInitialized = false;
 
     private Vector2 fileScrollPos;
@@ -133,6 +134,12 @@ public class PointCloudEditorUI : MonoBehaviour
         textStyle.fontSize = 14; // Enlarge from 12
         textStyle.normal.textColor = new Color(0.9f, 0.9f, 0.9f);
         textStyle.margin = new RectOffset(0, 0, 3, 3);
+
+        toggleStyle = new GUIStyle(GUI.skin.toggle);
+        toggleStyle.fontSize = 14;
+        toggleStyle.normal.textColor = new Color(0.9f, 0.9f, 0.9f);
+        toggleStyle.hover.textColor = Color.white;
+        toggleStyle.margin = new RectOffset(0, 0, 3, 3);
 
         modalBackdropTex = new Texture2D(1, 1);
         modalBackdropTex.SetPixel(0, 0, new Color(0f, 0f, 0f, 0.65f)); // Semi-transparent black backdrop
@@ -424,7 +431,7 @@ public class PointCloudEditorUI : MonoBehaviour
         foldoutNoiseFilter = GUILayout.Toggle(foldoutNoiseFilter, (foldoutNoiseFilter ? "▼ " : "▶ ") + "🧹 空中モヤ・浮遊点ノイズ除去", foldoutHeaderStyle);
         if (foldoutNoiseFilter && noiseFilterUI != null)
         {
-            noiseFilterUI.DrawNoiseFilterSection(width, textStyle, buttonStyle, activeButtonStyle);
+            noiseFilterUI.DrawNoiseFilterSection(width, textStyle, toggleStyle, buttonStyle, activeButtonStyle);
             GUILayout.Space(8);
         }
 
