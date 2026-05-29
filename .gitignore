@@ -1,0 +1,29 @@
+# Global AI Workflow ignores
+external_repos/
+.env
+.env.*
+*.key
+*.pem
+__pycache__/
+*.pyc
+
+# Unity project temporary and cache files (PointCloudVR)
+PointCloudVR/[Ll]ibrary/
+PointCloudVR/[Tt]emp/
+PointCloudVR/[Oo]bj/
+PointCloudVR/[Bb]uild/
+PointCloudVR/[Bb]uilds/
+PointCloudVR/[Ll]ogs/
+PointCloudVR/[Mm]emoryCaptures/
+PointCloudVR/[Uu]serSettings/
+
+# Large installers, binaries, and local data
+/UnityEditor/
+/OculusSetup.exe
+/MetaQuestLink_Install.lnk
+/PointCloudData/
+/*.ply
+/*.log
+/vs/
+/copy_log_result.txt
+/scene_dump.txt
