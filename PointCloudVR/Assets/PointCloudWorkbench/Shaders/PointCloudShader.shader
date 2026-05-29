@@ -131,9 +131,12 @@ Shader "PointCloudWorkbench/PointCloudShader"
                 int classId = labelVal & 0xFFFF;
                 bool isSelected = (labelVal & 0x10000) != 0;
                 bool isDeleted = (labelVal & 0x20000) != 0;
+                bool isNoiseCandidate = (labelVal & 0x40000) != 0; // bit18
+                bool isNoiseHidden = (labelVal & 0x80000) != 0;    // bit19
+                int noiseReason = (labelVal & 0x700000) >> 20;     // bit20-22
 
                 // Discard deleted points immediately by setting size to 0
-                if (isDeleted)
+                if (isDeleted || isNoiseHidden)
                 {
                     o.pos = float4(0, 0, 0, 0);
                     o.color = float4(0, 0, 0, 0);
@@ -167,10 +170,19 @@ Shader "PointCloudWorkbench/PointCloudShader"
                 float2 offset = offsets[vertexIndex] * (actualPointSize * 2.0 / _ScreenParams.xy) * o.pos.w;
                 o.pos.xy += offset;
 
-                // Set color according to mode (Override if selected)
+                // Set color according to mode (Override if selected or noise candidate)
                 if (isSelected)
                 {
                     o.color = float4(1.0, 0.85, 0.0, 1.0); // Bright Yellow for selection highlight
+                }
+                else if (isNoiseCandidate)
+                {
+                    // 削除候補点のノイズ理由別カラーリング (SOR:赤, ROR:橙, 低密度:紫, 小クラスタ:黄, その他:ピンク)
+                    if (noiseReason == 1)      o.color = float4(1.0, 0.12, 0.12, 1.0);
+                    else if (noiseReason == 2) o.color = float4(1.0, 0.55, 0.0, 1.0);
+                    else if (noiseReason == 3) o.color = float4(0.63, 0.12, 0.9, 1.0);
+                    else if (noiseReason == 4) o.color = float4(1.0, 0.86, 0.0, 1.0);
+                    else                       o.color = float4(1.0, 0.0, 0.5, 1.0);
                 }
                 else
                 {

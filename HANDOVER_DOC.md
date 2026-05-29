@@ -155,9 +155,8 @@ Unity上において数千万点規模の大規模な点群データ（PLY形式
   - `PythonBridge.cs` 内に、リトルエンディアン形式の `.bin` ファイルを `File.ReadAllBytes` と `Buffer.BlockCopy` によって高速に復元するゼロアロケーション指向のデシリアライズ処理を実装。
   - `NoiseFilterManager.cs` を新規作成。点群の `PointData.label` 内の上位ビット領域（bit18: 削除候補, bit19: 確定非表示）をビット演算で非破壊操作するプレビュー適用（`ApplyPreview`）および非表示確定（`CommitRemoval`）ロジックを実装。
   - `NoiseFilterManager.cs` 内に、メモリ消費を保護（最大5世代）しつつ `label` 配列のディープコピーを用いて完全な元戻しを可能にするスタックベースの `Undo` / `Redo` 履歴管理システムを実装。
-
-
-
-
-
-
+- **NeRF点群のモヤ・浮遊点除去機能（Phase C：Unity表示層との連携）の実装**:
+  - `PointCloudShader.shader` を改修。頂点シェーダー内で確定非表示ビット（`isNoiseHidden` = bit19）を判定し、該当点の頂点スケールを0にして画面外へカリング（描画スキップ）する最適化処理を追加。
+  - `PointCloudShader.shader` 内で、プレビュー候補ビット（`isNoiseCandidate` = bit18）および理由コード（`noiseReason` = bit20-22）を判定し、SOR (赤)、ROR (橙)、低密度 (紫)、小クラスタ (黄)、その他 (ピンク) のノイズ理由色にリアルタイムで上書きするカラーオーバーレイ処理を実装。
+  - 通常ラベルID（`classId`）が下位16ビットを使用しているため、データ競合を防ぐ目的でノイズ除去の理由コード（0〜5）を完全に空いている上位ビット（bit20〜22）にマッピング。
+  - `NoiseFilterManager.cs` 内の `ApplyPreview` メソッドを改修し、プレビュー適用時に `NOISE_CANDIDATE_BIT` の付与と同時に `reason` コードを bit20-22 に書き込むビット演算ロジックを統合。また、プレビュー解除およびリセット時には理由ビットも同時にクリアするクリーンアップ処理を追記。

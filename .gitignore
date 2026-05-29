@@ -6,6 +6,7 @@ external_repos/
 *.pem
 __pycache__/
 *.pyc
+*.md
 
 # Unity project temporary and cache files (PointCloudVR)
 PointCloudVR/[Ll]ibrary/
@@ -18,6 +19,10 @@ PointCloudVR/[Mm]emoryCaptures/
 PointCloudVR/[Uu]serSettings/
 
 # Large installers, binaries, and local data
+/.agent/
+/CloudCompare-master_sankou/
+/scratch/
+/docs/
 /UnityEditor/
 /OculusSetup.exe
 /MetaQuestLink_Install.lnk
@@ -27,6 +32,9 @@ PointCloudVR/[Uu]serSettings/
 /vs/
 /copy_log_result.txt
 /scene_dump.txt
+/hub_help.txt
+/implementation_plan_original.md
+/query
 
 # Python backend files
 PointCloudVR/python_backend/.venv/

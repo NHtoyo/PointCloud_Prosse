@@ -25,6 +25,8 @@ namespace PointCloudWorkbench
         // PointData.label 内の上位ビット拡張定義
         public const int NOISE_CANDIDATE_BIT = 0x40000; // bit18: 削除候補 (プレビュー表示用)
         public const int NOISE_HIDDEN_BIT    = 0x80000; // bit19: 確定非表示 (描画除外用)
+        public const int NOISE_REASON_MASK   = 0x700000; // bit20-22: ノイズの除去理由コード
+        public const int NOISE_REASON_SHIFT  = 20;
 
         private NoiseFilterResult currentResult;
         private bool isPreviewActive = false;
@@ -61,16 +63,19 @@ namespace PointCloudWorkbench
                 return;
             }
 
-            // プレビュービット（CANDIDATE）をマスクに基づいて設定
+            // プレビュービット（CANDIDATE）と理由コード（REASON）を設定
             for (int i = 0; i < points.Length; i++)
             {
                 if (currentResult.removeMask[i] != 0)
                 {
                     points[i].label |= NOISE_CANDIDATE_BIT;
+                    int reasonVal = currentResult.reason[i];
+                    points[i].label = (points[i].label & ~NOISE_REASON_MASK) | ((reasonVal << NOISE_REASON_SHIFT) & NOISE_REASON_MASK);
                 }
                 else
                 {
                     points[i].label &= ~NOISE_CANDIDATE_BIT;
+                    points[i].label &= ~NOISE_REASON_MASK;
                 }
             }
 
@@ -91,6 +96,7 @@ namespace PointCloudWorkbench
             for (int i = 0; i < points.Length; i++)
             {
                 points[i].label &= ~NOISE_CANDIDATE_BIT;
+                points[i].label &= ~NOISE_REASON_MASK;
             }
 
             isPreviewActive = false;
@@ -189,7 +195,7 @@ namespace PointCloudWorkbench
 
             for (int i = 0; i < points.Length; i++)
             {
-                points[i].label &= ~(NOISE_CANDIDATE_BIT | NOISE_HIDDEN_BIT);
+                points[i].label &= ~(NOISE_CANDIDATE_BIT | NOISE_HIDDEN_BIT | NOISE_REASON_MASK);
             }
 
             isPreviewActive = false;
