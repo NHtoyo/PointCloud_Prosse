@@ -159,4 +159,8 @@ Unity上において数千万点規模の大規模な点群データ（PLY形式
   - `PointCloudShader.shader` を改修。頂点シェーダー内で確定非表示ビット（`isNoiseHidden` = bit19）を判定し、該当点の頂点スケールを0にして画面外へカリング（描画スキップ）する最適化処理を追加。
   - `PointCloudShader.shader` 内で、プレビュー候補ビット（`isNoiseCandidate` = bit18）および理由コード（`noiseReason` = bit20-22）を判定し、SOR (赤)、ROR (橙)、低密度 (紫)、小クラスタ (黄)、その他 (ピンク) のノイズ理由色にリアルタイムで上書きするカラーオーバーレイ処理を実装。
   - 通常ラベルID（`classId`）が下位16ビットを使用しているため、データ競合を防ぐ目的でノイズ除去の理由コード（0〜5）を完全に空いている上位ビット（bit20〜22）にマッピング。
-  - `NoiseFilterManager.cs` 内の `ApplyPreview` メソッドを改修し、プレビュー適用時に `NOISE_CANDIDATE_BIT` の付与と同時に `reason` コードを bit20-22 に書き込むビット演算ロジックを統合。また、プレビュー解除およびリセット時には理由ビットも同時にクリアするクリーンアップ処理を追記。
+  - `NoiseFilterManager.cs` 内の `ApplyPreview` メソッドを改修し、プレビュー適用時に `NOISE_CANDIDATE_BIT` の付与と同時に `reason` コードをシフトして `label` に書き込むビット操作処理を実装。また、プレビュー解除およびリセット時には理由ビットも同時にクリアするクリーンアップ処理を追記。
+- **リポジトリのクリーンアップ（不要・外部コードの履歴抹消）**:
+  - `CloudCompare-master_sankou/` (外部コード) や `scratch/` (一時スクリプト)、ゴミファイル（`hub_help.txt`、`query`、`implementation_plan_original.md`）が過去のコミットによって誤ってリモートリポジトリに公開されていたため、過去のすべてのコミット履歴から完全に抹消する履歴書き換えを実行。
+  - ローカルの実ファイルは削除せず保持したまま、`.gitignore` を更新してこれらのファイルを追跡対象外に登録。
+  - `git filter-branch`、古い参照（`refs/original/`）の削除、および `git gc` を用いたガベージコレクションによってリポジトリデータベースを最適化し、新履歴を `main` へ強制プッシュ。
