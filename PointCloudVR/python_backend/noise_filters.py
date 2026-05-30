@@ -25,7 +25,7 @@ def estimate_base_spacing(points: np.ndarray, k: int = 8) -> float:
     点数が非常に多い場合は、10万点をランダムサンプリングして高速に推定します。
     """
     n = len(points)
-    if n == 0:
+    if n <= 1:
         return 0.0
     
     if n > 100000:
@@ -35,9 +35,14 @@ def estimate_base_spacing(points: np.ndarray, k: int = 8) -> float:
         sample_points = points
         
     tree = cKDTree(sample_points)
-    dists, _ = tree.query(sample_points, k=k+1)
+    query_k = min(k + 1, len(sample_points))
+    dists, _ = tree.query(sample_points, k=query_k)
+    if query_k == 1:
+        return 0.0
     # 自身(距離0)を除いた隣接点への距離
-    dists = dists[:, 1:]
+    dists = np.atleast_2d(dists)[:, 1:]
+    if dists.shape[1] == 0:
+        return 0.0
     mean_dists = np.mean(dists, axis=1)
     return float(np.median(mean_dists))
 
@@ -53,11 +58,15 @@ def compute_sor(points: np.ndarray, tree: cKDTree = None, nb_neighbors: int = 20
     """
     if len(points) == 0:
         return {'remove_mask': np.array([], dtype=bool), 'sor_score': np.array([], dtype=np.float32)}
-        
+    if len(points) == 1:
+        return {'remove_mask': np.zeros(1, dtype=bool), 'sor_score': np.zeros(1, dtype=np.float32)}
+
     if tree is None:
         tree = cKDTree(points)
-    dists, _ = tree.query(points, k=nb_neighbors + 1)
-    mean_dists = np.mean(dists[:, 1:], axis=1)
+    query_k = min(nb_neighbors + 1, len(points))
+    dists, _ = tree.query(points, k=query_k)
+    dists = np.atleast_2d(dists)
+    mean_dists = np.mean(dists[:, 1:], axis=1) if dists.shape[1] > 1 else np.zeros(len(points), dtype=np.float32)
     
     mean = np.mean(mean_dists)
     std = np.std(mean_dists)
@@ -113,11 +122,15 @@ def compute_density(points: np.ndarray, tree: cKDTree = None, k: int = 8) -> dic
     """
     if len(points) == 0:
         return {'density_score': np.array([], dtype=np.float32)}
-        
+    if len(points) == 1:
+        return {'density_score': np.zeros(1, dtype=np.float32)}
+
     if tree is None:
         tree = cKDTree(points)
-    dists, _ = tree.query(points, k=k+1)
-    mean_dists = np.mean(dists[:, 1:], axis=1)
+    query_k = min(k + 1, len(points))
+    dists, _ = tree.query(points, k=query_k)
+    dists = np.atleast_2d(dists)
+    mean_dists = np.mean(dists[:, 1:], axis=1) if dists.shape[1] > 1 else np.zeros(len(points), dtype=np.float32)
     density_score = 1.0 / (mean_dists + 1e-6)
     
     return {
@@ -156,7 +169,14 @@ def compute_cc_noise(points: np.ndarray,
     remove_mask = np.zeros(n_points, dtype=bool)
 
     if use_knn:
+        if n_points < 3:
+            return {
+                'remove_mask': np.zeros(n_points, dtype=bool),
+                'cc_noise_score': np.zeros(n_points, dtype=np.float32)
+            }
+
         k = max(int(k), 3)
+        query_k = min(k + 1, n_points)
         chunk_size = max(int(chunk_size), 1024)
         total_chunks = math.ceil(n_points / chunk_size)
 
@@ -164,8 +184,8 @@ def compute_cc_noise(points: np.ndarray,
             end = min(start + chunk_size, n_points)
             chunk_points = points[start:end]
 
-            dists, indices = tree.query(chunk_points, k=k + 1)
-            if k == 1:
+            dists, indices = tree.query(chunk_points, k=query_k)
+            if query_k == 1:
                 dists = dists[:, np.newaxis]
                 indices = indices[:, np.newaxis]
 
@@ -306,46 +326,102 @@ def compute_dbscan(points: np.ndarray, base_spacing: float, eps_multiplier: floa
         'timeout': False
     }
 
-def run_all_filters(points: np.ndarray, params: dict, enabled_filters: set = None, mode: str = 'full') -> dict:
+def compute_white_haze(points: np.ndarray, colors: np.ndarray, brightness_min: float = 190.0, saturation_max: float = 0.20) -> dict:
+    """
+    点の色情報 (RGB) から、明るく低彩度な白〜灰色系のノイズ点（白モヤ）を検出します。
+    """
+    n_points = len(points)
+    if n_points == 0 or colors is None or len(colors) == 0:
+        return {
+            'candidate_mask': np.zeros(n_points, dtype=bool),
+            'white_haze_score': np.zeros(n_points, dtype=np.float32)
+        }
+    
+    # colorsは uint8 [N, 3] または [N, 4] 想定
+    rgbs = colors[:, :3].astype(np.float32)
+    
+    # brightness = (R + G + B) / 3
+    brightness = np.mean(rgbs, axis=1)
+    
+    # saturation = (max - min) / max
+    c_max = np.max(rgbs, axis=1)
+    c_min = np.min(rgbs, axis=1)
+    
+    # ゼロ除算防止
+    saturation = np.zeros(n_points, dtype=np.float32)
+    valid_mask = c_max > 0.0
+    saturation[valid_mask] = (c_max[valid_mask] - c_min[valid_mask]) / c_max[valid_mask]
+    
+    # brightness >= brightness_min かつ saturation <= saturation_max の点をノイズ判定
+    candidate_mask = (brightness >= brightness_min) & (saturation <= saturation_max)
+    
+    # score = brightness * (1.0 - saturation)
+    white_haze_score = brightness * (1.0 - saturation)
+    
+    return {
+        'candidate_mask': candidate_mask.astype(bool),
+        'white_haze_score': white_haze_score.astype(np.float32)
+    }
+
+def run_all_filters(points: np.ndarray, params: dict, enabled_filters: set = None, mode: str = 'full', colors: np.ndarray = None) -> dict:
     """
     指定されたパラメータとモードに従い、すべてのフィルタを実行してマージ結果を返します。
-    
-    Args:
-        points (np.ndarray): 点群の3D座標 [N, 3]
-        params (dict): 各種フィルタのパラメータ辞書
-        enabled_filters (set): 有効にするフィルタ（"sor", "ror", "dbscan", "density" 等）
-        mode (str): 'full' (元点群全体) または 'downsample' (ダウンサンプル前提)
-        
-    Returns:
-        dict: 処理結果をマージした辞書
     """
     n_points = len(points)
     if enabled_filters is None:
-        enabled_filters = {"sor", "cc_noise", "dbscan"}
+        enabled_filters = {"sor", "cc_noise", "dbscan", "white_haze"}
     
-    # 共通の cKDTree を1度だけ構築 (全体の90%以上の近傍検索処理で再利用)
+    # 1. White Haze Filter (幾何フィルタより前の前処理。即削除ではなく候補マスクのみ作る)
+    if "white_haze" in enabled_filters:
+        print("White Haze (空中白モヤ) 除去フィルタを実行中...")
+        t0 = time.time()
+        wh_params = params.get('white_haze', {'brightness_min': 190.0, 'saturation_max': 0.20})
+        wh_res = compute_white_haze(
+            points,
+            colors,
+            brightness_min=wh_params.get('brightness_min', 190.0),
+            saturation_max=wh_params.get('saturation_max', 0.20)
+        )
+        print(f"White Haze 完了. (所要時間: {time.time() - t0:.2f}秒)")
+    else:
+        wh_res = {
+            'candidate_mask': np.zeros(n_points, dtype=bool),
+            'white_haze_score': np.zeros(n_points, dtype=np.float32)
+        }
+    white_haze_candidate_mask = wh_res['candidate_mask']
+    active_mask = ~white_haze_candidate_mask
+    active_points = points[active_mask]
+    active_count = len(active_points)
+
+    # 2. 共通の cKDTree を1度だけ構築 (全体の90%以上の近傍検索処理で再利用)
     tree = None
-    if any(f in enabled_filters for f in ["sor", "ror", "density", "cc_noise"]):
+    if active_count > 0 and any(f in enabled_filters for f in ["sor", "ror", "density", "cc_noise"]):
         print("近傍探索用の共通 cKDTree を構築中...")
         t0 = time.time()
-        tree = cKDTree(points)
+        tree = cKDTree(active_points)
         print(f"cKDTree 構築完了. (所要時間: {time.time() - t0:.2f}秒)")
-    
-    # 1. 基準点間隔の推定 (SOR/ROR/DBSCANの各種半径計算に使用されるため、いずれかが有効な場合に計算)
-    if any(f in enabled_filters for f in ["sor", "ror", "dbscan"]):
+
+    # 3. 基準点間隔の推定 (SOR/ROR/DBSCANの各種半径計算に使用されるため、いずれかが有効な場合に計算)
+    if active_count > 0 and any(f in enabled_filters for f in ["sor", "ror", "dbscan"]):
         print("基準点間隔を推定中...")
         t0 = time.time()
-        base_spacing = estimate_base_spacing(points)
+        base_spacing = estimate_base_spacing(active_points)
         print(f"基準点間隔の推定完了: {base_spacing:.6f} m (所要時間: {time.time() - t0:.2f}秒)")
     else:
         base_spacing = 0.01 # デフォルトのフォールバック値
-    
-    # 2. SOR
-    if "sor" in enabled_filters:
+
+    # 4. SOR
+    if "sor" in enabled_filters and active_count > 0:
         print("SOR (統計的ノイズ除去) を実行中...")
         t0 = time.time()
         sor_params = params.get('sor', {'nb_neighbors': 20, 'std_ratio': 1.5})
-        sor_res = compute_sor(points, tree, nb_neighbors=sor_params['nb_neighbors'], std_ratio=sor_params['std_ratio'])
+        sor_partial = compute_sor(active_points, tree, nb_neighbors=sor_params['nb_neighbors'], std_ratio=sor_params['std_ratio'])
+        sor_res = {
+            'remove_mask': np.zeros(n_points, dtype=bool),
+            'sor_score': np.zeros(n_points, dtype=np.float32)
+        }
+        sor_res['remove_mask'][active_mask] = sor_partial['remove_mask']
+        sor_res['sor_score'][active_mask] = sor_partial['sor_score']
         print(f"SOR 完了. (所要時間: {time.time() - t0:.2f}秒)")
     else:
         sor_res = {
@@ -353,12 +429,18 @@ def run_all_filters(points: np.ndarray, params: dict, enabled_filters: set = Non
             'sor_score': np.zeros(n_points, dtype=np.float32)
         }
     
-    # 3. ROR
-    if "ror" in enabled_filters:
+    # 5. ROR
+    if "ror" in enabled_filters and active_count > 0:
         print("ROR (半径外れ値除去) を実行中...")
         t0 = time.time()
         ror_params = params.get('ror', {'radius_multiplier': 3.0, 'min_neighbors': 8})
-        ror_res = compute_ror(points, base_spacing, tree, radius_multiplier=ror_params['radius_multiplier'], min_neighbors=ror_params['min_neighbors'])
+        ror_partial = compute_ror(active_points, base_spacing, tree, radius_multiplier=ror_params['radius_multiplier'], min_neighbors=ror_params['min_neighbors'])
+        ror_res = {
+            'remove_mask': np.zeros(n_points, dtype=bool),
+            'radius_neighbor_count': np.zeros(n_points, dtype=np.int32)
+        }
+        ror_res['remove_mask'][active_mask] = ror_partial['remove_mask']
+        ror_res['radius_neighbor_count'][active_mask] = ror_partial['radius_neighbor_count']
         print(f"ROR 完了. (所要時間: {time.time() - t0:.2f}秒)")
     else:
         ror_res = {
@@ -366,25 +448,29 @@ def run_all_filters(points: np.ndarray, params: dict, enabled_filters: set = Non
             'radius_neighbor_count': np.zeros(n_points, dtype=np.int32)
         }
     
-    # 4. 密度スコア
-    if "density" in enabled_filters:
+    # 6. 密度スコア
+    if "density" in enabled_filters and active_count > 0:
         print("低密度ノイズ判定を実行中...")
         t0 = time.time()
         density_params = params.get('density', {'k': 8})
-        density_res = compute_density(points, tree, k=density_params['k'])
+        density_partial = compute_density(active_points, tree, k=density_params['k'])
+        density_res = {
+            'density_score': np.zeros(n_points, dtype=np.float32)
+        }
+        density_res['density_score'][active_mask] = density_partial['density_score']
         print(f"低密度ノイズ判定完了. (所要時間: {time.time() - t0:.2f}秒)")
     else:
         density_res = {
             'density_score': np.zeros(n_points, dtype=np.float32)
         }
 
-    # 4.5. CC風ノイズフィルタ
-    if "cc_noise" in enabled_filters:
+    # 6.5. CC風ノイズフィルタ
+    if "cc_noise" in enabled_filters and active_count > 0:
         print("CC風局所平面ノイズフィルタを実行中...")
         t0 = time.time()
         cc_params = params.get('cc_noise', {'k': 20, 'relative_sigma': 1.0, 'absolute_error': 0.0})
-        cc_res = compute_cc_noise(
-            points,
+        cc_partial = compute_cc_noise(
+            active_points,
             tree,
             k=cc_params.get('k', 20),
             relative_sigma=cc_params.get('relative_sigma', 1.0),
@@ -394,6 +480,12 @@ def run_all_filters(points: np.ndarray, params: dict, enabled_filters: set = Non
             remove_isolated_points=cc_params.get('remove_isolated_points', False),
             chunk_size=cc_params.get('chunk_size', 25000)
         )
+        cc_res = {
+            'remove_mask': np.zeros(n_points, dtype=bool),
+            'cc_noise_score': np.zeros(n_points, dtype=np.float32)
+        }
+        cc_res['remove_mask'][active_mask] = cc_partial['remove_mask']
+        cc_res['cc_noise_score'][active_mask] = cc_partial['cc_noise_score']
         print(f"CC風ノイズフィルタ完了. (所要時間: {time.time() - t0:.2f}秒)")
     else:
         cc_res = {
@@ -401,7 +493,7 @@ def run_all_filters(points: np.ndarray, params: dict, enabled_filters: set = Non
             'cc_noise_score': np.zeros(n_points, dtype=np.float32)
         }
     
-    # 5. DBSCAN (自動Downsample判定とタイムアウト管理)
+    # 7. DBSCAN (自動Downsample判定とタイムアウト管理)
     dbscan_params = params.get('dbscan', {
         'eps_multiplier': 4.0,
         'min_points': 10,
@@ -411,27 +503,29 @@ def run_all_filters(points: np.ndarray, params: dict, enabled_filters: set = Non
     
     dbscan_mode = 'full'
     dbscan_voxel_size = None
-    dbscan_analysis_count = n_points
+    dbscan_analysis_count = active_count
     dbscan_timeout = False
     
-    if "dbscan" in enabled_filters:
+    if "dbscan" in enabled_filters and active_count > 0:
         print("DBSCAN (クラスタノイズ除去) を実行中...")
         t0 = time.time()
+        points_for_dbscan = active_points
+
         # モード決定
         if mode == 'full':
-            dbscan_mode = decide_dbscan_mode(n_points)
+            dbscan_mode = decide_dbscan_mode(active_count)
         else:
             dbscan_mode = 'downsample'
             
         if dbscan_mode == 'downsample':
             # 自動ダウンサンプルの算出
             target = dbscan_params.get('target_points', 200000)
-            if n_points > target:
-                ratio = n_points / target
+            if active_count > target:
+                ratio = active_count / target
                 dbscan_voxel_size = float(base_spacing * (ratio ** (1.0 / 3.0)))
                 
                 pcd = o3d.geometry.PointCloud()
-                pcd.points = o3d.utility.Vector3dVector(points.astype(np.float64))
+                pcd.points = o3d.utility.Vector3dVector(points_for_dbscan.astype(np.float64))
                 pcd_ds = pcd.voxel_down_sample(dbscan_voxel_size)
                 points_ds = np.asarray(pcd_ds.points).astype(np.float32)
                 dbscan_analysis_count = len(points_ds)
@@ -447,11 +541,13 @@ def run_all_filters(points: np.ndarray, params: dict, enabled_filters: set = Non
                 dbscan_timeout = dbscan_res['timeout']
                 
                 # 元の点数 N に対する結果へ伝播（KDTree 1-NN）
-                if len(points_ds) > 0:
+                if len(points_ds) > 0 and active_count > 0:
                     tree_ds = cKDTree(points_ds)
-                    _, nn_indices = tree_ds.query(points, k=1)
-                    cluster_id = dbscan_res['cluster_id'][nn_indices]
-                    remove_mask_dbscan = dbscan_res['remove_mask'][nn_indices]
+                    _, nn_indices = tree_ds.query(points_for_dbscan, k=1)
+                    cluster_id = np.full(n_points, -1, dtype=np.int32)
+                    remove_mask_dbscan = np.zeros(n_points, dtype=bool)
+                    cluster_id[active_mask] = dbscan_res['cluster_id'][nn_indices]
+                    remove_mask_dbscan[active_mask] = dbscan_res['remove_mask'][nn_indices]
                 else:
                     cluster_id = np.full(n_points, -1, dtype=np.int32)
                     remove_mask_dbscan = np.zeros(n_points, dtype=bool)
@@ -459,26 +555,30 @@ def run_all_filters(points: np.ndarray, params: dict, enabled_filters: set = Non
                 # 点数が目標値以下であればそのままFull実行
                 dbscan_mode = 'full'
                 dbscan_res = compute_dbscan(
-                    points,
+                    points_for_dbscan,
                     base_spacing,
                     eps_multiplier=dbscan_params['eps_multiplier'],
                     min_points=dbscan_params['min_points'],
                     min_cluster_size=dbscan_params['min_cluster_size']
                 )
-                cluster_id = dbscan_res['cluster_id']
-                remove_mask_dbscan = dbscan_res['remove_mask']
+                cluster_id = np.full(n_points, -1, dtype=np.int32)
+                remove_mask_dbscan = np.zeros(n_points, dtype=bool)
+                cluster_id[active_mask] = dbscan_res['cluster_id']
+                remove_mask_dbscan[active_mask] = dbscan_res['remove_mask']
                 dbscan_timeout = dbscan_res['timeout']
         else:
             # Fullモードでの実行
             dbscan_res = compute_dbscan(
-                points,
+                points_for_dbscan,
                 base_spacing,
                 eps_multiplier=dbscan_params['eps_multiplier'],
                 min_points=dbscan_params['min_points'],
                 min_cluster_size=dbscan_params['min_cluster_size']
             )
-            cluster_id = dbscan_res['cluster_id']
-            remove_mask_dbscan = dbscan_res['remove_mask']
+            cluster_id = np.full(n_points, -1, dtype=np.int32)
+            remove_mask_dbscan = np.zeros(n_points, dtype=bool)
+            cluster_id[active_mask] = dbscan_res['cluster_id']
+            remove_mask_dbscan[active_mask] = dbscan_res['remove_mask']
             dbscan_timeout = dbscan_res['timeout']
         print(f"DBSCAN 完了. モード: {dbscan_mode}, 解析点数: {dbscan_analysis_count} (所要時間: {time.time() - t0:.2f}秒)")
     else:
@@ -487,34 +587,50 @@ def run_all_filters(points: np.ndarray, params: dict, enabled_filters: set = Non
         
     # 6. 低密度ノイズ判定マスク (低密度閾値が指定されている場合のみ)
     density_threshold = params.get('density', {}).get('threshold', 0.0)
-    remove_mask_density = (density_res['density_score'] < density_threshold) if "density" in enabled_filters else np.zeros(n_points, dtype=bool)
+    remove_mask_density = np.zeros(n_points, dtype=bool)
+    if "density" in enabled_filters and density_threshold > 0.0:
+        remove_mask_density[active_mask] = density_res['density_score'][active_mask] < density_threshold
     
-    # 7. 全削除マスクのマージ
+    # 8. 候補マスクの整理
+    remove_mask_wh = white_haze_candidate_mask
     remove_mask_sor = sor_res['remove_mask']
     remove_mask_ror = ror_res['remove_mask']
     remove_mask_cc = cc_res['remove_mask']
-    
+
+    # 9. preview は「見える化」用、final は実際に Commit で非表示化する対象
+    preview_mask = remove_mask_wh | remove_mask_sor | remove_mask_ror | remove_mask_cc | remove_mask_dbscan | remove_mask_density
     final_remove_mask = remove_mask_sor | remove_mask_ror | remove_mask_cc | remove_mask_dbscan | remove_mask_density
-    
-    # 8. 原因 (reason) の決定
-    # 優先順位: SOR(1) > ROR(2) > CC_Noise(5) > SmallCluster(4) > LowDensity(3)
+
+    # 10. プレビュー理由 (色分け優先順位: 白モヤを最後に上書きして見えやすくする)
+    preview_reason = np.zeros(n_points, dtype=np.int32)
+    preview_reason[remove_mask_sor] = 1
+    preview_reason[remove_mask_ror] = 2
+    preview_reason[remove_mask_density] = 3
+    preview_reason[remove_mask_dbscan] = 4
+    preview_reason[remove_mask_cc] = 5
+    preview_reason[remove_mask_wh] = 7
+    preview_reason[~preview_mask] = 0
+
+    # 11. 実削除候補の理由
     reason = np.zeros(n_points, dtype=np.int32)
-    reason[remove_mask_density] = 3   # LowDensity
-    reason[remove_mask_dbscan] = 4    # SmallCluster
-    reason[remove_mask_cc] = 5        # CC_Noise (その他/ピンク)
-    reason[remove_mask_ror] = 2       # ROR
-    reason[remove_mask_sor] = 1       # SOR
-    
-    # 非削除点は reason = 0
+    reason[remove_mask_density] = 3
+    reason[remove_mask_dbscan] = 4
+    reason[remove_mask_cc] = 5
+    reason[remove_mask_ror] = 2
+    reason[remove_mask_sor] = 1
     reason[~final_remove_mask] = 0
-    
+
     return {
         'base_spacing': base_spacing,
         'remove_mask': final_remove_mask,
+        'preview_mask': preview_mask,
+        'preview_reason': preview_reason,
+        'white_haze_candidate_mask': remove_mask_wh,
         'sor_score': sor_res['sor_score'],
         'density_score': density_res['density_score'],
         'radius_neighbor_count': ror_res['radius_neighbor_count'],
         'cc_noise_score': cc_res['cc_noise_score'],
+        'white_haze_score': wh_res['white_haze_score'],
         'cluster_id': cluster_id,
         'reason': reason,
         'dbscan_mode': dbscan_mode,
@@ -525,5 +641,7 @@ def run_all_filters(points: np.ndarray, params: dict, enabled_filters: set = Non
         'removed_by_ror_count': int(np.sum(reason == 2)),
         'removed_by_low_density_count': int(np.sum(reason == 3)),
         'removed_by_small_cluster_count': int(np.sum(reason == 4)),
-        'removed_by_cc_noise_count': int(np.sum(reason == 5))
+        'removed_by_cc_noise_count': int(np.sum(reason == 5)),
+        'removed_by_white_haze_count': int(np.sum(remove_mask_wh)),
+        'white_haze_candidate_count': int(np.sum(remove_mask_wh))
     }

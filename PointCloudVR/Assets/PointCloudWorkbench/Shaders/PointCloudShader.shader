@@ -177,11 +177,12 @@ Shader "PointCloudWorkbench/PointCloudShader"
                 }
                 else if (isNoiseCandidate)
                 {
-                    // 削除候補点のノイズ理由別カラーリング (SOR:赤, ROR:橙, 低密度:紫, 小クラスタ:黄, その他:ピンク)
+                    // 削除候補点のノイズ理由別カラーリング (SOR:赤, ROR:橙, 低密度:紫, 小クラスタ:黄, 白モヤ:水色, その他:ピンク)
                     if (noiseReason == 1)      o.color = float4(1.0, 0.12, 0.12, 1.0);
                     else if (noiseReason == 2) o.color = float4(1.0, 0.55, 0.0, 1.0);
                     else if (noiseReason == 3) o.color = float4(0.63, 0.12, 0.9, 1.0);
                     else if (noiseReason == 4) o.color = float4(1.0, 0.86, 0.0, 1.0);
+                    else if (noiseReason == 7) o.color = float4(0.0, 0.85, 1.0, 1.0);
                     else                       o.color = float4(1.0, 0.0, 0.5, 1.0);
                 }
                 else

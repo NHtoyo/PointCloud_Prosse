@@ -108,12 +108,50 @@ Unity上において数千万点規模の大規模な点群データ（PLY形式
 - **ピッキング精度の向上（最短距離ベースの探索）**:
   - `FindClosestPointOnRay` および `FindClosestPointIndexOnRay` にて、カメラからの視線深度（手前の優先）で点を評価するのではなく、**視線レイとの3D最短距離（垂直距離 `distSq`）が最小の点**を優先して選ぶアルゴリズムに刷新。これにより、カーソルで狙った対象を正確にピッキングできるよう大幅に改善。
 - **選択ツール使用時のインテリジェントな中ボタン適用化と操作系統の完全統一**:
-  - アノテーションツール（Brush, Marquee, Lasso, Connect等）がアクティブな時、左クリック・右クリックのカメラ基本操作を阻害しないよう、選択適用トリガーを **マウスホイール押し込み（中ボタン/MouseButton 2）** に変更。
-  - これに伴い、通常時・選択時にかかわらず、カメラ操作およびオブジェクト操作のすべてにおいて、常に **「左ドラッグ ＝ 回転 (Rotate)」、「右ドラッグ ＝ 平行移動 (Pan/パン)」** で統一・固定（修飾キーなしで直接連動）。選択時も操作系統のリダイレクトを一切排除し、完全に同一の操作感を実現。
-- **最大接続制限点数の上限拡張と対数スライダーの導入**:
-  - `PointCloudEditorUI.cs` にて、空間接続探索の上限点数を 200,000 点から 5,000,000 点へ大幅に拡張。
-  - 設定スライダーの値を線形（Linear）から対数（$\log_{10}$ マッピング）に変更。これにより、数千点規模の微細な調整から、500万点規模の広範囲の選択上限設定までを単一のスライダーで直感的かつスムーズに設定できるよう操作性を向上。
-  - 表示値のばらつきを防ぐため、スライダー位置に応じて段階的な丸めロジック（1万点未満は1,000刻み、10万点未満は5,000刻み、100万点未満は5万刻み、100万点以上は10万刻み）を導入。
+  - アノテーションツール（Brush, Marquee, Lasso, Connect等）がアクティブな時、左クリック・右クリックのカメラ基本操作を阻害しないよう、選択適用トリガーを **マウスホイール押し込み（中ボタン/Mo- **空中白モヤ除去フィルタ (White Haze Filter) の実装（デフォルトON）**:
+  - **背景と実装の変遷**:
+    1. **初期の課題**: `rei2.ply` に多数存在する「明るく、低彩度な白〜灰色系の霞（ノイズ）」が幾何フィルタ（SOR等）をすり抜けてしまうため、RGB色情報をベースとした除去フィルタを考案。
+    2. **初期実装のズレ**: 当初は単に White Haze 検出マスクを `removeMask` に OR 結合するだけであったため、「白いだけの点」が幾何学的性質と無関係に強制削除候補となっていました。
+    3. **解決方針（母集団からの除外）**: 「White Haze 候補（白い霞）は、後続の幾何ノイズ除去（SOR/ROR/CC/DBSCAN）の計算において、近傍探索や平面推定の計算結果を狂わせるため、**計算母集団から最初に取り除く**べきである」という仕様に修正。
+    4. **プレビューと Commit の挙動一致**: 計算からは事前に除外するが、最終的には「ユーザーが Commit したときに画面上のノイズ候補（水色も含む）がすべて消去される」挙動にするため、Unity側の `CommitRemoval()` で `previewMask`（水色＋幾何ノイズの全候補）の全点を非表示化するように改修。
+  - **処理フロー図 (backend - `noise_filters.py`)**:
+    ```text
+    [ 入力点群: N点 ]
+           │
+           ├─► compute_white_haze()
+           │     └─► 判定: Brightness >= brightness_min (190.0) 
+           │               && Saturation <= saturation_max (0.20)
+           │     └─► `white_haze_candidate_mask` (水色プレビュー用 / 削除用)
+           │
+           ▼
+    [ active_points の抽出 ]
+           │   ※ `active_mask = ~white_haze_candidate_mask`
+           ▼
+    [ 幾何フィルタの計算 ] (active_points のみを対象に計算)
+           ├─► cKDTree の構築 (active_points のみで作成するため、白モヤが近傍探索を狂わせない)
+           ├─► SOR / ROR / Density
+           ├─► CC (局所平面推定) ──► 白モヤのない綺麗な面で平面を推定
+           └─► DBSCAN (クラスタリング)
+           ▼
+    [ 計算結果の復元 (マッピング) ]
+           │   ※ 抽出した active_points で計算した各スコアを、元の N点 長の配列にマッピング復元
+           │   ※ White Haze 候補点では sor_score=0, cc_score=0, cluster_id=-1, reason=0 となる
+           ▼
+    [ マスクとプレビューの合成 ]
+           ├─► `final_remove_mask` = 幾何フィルタ（SOR | ROR | CC | DBSCAN | Density）の和
+           └─► `preview_mask` = final_remove_mask | white_haze_candidate_mask (白モヤも表示)
+    ```
+  - **Python側 (`noise_filters.py`, `run_noise_filter.py`)**:
+    - `brightness = (R+G+B)/3` と `saturation = (max(R,G,B)-min(R,G,B))/max(R,G,B)` を計算し、`brightness >= brightness_min` かつ `saturation <= saturation_max` の条件で点群を抽出する `compute_white_haze` 関数を実装。
+    - パラメータ `brightness_min` (初期値: 190.0) と `saturation_max` (初期値: 0.20) をコマンドライン引数で制御可能にし、全幾何フィルタの適用前（最優先）で `active_mask` を作り母集団から除外。
+    - `result_writer.py` に `white_haze_score.bin` (float32)、`preview_mask.bin` (uint8)、`preview_reason.bin` (int32) を追記出力。
+  - **C# / Unity側**:
+    - `NoiseFilterResult.cs` に `RemovalReason.WhiteHaze = 7` および `whiteHazeScore`, `previewMask`, `previewReason` などの配列を実装し、バイナリ読込みとC#側データモデルへの転送を実装。
+    - `NoiseFilterUI.cs` にて、白モヤフィルタのトグル（デフォルトON）と輝度・彩度の2つのスライダーUIを追加。
+    - ノイズプレビュー時の凡例 (OnGUI) の高さを 210f に広げ、**空中白モヤ（水色: `(0.0, 0.85, 1.0)`）** の項目を追加。
+    - `PointCloudShader.shader` にて、理由コード `noiseReason == 7` のときにプレビュー色として水色を出力する分岐を追加。
+    - `NoiseFilterManager.cs` の `CommitRemoval` で、`NOISE_CANDIDATE_BIT`（プレビュー候補）が立っているすべての点を `NOISE_HIDDEN_BIT`（確定非表示）にするように変更し、白モヤと幾何ノイズが同時に消去されるように実装。
+��、スライダー位置に応じて段階的な丸めロジック（1万点未満は1,000刻み、10万点未満は5,000刻み、100万点未満は5万刻み、100万点以上は10万刻み）を導入。
 
 ## 設計上の決定事項
 - ビルトインレンダリングパイプラインを使用。
@@ -198,4 +236,29 @@ Unity上において数千万点規模の大規模な点群データ（PLY形式
     - 選択されたモードに連動し、対応するパラメータ設定スライダー（近傍数 `k` または 近傍半径 `radius`、および標準偏差倍率 `Sigma` または 絶対誤差 `Error`）のみを動的表示するように改修。
     - 「近傍不足の孤立点も除去する」オプションをUI上に追加。
 
+- **ノイズ除去プレビュー・確定非表示の不具合調査と修正**:
+  - GPUバッファ（ComputeBuffer）へのラベル書き込みとReadbackテストが成功していることをログから確認。
+  - 頂点シェーダー `PointCloudShader.shader` に一時的に追加されていた強制非表示テスト用コード（`isNoiseHidden = true`）を削除し、本来のビット演算による非表示処理に戻しました。
+  - プレイモードの再起動（停止→再再生）を促し、GPUへのシェーダー適用とマテリアル再生成を確実にするよう案内しました。
+
+- **Pythonプロセスのタイムアウト判定ロジックの改善（無通信タイムアウト化）**:
+  - 500万点規模の「平面推定ノイズ除去」実行時に、処理時間が180秒の固定制限を超えて強制終了してしまう不具合に対処。
+  - プロセス起動時からの単純な時間経過ではなく、標準出力・標準エラーログが最後に出力されてからの時間（無通信時間・Idle Timeout）を監視するように [PythonBridge.cs](file:///E:/VR/PointCloudVR/Assets/PointCloudWorkbench/Scripts/PythonBridge.cs) のタイムアウト判定ロジックを変更。
+  - これにより、ログが更新され処理が進んでいる限りは強制終了されず、ログが完全に途切れてフリーズしたときだけ3分（180秒）で安全に強制終了する堅牢な実装へと改善しました。
+
+- **ノイズプレビュー凡例（レジェンド）の画面左下への表示実装**:
+  - ノイズ除去のプレビュー表示時に、どの色がどのノイズフィルタに対応しているかをユーザーが識別しやすくするため、画面左下にカラー凡例ウィンドウ（インディゴ半透明背景）を OnGUI で描画するよう [NoiseFilterUI.cs](file:///E:/VR/PointCloudVR/Assets/PointCloudWorkbench/Scripts/NoiseFilterUI.cs) に実装。
+  - 各項目（SOR、ROR、低密度、DBSCAN、CC平面推定）に対応するカラーボックス（テクスチャ着色）と、視認性の高い大きめのテキスト（フォントサイズ 14px 太字）をレイアウト。プレビュー中（`IsPreviewActive`）のみ動的に表示される設計としました。
+
+- **空中白モヤ除去フィルタ (White Haze Filter) の実装（デフォルトON）**:
+  - **背景**: `rei2.ply` に多数存在する「明るく、低彩度な白〜灰色系のノイズ点（霞）」に対応するため、既存の幾何学的フィルタ（SOR/ROR/CC/DBSCAN）に加え、色情報をベースとした除去フィルタを追加。
+  - **Python側 (`noise_filters.py`, `run_noise_filter.py`)**: 
+    - `brightness = (R+G+B)/3` と `saturation = (max(R,G,B)-min(R,G,B))/max(R,G,B)` を計算し、`brightness >= brightness_min` かつ `saturation <= saturation_max` の条件で点群を抽出する `compute_white_haze` 関数を実装。
+    - パラメータ `brightness_min` (初期値: 190) と `saturation_max` (初期値: 0.20) をコマンドライン引数で制御可能にし、全フィルタの適用前（最優先）でフィルタ処理するように実装。除去理由 (reason) コードに `7` を割り当て。
+    - `result_writer.py` に `white_haze_score.bin` (float32) を追記出力。
+  - **C# / Unity側**:
+    - `NoiseFilterResult.cs` に `RemovalReason.WhiteHaze = 7` および `whiteHazeScore` を追加し、バイナリ読込みとC#側データモデルへの転送を実装。
+    - `NoiseFilterUI.cs` にて、白モヤフィルタのトグル（デフォルトON）と輝度・彩度の2つのスライダーUIを追加。
+    - ノイズプレビュー時の凡例 (OnGUI) の高さを 210f に広げ、**空中白モヤ（水色: `(0.0, 0.85, 1.0)`）** の項目を追加。
+    - `PointCloudShader.shader` にて、理由コード `noiseReason == 7` のときにプレビュー色として水色を出力する分岐を追加。
 

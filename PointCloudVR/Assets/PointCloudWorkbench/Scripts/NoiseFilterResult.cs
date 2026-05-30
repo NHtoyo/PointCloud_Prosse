@@ -13,7 +13,8 @@ namespace PointCloudWorkbench
         LowDensity = 3,
         SmallCluster = 4,
         CC_Noise = 5,
-        Manual = 6
+        Manual = 6,
+        WhiteHaze = 7
     }
 
     /// <summary>
@@ -25,6 +26,16 @@ namespace PointCloudWorkbench
         /// 点群の総点数
         /// </summary>
         public int pointCount { get; private set; }
+
+        /// <summary>
+        /// プレビュー表示用マスク (1 = 候補色表示, 0 = 通常表示)
+        /// </summary>
+        public byte[] previewMask { get; private set; }
+
+        /// <summary>
+        /// White Haze の独立候補マスク
+        /// </summary>
+        public byte[] whiteHazeCandidateMask { get; private set; }
 
         /// <summary>
         /// 削除候補マスク (1 = 削除候補, 0 = 残存)
@@ -52,9 +63,19 @@ namespace PointCloudWorkbench
         public float[] ccNoiseScore { get; private set; }
 
         /// <summary>
+        /// White Haze 輝度・彩度ノイズスコア配列
+        /// </summary>
+        public float[] whiteHazeScore { get; private set; }
+
+        /// <summary>
         /// DBSCANによるクラスタID配列 (-1はノイズ)
         /// </summary>
         public int[] clusterId { get; private set; }
+
+        /// <summary>
+        /// プレビュー表示時の理由インデックス配列 (RemovalReasonに対応)
+        /// </summary>
+        public int[] previewReason { get; private set; }
 
         /// <summary>
         /// 削除理由のインデックス配列 (RemovalReasonに対応)
@@ -64,24 +85,32 @@ namespace PointCloudWorkbench
         public NoiseFilterResult(int count)
         {
             pointCount = count;
+            previewMask = new byte[count];
+            whiteHazeCandidateMask = new byte[count];
             removeMask = new byte[count];
             sorScore = new float[count];
             densityScore = new float[count];
             radiusNeighborCount = new int[count];
             ccNoiseScore = new float[count];
+            whiteHazeScore = new float[count];
             clusterId = new int[count];
+            previewReason = new int[count];
             reason = new int[count];
         }
 
-        public NoiseFilterResult(int count, byte[] mask, float[] sor, float[] density, int[] ror, float[] cc, int[] clusters, int[] reasons)
+        public NoiseFilterResult(int count, byte[] preview, byte[] whiteHazeCandidates, byte[] mask, float[] sor, float[] density, int[] ror, float[] cc, float[] wh, int[] clusters, int[] previewReasons, int[] reasons)
         {
             pointCount = count;
+            previewMask = preview;
+            whiteHazeCandidateMask = whiteHazeCandidates;
             removeMask = mask;
             sorScore = sor;
             densityScore = density;
             radiusNeighborCount = ror;
             ccNoiseScore = cc;
+            whiteHazeScore = wh;
             clusterId = clusters;
+            previewReason = previewReasons;
             reason = reasons;
         }
     }

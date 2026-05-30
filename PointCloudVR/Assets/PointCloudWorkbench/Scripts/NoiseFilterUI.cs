@@ -11,6 +11,11 @@ namespace PointCloudWorkbench
     public class NoiseFilterUI : MonoBehaviour
     {
         private PointCloudEditor editor;
+        
+        // White Haze (白モヤ除去) パラメータ
+        public bool runWhiteHaze = true; // デフォルトON
+        public float whBrightness = 190.0f;
+        public float whSaturation = 0.20f;
 
         // SOR (統計的ノイズ除去) パラメータ
         public bool runSor = true;
@@ -21,6 +26,11 @@ namespace PointCloudWorkbench
         public bool runRor = false; // デフォルトOFF（補助扱い）
         public float rorMul = 3.0f;
         public int rorMin = 8;
+
+        // 低密度フィルタ
+        public bool runDensity = false;
+        public int densityK = 8;
+        public float densityThreshold = 0.0f;
 
         // CC (局所平面推定ノイズ除去) パラメータ
         public bool runCc = true; // デフォルトON（主役）
@@ -108,6 +118,24 @@ namespace PointCloudWorkbench
             {
                 GUILayout.Label($"  ボクセルサイズ: {voxelSize:F4} m", textStyle);
                 voxelSize = GUILayout.HorizontalSlider(voxelSize, 0.001f, 0.02f);
+            }
+            GUILayout.Space(5);
+
+            // --- 1.5. White Haze (白モヤ除去 - デフォルトON) ---
+            runWhiteHaze = GUILayout.Toggle(runWhiteHaze, " 空中白モヤ除去 (White Haze) を有効化", toggleStyle);
+            if (runWhiteHaze)
+            {
+                GUILayout.Label($"    最小輝度 (Brightness >=): {whBrightness:F1}", textStyle);
+                whBrightness = GUILayout.HorizontalSlider(whBrightness, 100.0f, 255.0f);
+
+                GUILayout.Label($"    最大彩度 (Saturation <=): {whSaturation:F2}", textStyle);
+                whSaturation = GUILayout.HorizontalSlider(whSaturation, 0.01f, 1.0f);
+
+                GUILayout.Space(3);
+                var prevColor = GUI.contentColor;
+                GUI.contentColor = new Color(0.65f, 0.9f, 1.0f);
+                GUILayout.Label("    白モヤ候補は水色でプレビューされ、後続の SOR / ROR / 低密度 / CC / DBSCAN の計算対象から除外されます。", textStyle);
+                GUI.contentColor = prevColor;
             }
             GUILayout.Space(5);
 
@@ -201,6 +229,18 @@ namespace PointCloudWorkbench
 
                 GUILayout.Label($"    最小隣接点数 (MinNeighbors): {rorMin}", textStyle);
                 rorMin = Mathf.RoundToInt(GUILayout.HorizontalSlider(rorMin, 1f, 30f));
+            }
+            GUILayout.Space(5);
+
+            // --- 4.5. 低密度フィルタ ---
+            runDensity = GUILayout.Toggle(runDensity, " 低密度ノイズ判定を有効化", toggleStyle);
+            if (runDensity)
+            {
+                GUILayout.Label($"    近傍点数 (Density k): {densityK}", textStyle);
+                densityK = Mathf.RoundToInt(GUILayout.HorizontalSlider(densityK, 3f, 32f));
+
+                GUILayout.Label($"    低密度閾値: {densityThreshold:F4}", textStyle);
+                densityThreshold = GUILayout.HorizontalSlider(densityThreshold, 0.0f, 100.0f);
             }
             GUILayout.Space(5);
 
@@ -305,8 +345,10 @@ namespace PointCloudWorkbench
                         voxelSize,
                         runSor, sorNb, sorStd,
                         runRor, rorMul, rorMin,
+                        runDensity, densityK, densityThreshold,
                         runCc, ccK, ccSigma, ccError, ccUseKnn, ccRadius, ccRemoveIsolated, ccUseRelative,
                         runDbscan, dbscanEps, dbscanMin, dbscanCluster, dbscanTarget,
+                        runWhiteHaze, whBrightness, whSaturation,
                         token
                     );
 
@@ -327,6 +369,100 @@ namespace PointCloudWorkbench
                     filterFailedFlag = true;
                 }
             });
+        }
+
+        // 凡例表示用スタイルのキャッシュ
+        private Texture2D legendBgTexture;
+        private Texture2D colorTexture;
+        private GUIStyle legendStyle;
+        private GUIStyle legendTitleStyle;
+        private GUIStyle legendTextStyle;
+        private bool legendStylesInitialized = false;
+
+        private void InitializeLegendStyles()
+        {
+            if (legendStylesInitialized) return;
+
+            legendBgTexture = new Texture2D(1, 1);
+            legendBgTexture.SetPixel(0, 0, new Color(0.12f, 0.12f, 0.16f, 0.85f)); // ダークインディゴ半透明
+            legendBgTexture.Apply();
+
+            colorTexture = new Texture2D(1, 1);
+            colorTexture.SetPixel(0, 0, Color.white);
+            colorTexture.Apply();
+
+            legendStyle = new GUIStyle(GUI.skin.box);
+            legendStyle.normal.background = legendBgTexture;
+            legendStyle.padding = new RectOffset(15, 15, 15, 15);
+
+            legendTitleStyle = new GUIStyle(GUI.skin.label);
+            legendTitleStyle.fontSize = 16;
+            legendTitleStyle.fontStyle = FontStyle.Bold;
+            legendTitleStyle.normal.textColor = Color.white;
+            legendTitleStyle.alignment = TextAnchor.MiddleLeft;
+
+            legendTextStyle = new GUIStyle(GUI.skin.label);
+            legendTextStyle.fontSize = 14;
+            legendTextStyle.fontStyle = FontStyle.Bold;
+            legendTextStyle.normal.textColor = new Color(0.9f, 0.9f, 0.9f);
+            legendTextStyle.alignment = TextAnchor.MiddleLeft;
+
+            legendStylesInitialized = true;
+        }
+
+        void OnGUI()
+        {
+            // ノイズプレビューが有効なときのみ表示
+            if (NoiseFilterManager.Instance == null || !NoiseFilterManager.Instance.IsPreviewActive)
+            {
+                return;
+            }
+
+            InitializeLegendStyles();
+
+            // 画面左下に配置する（十分な大きさにする、凡例1つ増えたため高さを210fに拡張）
+            float width = 340f;
+            float height = 210f;
+            float posX = 20f;
+            float posY = Screen.height - height - 20f;
+
+            GUILayout.BeginArea(new Rect(posX, posY, width, height), legendStyle);
+
+            GUILayout.Label("🧹 除去対象ノイズ凡例 (プレビュー)", legendTitleStyle);
+            GUILayout.Space(8);
+
+            DrawLegendItem(new Color(0.0f, 0.85f, 1.0f, 1.0f), "空中白モヤ (White Haze)：水色");
+            DrawLegendItem(new Color(1.0f, 0.12f, 0.12f, 1.0f), "SOR (統計的ノイズ除去)：赤");
+            DrawLegendItem(new Color(1.0f, 0.55f, 0.0f, 1.0f), "ROR (半径外れ値除去)：橙");
+            DrawLegendItem(new Color(0.63f, 0.12f, 0.9f, 1.0f), "低密度ノイズ除去：紫");
+            DrawLegendItem(new Color(1.0f, 0.86f, 0.0f, 1.0f), "クラスタノイズ (DBSCAN)：黄");
+            DrawLegendItem(new Color(1.0f, 0.0f, 0.5f, 1.0f), "平面推定 (CC風)ノイズ：ピンク");
+
+            GUILayout.EndArea();
+        }
+
+        private void DrawLegendItem(Color color, string label)
+        {
+            GUILayout.BeginHorizontal();
+            
+            // 色を示す四角形を描画
+            Rect rect = GUILayoutUtility.GetRect(16, 16, GUILayout.Width(16), GUILayout.Height(16));
+            Color oldColor = GUI.color;
+            GUI.color = color;
+            GUI.DrawTexture(rect, colorTexture);
+            GUI.color = oldColor;
+
+            GUILayout.Space(10);
+            GUILayout.Label(label, legendTextStyle);
+            
+            GUILayout.EndHorizontal();
+            GUILayout.Space(3);
+        }
+
+        void OnDestroy()
+        {
+            if (legendBgTexture != null) Destroy(legendBgTexture);
+            if (colorTexture != null) Destroy(colorTexture);
         }
     }
 }

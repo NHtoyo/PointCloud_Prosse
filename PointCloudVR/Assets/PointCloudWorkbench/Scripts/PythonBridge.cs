@@ -64,8 +64,10 @@ namespace PointCloudWorkbench
             float? voxelSize,
             bool runSor, int sorNb, float sorStd,
             bool runRor, float rorMul, int rorMin,
+            bool runDensity, int densityK, float densityThreshold,
             bool runCc, int ccK, float ccSigma, float ccError, bool ccUseKnn, float ccRadius, bool ccRemoveIsolated, bool ccUseRelative,
             bool runDbscan, float dbscanEps, int dbscanMin, int dbscanCluster, int dbscanTarget,
+            bool runWhiteHaze, float whBrightness, float whSaturation,
             CancellationToken cancellationToken = default)
         {
             string pythonPath = GetPythonPath();
@@ -95,8 +97,10 @@ namespace PointCloudWorkbench
             System.Collections.Generic.List<string> filters = new System.Collections.Generic.List<string>();
             if (runSor) filters.Add("sor");
             if (runRor) filters.Add("ror");
+            if (runDensity) filters.Add("density");
             if (runCc) filters.Add("cc_noise");
             if (runDbscan) filters.Add("dbscan");
+            if (runWhiteHaze) filters.Add("white_haze");
 
             if (filters.Count > 0)
             {
@@ -112,6 +116,8 @@ namespace PointCloudWorkbench
             argsBuilder.Append($" --sor_std {sorStd.ToString(System.Globalization.CultureInfo.InvariantCulture)}");
             argsBuilder.Append($" --ror_mul {rorMul.ToString(System.Globalization.CultureInfo.InvariantCulture)}");
             argsBuilder.Append($" --ror_min {rorMin}");
+            argsBuilder.Append($" --density_k {densityK}");
+            argsBuilder.Append($" --density_thresh {densityThreshold.ToString(System.Globalization.CultureInfo.InvariantCulture)}");
             argsBuilder.Append($" --cc_k {ccK}");
             argsBuilder.Append($" --cc_sigma {ccSigma.ToString(System.Globalization.CultureInfo.InvariantCulture)}");
             argsBuilder.Append($" --cc_error {ccError.ToString(System.Globalization.CultureInfo.InvariantCulture)}");
@@ -123,6 +129,8 @@ namespace PointCloudWorkbench
             argsBuilder.Append($" --dbscan_min {dbscanMin}");
             argsBuilder.Append($" --dbscan_cluster {dbscanCluster}");
             argsBuilder.Append($" --dbscan_target {dbscanTarget}");
+            argsBuilder.Append($" --wh_brightness {whBrightness.ToString(System.Globalization.CultureInfo.InvariantCulture)}");
+            argsBuilder.Append($" --wh_saturation {whSaturation.ToString(System.Globalization.CultureInfo.InvariantCulture)}");
 
             ProcessStartInfo psi = new ProcessStartInfo
             {
@@ -145,11 +153,15 @@ namespace PointCloudWorkbench
                 StringBuilder outputLog = new StringBuilder();
                 StringBuilder errorLog = new StringBuilder();
 
+                // 最後のログ通信日時（初期値はUTCの現在のTick数）
+                long lastActivityTicks = System.DateTime.UtcNow.Ticks;
+
                 // 出力を非同期で読み出し、進捗ステータスを更新する
                 process.OutputDataReceived += (sender, e) =>
                 {
                     if (e.Data != null)
                     {
+                        System.Threading.Interlocked.Exchange(ref lastActivityTicks, System.DateTime.UtcNow.Ticks);
                         outputLog.AppendLine(e.Data);
                         UnityEngine.Debug.Log($"[Python Out] {e.Data}");
                         
@@ -177,6 +189,7 @@ namespace PointCloudWorkbench
                 {
                     if (e.Data != null)
                     {
+                        System.Threading.Interlocked.Exchange(ref lastActivityTicks, System.DateTime.UtcNow.Ticks);
                         errorLog.AppendLine(e.Data);
                         UnityEngine.Debug.LogError($"[Python Err] {e.Data}");
                     }
@@ -190,9 +203,8 @@ namespace PointCloudWorkbench
                 process.BeginOutputReadLine();
                 process.BeginErrorReadLine();
 
-                // プロセス終了を非同期で監視し、キャンセル・タイムアウトも検知
-                System.DateTime startTime = System.DateTime.Now;
-                const int timeoutSeconds = 180; // 3分タイムアウト
+                // プロセス終了を非同期で監視し、キャンセル・無通信タイムアウトも検知
+                const int timeoutSeconds = 180; // 3分無通信タイムアウト
 
                 while (!process.HasExited)
                 {
@@ -210,19 +222,22 @@ namespace PointCloudWorkbench
                         throw new OperationCanceledException(cancellationToken);
                     }
 
-                    // タイムアウト検知
-                    if ((System.DateTime.Now - startTime).TotalSeconds > timeoutSeconds)
+                    // 無通信タイムアウト検知（最後のログから180秒経過）
+                    long lastTicks = System.Threading.Interlocked.Read(ref lastActivityTicks);
+                    double idleSeconds = (System.DateTime.UtcNow.Ticks - lastTicks) / (double)System.TimeSpan.TicksPerSecond;
+
+                    if (idleSeconds > timeoutSeconds)
                     {
                         try
                         {
                             process.Kill();
-                            UnityEngine.Debug.LogError($"[PythonBridge] Pythonプロセスがタイムアウト時間 ({timeoutSeconds}秒) を超過したため、強制終了しました。");
+                            UnityEngine.Debug.LogError($"[PythonBridge] Pythonプロセスが {timeoutSeconds}秒 間応答しなかった（ログが出力されなかった）ため、強制終了しました。");
                         }
                         catch (Exception ex)
                         {
                             UnityEngine.Debug.LogError($"[PythonBridge] タイムアウト強制終了エラー: {ex.Message}");
                         }
-                        throw new TimeoutException($"Pythonノイズフィルタの処理が {timeoutSeconds}秒 以上応答しなかったため、タイムアウトしました。\n[出力ログ]\n{outputLog.ToString()}\n[エラーログ]\n{errorLog.ToString()}");
+                        throw new TimeoutException($"Pythonノイズフィルタの処理が {timeoutSeconds}秒 間ログを出力せず応答しなかったため、タイムアウトしました。\n[出力ログ]\n{outputLog.ToString()}\n[エラーログ]\n{errorLog.ToString()}");
                     }
 
                     // 100msウェイト
@@ -258,15 +273,19 @@ namespace PointCloudWorkbench
             int count = meta.point_count;
 
             // 各種バイナリファイルを高速ロード
+            byte[] previewMask = LoadBinaryBytes(Path.Combine(outputDir, "preview_mask.bin"), count);
+            byte[] whiteHazeCandidateMask = LoadBinaryBytes(Path.Combine(outputDir, "white_haze_candidate_mask.bin"), count);
             byte[] removeMask = LoadBinaryBytes(Path.Combine(outputDir, "remove_mask.bin"), count);
             float[] sorScore = LoadBinaryFloats(Path.Combine(outputDir, "sor_score.bin"), count);
             float[] densityScore = LoadBinaryFloats(Path.Combine(outputDir, "density_score.bin"), count);
             int[] radiusNeighbor = LoadBinaryInts(Path.Combine(outputDir, "radius_neighbor_count.bin"), count);
             float[] ccNoiseScore = LoadBinaryFloats(Path.Combine(outputDir, "cc_noise_score.bin"), count);
+            float[] whiteHazeScore = LoadBinaryFloats(Path.Combine(outputDir, "white_haze_score.bin"), count);
             int[] clusterId = LoadBinaryInts(Path.Combine(outputDir, "cluster_id.bin"), count);
+            int[] previewReason = LoadBinaryInts(Path.Combine(outputDir, "preview_reason.bin"), count);
             int[] reason = LoadBinaryInts(Path.Combine(outputDir, "reason.bin"), count);
 
-            return new NoiseFilterResult(count, removeMask, sorScore, densityScore, radiusNeighbor, ccNoiseScore, clusterId, reason);
+            return new NoiseFilterResult(count, previewMask, whiteHazeCandidateMask, removeMask, sorScore, densityScore, radiusNeighbor, ccNoiseScore, whiteHazeScore, clusterId, previewReason, reason);
         }
 
         private static byte[] LoadBinaryBytes(string path, int expectedCount)

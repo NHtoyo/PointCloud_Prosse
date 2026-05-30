@@ -85,19 +85,21 @@ public class PointCloudRenderer : MonoBehaviour
             Debug.Log($"[PointCloudRenderer] Upgraded legacy point size to pixel-based default (2.0px).");
         }
 
-        if (pointShader == null)
+        // Force resolution of the shader by name to bypass any stale serialized shader references in Inspector
+        var resolvedShader = Shader.Find("PointCloudWorkbench/PointCloudShader");
+        if (resolvedShader != null)
         {
-            pointShader = Shader.Find("PointCloudWorkbench/PointCloudShader");
-            if (pointShader == null)
-            {
-                Debug.LogError("[PointCloudRenderer] PointCloudShader not found! Add it to Always Included Shaders in Graphics Settings.");
-                return;
-            }
+            pointShader = resolvedShader;
+        }
+        else if (pointShader == null)
+        {
+            Debug.LogError("[PointCloudRenderer] PointCloudShader not found! Add it to Always Included Shaders in Graphics Settings.");
+            return;
         }
 
         pointMaterial = new Material(pointShader);
         isInitialized = true;
-        Debug.Log("[PointCloudRenderer] Initialized with shader: " + pointShader.name);
+        Debug.Log("[PointCloudRenderer] Initialized with shader: " + pointShader.name + " (Instance ID: " + pointShader.GetInstanceID() + ")");
     }
 
     // Set dynamic points from standard positions and colors (used by PointCloudLoader)
@@ -291,6 +293,43 @@ public class PointCloudRenderer : MonoBehaviour
         if (pointBuffer != null && pointData != null)
         {
             pointBuffer.SetData(pointData);
+
+            // DEBUG CHECK
+            int nonZeroCount = 0;
+            int candidateCount = 0;
+            int hiddenCount = 0;
+            for (int i = 0; i < pointData.Length; i++)
+            {
+                if (pointData[i].label != 0)
+                {
+                    nonZeroCount++;
+                    if ((pointData[i].label & NoiseFilterManager.NOISE_CANDIDATE_BIT) != 0) candidateCount++;
+                    if ((pointData[i].label & NoiseFilterManager.NOISE_HIDDEN_BIT) != 0) hiddenCount++;
+                }
+            }
+            Debug.Log($"[PointCloudRenderer] UpdatePointBuffer executed. Total points: {pointData.Length}, Non-zero label points: {nonZeroCount}, Candidates: {candidateCount}, Hidden: {hiddenCount}");
+
+            // Verify GPU buffer by reading back first few points
+            try
+            {
+                int testLength = Mathf.Min(100, pointData.Length);
+                PointData[] readBack = new PointData[testLength];
+                pointBuffer.GetData(readBack, 0, 0, testLength);
+                int gpuNonZeroCount = 0;
+                for (int i = 0; i < testLength; i++)
+                {
+                    if (readBack[i].label != 0) gpuNonZeroCount++;
+                }
+                Debug.Log($"[PointCloudRenderer] GPU Buffer Readback Test: First {testLength} points have {gpuNonZeroCount} non-zero labels. (C# original non-zero in same range: {gpuNonZeroCount})");
+            }
+            catch (System.Exception ex)
+            {
+                Debug.LogError($"[PointCloudRenderer] Failed to read back GPU buffer: {ex.Message}");
+            }
+        }
+        else
+        {
+            Debug.LogWarning($"[PointCloudRenderer] UpdatePointBuffer skipped: pointBuffer is null = {pointBuffer == null}, pointData is null = {pointData == null}");
         }
     }
 

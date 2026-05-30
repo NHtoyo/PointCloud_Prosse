@@ -66,10 +66,10 @@ namespace PointCloudWorkbench
             // プレビュービット（CANDIDATE）と理由コード（REASON）を設定
             for (int i = 0; i < points.Length; i++)
             {
-                if (currentResult.removeMask[i] != 0)
+                if (currentResult.previewMask[i] != 0)
                 {
                     points[i].label |= NOISE_CANDIDATE_BIT;
-                    int reasonVal = currentResult.reason[i];
+                    int reasonVal = currentResult.previewReason[i];
                     points[i].label = (points[i].label & ~NOISE_REASON_MASK) | ((reasonVal << NOISE_REASON_SHIFT) & NOISE_REASON_MASK);
                 }
                 else
@@ -117,7 +117,9 @@ namespace PointCloudWorkbench
             PushToUndo(points);
             redoStack.Clear(); // 新規変更時はRedoをリセット
 
-            // プレビュー点（CANDIDATE）を非表示確定（HIDDEN）に変換
+            // プレビュー点はすべて非表示確定（HIDDEN）に変換
+            // White Haze のように後続計算から除外するだけの候補も、
+            // ユーザーが Commit した時点で「削除対象として確定した」とみなして隠す。
             for (int i = 0; i < points.Length; i++)
             {
                 if ((points[i].label & NOISE_CANDIDATE_BIT) != 0)
