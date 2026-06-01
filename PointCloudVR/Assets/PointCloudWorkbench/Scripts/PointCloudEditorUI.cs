@@ -166,10 +166,9 @@ public class PointCloudEditorUI : MonoBehaviour
         float mouseX = Input.mousePosition.x;
         float mouseY = Input.mousePosition.y;
         
-        // Pipeline bar: X=20〜(Screen.width-20), Y=5〜225 (TOP_H=130 + PARAM_H=90)
-        // Pipeline bar: X=480〜(Screen.width-430), Y=15〜235 (TOP_H=130 + PARAM_H=90)
+        // Pipeline bar: X=480〜(Screen.width-430), Y=15〜315 (TOP_H=160 + PARAM_H=140 = 300)
         bool overPipelineBar = (mouseX >= 480f && mouseX <= Screen.width - 430f
-                             && mouseY >= Screen.height - 235f && mouseY <= Screen.height - 15f);
+                             && mouseY >= Screen.height - 315f && mouseY <= Screen.height - 15f);
         
         // Shipped panel bounds
         bool overLeftUI = (mouseX >= 10f && mouseX <= 490f && mouseY >= (Screen.height - 930f) && mouseY <= (Screen.height - 20f));

@@ -39,9 +39,9 @@ namespace PointCloudWorkbench
         private const float BAR_X      = 480f;     // 左パネル(450) + 余白(30)
         private const float BAR_Y      = 15f;
         private const float RIGHT_W    = 400f;     // 右パネル幅
-        private const float PAL_W      = 165f;     // パレット列幅 (文字拡大に合わせて少し広げる)
-        private const float TOP_H      = 130f;     // 上段高さ(パレット+レーン)
-        private const float PARAM_H    = 90f;      // 下段高さ(パラメータ)
+        private const float PAL_W      = 175f;     // パレット列幅 (文字拡大に合わせて広げる)
+        private const float TOP_H      = 160f;     // 上段高さ(パレット+レーン) (130->160へ拡大)
+        private const float PARAM_H    = 140f;     // 下段高さ(パラメータ) (90->140へ拡大)
 
         private static readonly string[] AvailableTypes =
             { "white_haze", "cc_noise", "sor", "ror", "density", "dbscan" };
@@ -155,6 +155,13 @@ namespace PointCloudWorkbench
             // ドラッグゴースト / コンテキストメニュー
             DrawDragGhost();
             DrawContextMenu();
+
+            // このUIバーの外部をクリックした際にブロック選択を解除する
+            var ev = Event.current;
+            if (ev.type == EventType.MouseDown && !bar.Contains(ev.mousePosition))
+            {
+                selectedBlockIndex = -1;
+            }
         }
 
         // =========================================================
@@ -165,11 +172,11 @@ namespace PointCloudWorkbench
             float px   = bar.x + 5f;
             float py   = bar.y + 4f;
             float bW   = PAL_W - 8f;
-            float titleH = 16f;
+            float titleH = 22f; // タイトル高さを文字拡大に合わせて少し広げる
             // ボタン高さ: 上段高さから title と余白を引いてボタン数で割る
-            float usable = TOP_H - titleH - 6f - (AvailableTypes.Length - 1) * 2f;
+            float usable = TOP_H - titleH - 8f - (AvailableTypes.Length - 1) * 3f;
             float bH = Mathf.Floor(usable / AvailableTypes.Length);
-            bH = Mathf.Clamp(bH, 14f, 22f);
+            bH = Mathf.Clamp(bH, 18f, 32f); // パレットボタンの高さ制限を拡大 (14-22 -> 18-32)
 
             GUI.Label(new Rect(px, py, bW, titleH), "パレット", titleStyle);
             py += titleH + 2f;
@@ -204,43 +211,44 @@ namespace PointCloudWorkbench
         private void DrawLane(Rect bar)
         {
             const float p      = 5f;
-            const float titleH = 16f;
-            const float btnW   = 68f;
-            const float modeW  = 100f;
+            const float titleH = 22f; // タイトル高さを文字拡大に合わせる
+            const float btnW   = 85f;  // ボタン幅を文字拡大に合わせる
+            const float modeW  = 120f; // モード選択ボタンの幅を広げる
 
-            float lx   = bar.x + PAL_W + 3f;
+            float lx   = bar.x + PAL_W + 6f;
             float btnX = bar.x + bar.width - p - btnW;
-            float modeX = btnX - 4f - modeW;
+            float modeX = btnX - 6f - modeW;
 
             // タイトル
-            GUI.Label(new Rect(lx, bar.y + p, modeX - lx - 4, titleH),
+            GUI.Label(new Rect(lx, bar.y + p + 2f, modeX - lx - 4, titleH),
                 "順次実行レーン  (パレット D&D で追加 / ブロック D&D で並べ替え)", titleStyle);
 
-            // モードボタン
+            // モードボタン (高さ 28f に拡大してフォントに合わせる)
             if (noiseFilterUI.Params != null)
             {
                 bool isFull = noiseFilterUI.Params.processMode == "full";
-                if (GUI.Button(new Rect(modeX, bar.y + p - 1f, modeW, 18f), isFull ? "全体適用" : "ダウンサンプル"))
+                if (GUI.Button(new Rect(modeX, bar.y + p, modeW, 28f), isFull ? "全体適用" : "ダウンサンプル", activeBlockStyle))
                     noiseFilterUI.Params.processMode = isFull ? "downsample" : "full";
             }
-            // 実行ボタン
-            if (GUI.Button(new Rect(btnX, bar.y + p - 1f, btnW, 18f), "▶ 実行", activeBlockStyle))
+            // 実行ボタン (高さ 28f に拡大してフォントに合わせる)
+            if (GUI.Button(new Rect(btnX, bar.y + p, btnW, 28f), "▶ 実行", activeBlockStyle))
                 noiseFilterUI.RunNoiseFilterAnalysis();
 
             // レーン背景
-            float laneY = bar.y + p + titleH + 3f;
+            float laneY = bar.y + p + titleH + 6f;
             float laneH = bar.y + TOP_H - laneY - p;
-            float laneW = modeX - 3f - lx;
+            float laneW = btnX + btnW - lx; // 右端までレーンを伸ばす
             Rect lane = new Rect(lx, laneY, laneW, laneH);
             GUI.Box(lane, "", GUI.skin.textField);
 
             EnsurePipeline();
             var pl = noiseFilterUI.Params.customPipeline;
 
-            const float bW       = 100f;
-            const float bSpacing = 16f;
+            // ブロックサイズを大きくして文字潰れを防ぐ
+            const float bW       = 130f; // ブロック幅を 100 -> 130f に拡張
+            const float bSpacing = 22f;  // 間隔を 16 -> 22f に拡張
             float sx = lane.x + 5f;
-            float bH = Mathf.Min(32f, lane.height - 6f);
+            float bH = Mathf.Min(50f, lane.height - 10f); // ブロック高さを 32 -> 50f に拡張
             float sy = lane.y + (lane.height - bH) / 2f;
 
             bool clickedBlock = false;
@@ -251,9 +259,9 @@ namespace PointCloudWorkbench
                 float bx = sx + i * (bW + bSpacing);
 
                 // レーン右端を超えたら "…" を出して打ち切り
-                if (bx + bW > lane.x + lane.width - 14f)
+                if (bx + bW > lane.x + lane.width - 16f)
                 {
-                    GUI.Label(new Rect(lane.x + lane.width - 13f, sy + (bH - 14f) / 2f, 12f, 14f), "…", titleStyle);
+                    GUI.Label(new Rect(lane.x + lane.width - 15f, sy + (bH - 18f) / 2f, 15f, 18f), "…", titleStyle);
                     break;
                 }
 
@@ -265,9 +273,9 @@ namespace PointCloudWorkbench
 
                 // 矢印（次ブロックが収まる場合のみ表示）
                 bool nextFits = i < pl.Count - 1 &&
-                                bx + bW + bSpacing + bW <= lane.x + lane.width - 14f;
+                                bx + bW + bSpacing + bW <= lane.x + lane.width - 16f;
                 if (nextFits)
-                    GUI.Label(new Rect(bx + bW + 2f, sy + (bH - 14f) / 2f, 12f, 14f), "▶", titleStyle);
+                    GUI.Label(new Rect(bx + bW + 4f, sy + (bH - 18f) / 2f, 14f, 18f), "▶", titleStyle);
 
                 // クリック / 右クリック / D&D 開始
                 if (ev.type == EventType.MouseDown && br.Contains(ev.mousePosition))
@@ -443,14 +451,14 @@ namespace PointCloudWorkbench
         // =========================================================
         private float Slider(float x, float y, float lw, float sw, string lbl, float val, float mn, float mx)
         {
-            GUI.Label(new Rect(x, y, lw, 20f), lbl, labelStyle);
-            return GUI.HorizontalSlider(new Rect(x + lw + 2f, y + 4f, sw, 14f), val, mn, mx);
+            GUI.Label(new Rect(x, y, lw, 24f), lbl, labelStyle);
+            return GUI.HorizontalSlider(new Rect(x + lw + 2f, y + 6f, sw, 16f), val, mn, mx);
         }
 
         private int SliderInt(float x, float y, float lw, float sw, string lbl, int val, int mn, int mx)
         {
-            GUI.Label(new Rect(x, y, lw, 20f), lbl, labelStyle);
-            return Mathf.RoundToInt(GUI.HorizontalSlider(new Rect(x + lw + 2f, y + 4f, sw, 14f), val, mn, mx));
+            GUI.Label(new Rect(x, y, lw, 24f), lbl, labelStyle);
+            return Mathf.RoundToInt(GUI.HorizontalSlider(new Rect(x + lw + 2f, y + 6f, sw, 16f), val, mn, mx));
         }
 
         // =========================================================
@@ -460,7 +468,7 @@ namespace PointCloudWorkbench
         {
             if (draggingBlockType == null) return;
             var mp = Event.current.mousePosition;
-            Rect gr = new Rect(mp.x - dragMouseOffset.x, mp.y - dragMouseOffset.y, 100f, 30f);
+            Rect gr = new Rect(mp.x - dragMouseOffset.x, mp.y - dragMouseOffset.y, 130f, 50f); // 拡大したブロックに大きさを合わせる (100x30 -> 130x50)
             Color old = GUI.color;
             GUI.color = new Color(1f, 1f, 1f, 0.55f);
             GUI.Box(gr, D(draggingBlockType), activeBlockStyle);

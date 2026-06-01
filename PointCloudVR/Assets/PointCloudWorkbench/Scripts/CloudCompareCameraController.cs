@@ -113,6 +113,11 @@ public class CloudCompareCameraController : MonoBehaviour
 
     private bool IsMouseOverUI()
     {
+        var editorUI = Object.FindAnyObjectByType<PointCloudEditorUI>();
+        if (editorUI != null)
+        {
+            return editorUI.IsMouseOverUI();
+        }
         float mouseX = Input.mousePosition.x;
         float mouseY = Input.mousePosition.y;
         bool overLeftUI = (mouseX >= 10f && mouseX <= 410f && mouseY >= (Screen.height - 850f) && mouseY <= Screen.height);
