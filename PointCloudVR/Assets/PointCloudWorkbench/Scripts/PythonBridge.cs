@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Diagnostics;
 using System.IO;
 using System.Text;
@@ -295,28 +295,7 @@ namespace PointCloudWorkbench
             argsBuilder.Append($" --config_json \"{configJsonPath}\"");
 
             return argsBuilder.ToString();
-        }Builder.Append($" --ror_min {p.ror.min}");
-            argsBuilder.Append($" --density_k {p.density.k}");
-            argsBuilder.Append($" --density_thresh {p.density.threshold.ToString(System.Globalization.CultureInfo.InvariantCulture)}");
-            argsBuilder.Append($" --cc_k {p.cc.k}");
-            argsBuilder.Append($" --cc_sigma {p.cc.sigma.ToString(System.Globalization.CultureInfo.InvariantCulture)}");
-            argsBuilder.Append($" --cc_error {p.cc.error.ToString(System.Globalization.CultureInfo.InvariantCulture)}");
-            argsBuilder.Append($" --cc_use_knn {(p.cc.useKnn ? "true" : "false")}");
-            argsBuilder.Append($" --cc_radius {p.cc.radius.ToString(System.Globalization.CultureInfo.InvariantCulture)}");
-            argsBuilder.Append($" --cc_remove_isolated {(p.cc.removeIsolated ? "true" : "false")}");
-            argsBuilder.Append($" --cc_use_relative {(p.cc.useRelative ? "true" : "false")}");
-            argsBuilder.Append($" --dbscan_eps {p.dbscan.eps.ToString(System.Globalization.CultureInfo.InvariantCulture)}");
-            argsBuilder.Append($" --dbscan_min {p.dbscan.min}");
-            argsBuilder.Append($" --dbscan_cluster {p.dbscan.cluster}");
-            argsBuilder.Append($" --dbscan_target {p.dbscan.target}");
-            argsBuilder.Append($" --wh_brightness {p.whiteHaze.brightness.ToString(System.Globalization.CultureInfo.InvariantCulture)}");
-            argsBuilder.Append($" --wh_saturation {p.whiteHaze.saturation.ToString(System.Globalization.CultureInfo.InvariantCulture)}");
-
-            return argsBuilder.ToString();
-        }
-
-
-        /// <summary>
+        }/// <summary>
         /// 謖�ｮ壹＆繧後◆蜃ｺ蜉帙ョ繧｣繝ｬ繧ｯ繝医Μ縺ｮ繝舌う繝翫Μ繝輔ぃ繧､繝ｫ縺翫ｈ縺ｳJSON繧帝ｫ倬溘Ο繝ｼ繝峨＠縺ｾ縺吶�
         /// </summary>
         private static NoiseFilterResult LoadFilterResult(string outputDir)
