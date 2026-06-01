@@ -83,7 +83,7 @@ def build_pipeline_from_json(json_path):
     # Python実行用の関数マッピング
     func_map = {
         "white_haze": noise_filters.compute_white_haze,
-        "cc_noise": noise_filters.compute_local_plane_cc,
+        "cc_noise": noise_filters.compute_cc_noise,
         "sor": noise_filters.compute_sor,
         "ror": noise_filters.compute_ror,
         "density": noise_filters.compute_density,
