@@ -458,14 +458,14 @@ public class PointCloudManager : MonoBehaviour
     {
         InitializeStyles();
 
-        // 400x740 size control window on the right side of the screen
+        // 400x540 size control window on the right side of the screen
         float width = 400f;
-        float height = 740f;
+        float height = 540f;
         float posX = Screen.width - width - 20f;
-        float posY = 20f;
-
+        float posY = 220f; // Shift down to avoid top bar
+ 
         GUILayout.BeginArea(new Rect(posX, posY, width, height), windowStyle);
-
+ 
         GUILayout.Label("☁ CloudCompare Unity機能パネル", headerStyle);
         GUILayout.Box("", GUILayout.Height(2)); // Separator line
         GUILayout.Space(10);

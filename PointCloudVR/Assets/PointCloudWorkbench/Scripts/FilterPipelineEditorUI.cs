@@ -168,25 +168,21 @@ namespace PointCloudWorkbench
             if (editor == null || noiseFilterUI == null) return;
             InitializeStyles();
 
-            float totalWidth = Screen.width - 40f;
-            Rect pipelineRect = new Rect(20f, 15f, totalWidth, barHeight);
+            // 画面幅から左右のパネル（左: 470, 右: 420）を除いた中央エリアに配置
+            float totalWidth = Screen.width - 20f - (400f + 20f); 
+            float barHeight = 115f;
+            Rect pipelineRect = new Rect(20f, 10f, totalWidth, barHeight);
 
-            // パイプライン領域全体の描画
-            GUILayout.BeginArea(pipelineRect, panelStyle);
-            GUILayout.BeginHorizontal();
+            // パイプライン領域全体の背景描画
+            GUI.Box(pipelineRect, "", panelStyle);
 
             // 1. パレット部分
-            DrawPalette();
+            DrawPalette(pipelineRect);
 
-            GUILayout.Space(10);
-            
             // 2. パイプラインレーン
             DrawLane(pipelineRect);
 
-            GUILayout.EndHorizontal();
-            GUILayout.EndArea();
-
-            // 3. パラメータ詳細展開
+            // 3. パラメータ詳細展開 (バーの直下)
             DrawParameterDetails(pipelineRect);
 
             // 4. ドラッグ中のゴーストブロック描画
@@ -196,20 +192,28 @@ namespace PointCloudWorkbench
             DrawContextMenu();
         }
 
-        private void DrawPalette()
+        private void DrawPalette(Rect barRect)
         {
-            GUILayout.BeginVertical(GUILayout.Width(paletteWidth));
-            GUILayout.Label("🧱 フィルタブロックパレット", titleStyle);
-            GUILayout.Space(5);
+            float padding = 8f;
+            float titleH = 18f;
+            float x = barRect.x + padding;
+            float y = barRect.y + padding;
 
-            foreach (var type in availableTypes)
+            // パレットタイトル
+            GUI.Label(new Rect(x, y, paletteWidth, titleH), "🧱 パレット", titleStyle);
+
+            float blockH = 22f;
+            float spacing = 3f;
+            float startY = y + titleH + 4f;
+
+            for (int i = 0; i < availableTypes.Length; i++)
             {
+                string type = availableTypes[i];
                 string displayName = blockDisplayNames.ContainsKey(type) ? blockDisplayNames[type] : type;
-                Rect rect = GUILayoutUtility.GetRect(new GUIContent(displayName), paletteBlockStyle, GUILayout.Height(22));
-                
+                Rect rect = new Rect(x, startY + i * (blockH + spacing), paletteWidth - 10f, blockH);
+
                 if (GUI.Button(rect, displayName, paletteBlockStyle))
                 {
-                    // ボタンクリックでも追加できるようにする
                     if (noiseFilterUI.Params.customPipeline == null)
                         noiseFilterUI.Params.customPipeline = new List<FilterStepConfig>();
                     noiseFilterUI.Params.customPipeline.Add(CreateStepConfig(type));
@@ -226,68 +230,85 @@ namespace PointCloudWorkbench
                     evt.Use();
                 }
             }
-            GUILayout.EndVertical();
         }
 
-        private void DrawLane(Rect totalArea)
+        private void DrawLane(Rect barRect)
         {
-            GUILayout.BeginVertical(GUILayout.ExpandWidth(true));
-            GUILayout.BeginHorizontal();
-            GUILayout.Label("🔄 パイプライン実行レーン (左から右へ順次実行。D&Dで並べ替え/追加可能)", titleStyle);
+            float padding = 8f;
+            float titleH = 18f;
             
-            // モード切替と実行
-            GUILayout.FlexibleSpace();
+            float laneLeft = barRect.x + paletteWidth + 10f;
+            float titleW = barRect.width - paletteWidth - 210f;
+            
+            // レーンタイトル
+            GUI.Label(new Rect(laneLeft, barRect.y + padding, titleW, titleH), "🔄 順次実行レーン (D&Dで移動/削除)", titleStyle);
+
+            // 右端のモード & 実行ボタン
+            float btnW = 76f;
+            float modeW = 100f;
+            float btnX = barRect.x + barRect.width - padding - btnW;
+            float modeX = btnX - 6f - modeW;
+
             if (noiseFilterUI.Params != null)
             {
                 string modeText = noiseFilterUI.Params.processMode == "full" ? "全体適用" : "プレビュー";
-                if (GUILayout.Button($"モード: {modeText}", GUILayout.Width(110)))
+                if (GUI.Button(new Rect(modeX, barRect.y + padding - 2f, modeW, 24f), $"モード: {modeText}"))
                 {
                     noiseFilterUI.Params.processMode = noiseFilterUI.Params.processMode == "full" ? "downsample" : "full";
                 }
             }
-            if (GUILayout.Button("🚀 実行", activeBlockStyle, GUILayout.Width(80)))
+
+            if (GUI.Button(new Rect(btnX, barRect.y + padding - 2f, btnW, 24f), "🚀 実行", activeBlockStyle))
             {
                 noiseFilterUI.RunNoiseFilterAnalysis();
             }
-            GUILayout.EndHorizontal();
-            GUILayout.Space(5);
 
-            Rect laneRect = GUILayoutUtility.GetRect(GUILayout.ExpandWidth(true), GUILayout.Height(110));
+            // レーン背景ボックスの配置
+            float laneY = barRect.y + padding + titleH + 4f;
+            float laneH = barRect.height - padding * 2f - titleH - 4f;
+            float laneW = btnX - 6f - laneLeft;
+            Rect laneRect = new Rect(laneLeft, laneY, laneW, laneH);
             GUI.Box(laneRect, "", GUI.skin.textField);
 
             var pipeline = noiseFilterUI.Params.customPipeline;
-            if (pipeline == null || pipeline.Count == 0)
+            if (pipeline == null)
             {
-                // 初期化
                 pipeline = noiseFilterUI.Params.GetPipeline();
                 noiseFilterUI.Params.customPipeline = pipeline;
             }
 
-            float blockWidth = 120f;
-            float blockHeight = 45f;
-            float spacing = 25f; // 矢印の突き出しを考慮
-            float startX = laneRect.x + 10f;
+            float blockWidth = 110f;
+            float blockHeight = 36f;
+            float spacing = 20f; // 矢印の間隔
+            float startX = laneRect.x + 8f;
             float startY = laneRect.y + (laneRect.height - blockHeight) / 2f;
+
+            bool clickedOnBlock = false;
 
             for (int i = 0; i < pipeline.Count; i++)
             {
                 var step = pipeline[i];
                 float x = startX + i * (blockWidth + spacing);
+
+                // もしレーン幅をはみ出す場合は描画をストップし、はみ出しインジケータを出す
+                if (x + blockWidth > laneRect.x + laneRect.width - 20f)
+                {
+                    GUI.Label(new Rect(laneRect.x + laneRect.width - 20f, startY + (blockHeight - 20f) / 2f, 15f, 20f), "…", titleStyle);
+                    break;
+                }
+
                 Rect bRect = new Rect(x, startY, blockWidth, blockHeight);
 
                 string disp = blockDisplayNames.ContainsKey(step.name) ? blockDisplayNames[step.name] : step.name;
                 if (!step.enabled) disp += " (無効)";
 
-                // 選択時と非選択時でスタイル切替
                 GUIStyle currentStyle = (selectedBlockIndex == i) ? activeBlockStyle : blockStyle;
-                
-                // ブロックの描画 (矢印の形状を表現する)
                 GUI.Box(bRect, disp, currentStyle);
 
-                // 次のブロックがある場合、矢印記号 "▶" を間隔部分に描画
-                if (i < pipeline.Count - 1)
+                // 矢印記号 "▶" を描画
+                if (i < pipeline.Count - 1 && (x + blockWidth + spacing + blockWidth <= laneRect.x + laneRect.width - 20f))
                 {
-                    Rect arrowRect = new Rect(x + blockWidth + 5f, startY + (blockHeight - 20f) / 2f, 15f, 20f);
+                    Rect arrowRect = new Rect(x + blockWidth + 3f, startY + (blockHeight - 20f) / 2f, 15f, 20f);
                     GUI.Label(arrowRect, "▶", titleStyle);
                 }
 
@@ -295,6 +316,7 @@ namespace PointCloudWorkbench
                 Event evt = Event.current;
                 if (evt.type == EventType.MouseDown && bRect.Contains(evt.mousePosition))
                 {
+                    clickedOnBlock = true;
                     if (evt.button == 0) // 左クリック
                     {
                         selectedBlockIndex = i;
@@ -306,30 +328,34 @@ namespace PointCloudWorkbench
                     else if (evt.button == 1) // 右クリック
                     {
                         contextMenuBlockIndex = i;
-                        contextMenuPos = evt.mousePosition + new Vector2(totalArea.x, totalArea.y);
+                        contextMenuPos = evt.mousePosition;
                         showContextMenu = true;
                         evt.Use();
                     }
                 }
             }
 
-            // ドラッグ中のドロップ位置判定
+            // ブロック以外クリックで選択解除
             Event currentEvt = Event.current;
+            if (!clickedOnBlock && currentEvt.type == EventType.MouseDown && laneRect.Contains(currentEvt.mousePosition))
+            {
+                selectedBlockIndex = -1;
+                currentEvt.Use();
+            }
+
+            // ドラッグ中のドロップ位置判定
             if (currentEvt.type == EventType.MouseUp && draggingBlockType != null)
             {
                 if (laneRect.Contains(currentEvt.mousePosition))
                 {
-                    // 最も近いインデックス（挿入位置）の計算
                     float localMouseX = currentEvt.mousePosition.x - startX;
                     int insertIndex = Mathf.Clamp(Mathf.RoundToInt(localMouseX / (blockWidth + spacing)), 0, pipeline.Count);
 
                     if (draggingSourceIndex >= 0)
                     {
-                        // レーン内移動
                         var temp = pipeline[draggingSourceIndex];
                         pipeline.RemoveAt(draggingSourceIndex);
                         
-                        // 削除によってインデックスが詰まるのを考慮
                         if (insertIndex > draggingSourceIndex) insertIndex--;
                         insertIndex = Mathf.Clamp(insertIndex, 0, pipeline.Count);
                         
@@ -338,7 +364,6 @@ namespace PointCloudWorkbench
                     }
                     else
                     {
-                        // パレットからの新規追加
                         var newStep = CreateStepConfig(draggingBlockType);
                         pipeline.Insert(insertIndex, newStep);
                         selectedBlockIndex = insertIndex;
@@ -346,7 +371,6 @@ namespace PointCloudWorkbench
                 }
                 else if (draggingSourceIndex >= 0)
                 {
-                    // レーンの外へドロップされたら削除
                     pipeline.RemoveAt(draggingSourceIndex);
                     if (selectedBlockIndex == draggingSourceIndex) selectedBlockIndex = -1;
                 }
@@ -355,8 +379,6 @@ namespace PointCloudWorkbench
                 draggingSourceIndex = -1;
                 currentEvt.Use();
             }
-
-            GUILayout.EndVertical();
         }
 
         private void DrawParameterDetails(Rect totalArea)
@@ -366,8 +388,8 @@ namespace PointCloudWorkbench
 
             var step = pipeline[selectedBlockIndex];
             
-            float py = totalArea.y + totalArea.height + 10f;
-            float ph = 260f;
+            float py = totalArea.y + totalArea.height + 6f;
+            float ph = 200f;
             Rect detailsRect = new Rect(20f, py, totalArea.width, ph);
 
             GUILayout.BeginArea(detailsRect, paramPanelStyle);
