@@ -311,8 +311,13 @@ namespace PointCloudWorkbench
             {
                 if (lane.Contains(ev.mousePosition))
                 {
+                    const float targetBlockWidth = 130f;
+                    const float targetSpacing = 22f;
+                    
+                    // レーン左端余白(5f)を考慮し、クリックされた位置からインデックスを計算
+                    float relativeX = ev.mousePosition.x - (lane.x + 5f);
                     int ins = Mathf.Clamp(
-                        Mathf.RoundToInt((ev.mousePosition.x - sx) / (bW + bSpacing)),
+                        Mathf.RoundToInt(relativeX / (targetBlockWidth + targetSpacing)),
                         0, pl.Count);
 
                     if (draggingSourceIndex >= 0)
