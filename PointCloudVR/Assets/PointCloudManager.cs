@@ -458,11 +458,11 @@ public class PointCloudManager : MonoBehaviour
     {
         InitializeStyles();
 
-        // 400x520 size control window on the right side of the screen
+        // 400x740 size control window on the right side of the screen
         float width = 400f;
-        float height = 520f;
+        float height = 740f;
         float posX = Screen.width - width - 20f;
-        float posY = 235f; // パイプラインバー(Y=5, H=220)の下に完全に配置
+        float posY = 20f; // 元の最上部付近に戻す
  
         GUILayout.BeginArea(new Rect(posX, posY, width, height), windowStyle);
  

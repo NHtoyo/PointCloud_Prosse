@@ -167,12 +167,13 @@ public class PointCloudEditorUI : MonoBehaviour
         float mouseY = Input.mousePosition.y;
         
         // Pipeline bar: X=20〜(Screen.width-20), Y=5〜225 (TOP_H=130 + PARAM_H=90)
-        bool overPipelineBar = (mouseX >= 20f && mouseX <= Screen.width - 20f
-                             && mouseY >= Screen.height - 225f && mouseY <= Screen.height - 5f);
+        // Pipeline bar: X=480〜(Screen.width-430), Y=15〜235 (TOP_H=130 + PARAM_H=90)
+        bool overPipelineBar = (mouseX >= 480f && mouseX <= Screen.width - 430f
+                             && mouseY >= Screen.height - 235f && mouseY <= Screen.height - 15f);
         
         // Shipped panel bounds
-        bool overLeftUI = (mouseX >= 10f && mouseX <= 490f && mouseY >= (Screen.height - 945f) && mouseY <= (Screen.height - 235f));
-        bool overRightUI = (mouseX >= Screen.width - 430f && mouseX <= Screen.width - 10f && mouseY >= (Screen.height - 765f) && mouseY <= (Screen.height - 235f));
+        bool overLeftUI = (mouseX >= 10f && mouseX <= 490f && mouseY >= (Screen.height - 930f) && mouseY <= (Screen.height - 20f));
+        bool overRightUI = (mouseX >= Screen.width - 430f && mouseX <= Screen.width - 10f && mouseY >= (Screen.height - 760f) && mouseY <= (Screen.height - 20f));
         return overPipelineBar || overLeftUI || overRightUI;
     }
 
@@ -185,9 +186,9 @@ public class PointCloudEditorUI : MonoBehaviour
         int totalPoints = points != null ? points.Length : 0;
 
         float width = 450f;
-        float height = 690f; // Adjusted to avoid overlapping at bottom
+        float height = 910f; // 元の大きさに戻す
         float posX = 20f;
-        float posY = 235f; // パイプラインバー(Y=5, H=220)の下に完全に配置
+        float posY = 20f; // 元の最上部付近に戻す
 
         GUILayout.BeginArea(new Rect(posX, posY, width, height), windowStyle);
 

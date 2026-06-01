@@ -35,13 +35,13 @@ namespace PointCloudWorkbench
         private bool stylesInitialized = false;
 
         // レイアウト定数
-        // バー上端 Y=5, 幅=Screen.width-40(左右余白20), 高さ=TOP_H+PARAM_H
-        private const float BAR_X      = 20f;
-        private const float BAR_Y      = 5f;
-        private const float PAL_W      = 140f;     // パレット列幅
+        // 左パネル(450px)と右パネル(400px)の間に配置する
+        private const float BAR_X      = 480f;     // 左パネル(450) + 余白(30)
+        private const float BAR_Y      = 15f;
+        private const float RIGHT_W    = 400f;     // 右パネル幅
+        private const float PAL_W      = 165f;     // パレット列幅 (文字拡大に合わせて少し広げる)
         private const float TOP_H      = 130f;     // 上段高さ(パレット+レーン)
         private const float PARAM_H    = 90f;      // 下段高さ(パラメータ)
-        // 左右パネルは BarY+TOP_H+PARAM_H+10 = 235f から始める
 
         private static readonly string[] AvailableTypes =
             { "white_haze", "cc_noise", "sor", "ror", "density", "dbscan" };
@@ -104,16 +104,16 @@ namespace PointCloudWorkbench
             panelStyle.normal.background = Tex(new Color(0.09f, 0.11f, 0.15f, 0.97f));
             panelStyle.border = new RectOffset(1, 1, 1, 1);
 
-            titleStyle = new GUIStyle(GUI.skin.label) { fontSize = 11, fontStyle = FontStyle.Bold };
+            titleStyle = new GUIStyle(GUI.skin.label) { fontSize = 15, fontStyle = FontStyle.Bold };
             titleStyle.normal.textColor = new Color(0.22f, 0.80f, 1f);
 
-            hintStyle = new GUIStyle(GUI.skin.label) { fontSize = 11, fontStyle = FontStyle.Italic };
+            hintStyle = new GUIStyle(GUI.skin.label) { fontSize = 13, fontStyle = FontStyle.Italic };
             hintStyle.normal.textColor = new Color(0.55f, 0.55f, 0.62f);
 
-            labelStyle = new GUIStyle(GUI.skin.label) { fontSize = 11 };
+            labelStyle = new GUIStyle(GUI.skin.label) { fontSize = 13 };
             labelStyle.normal.textColor = new Color(0.88f, 0.88f, 0.92f);
 
-            blockStyle = new GUIStyle(GUI.skin.button) { fontSize = 10, fontStyle = FontStyle.Bold };
+            blockStyle = new GUIStyle(GUI.skin.button) { fontSize = 13, fontStyle = FontStyle.Bold };
             blockStyle.normal.textColor  = Color.white;
             blockStyle.normal.background = Tex(new Color(0.24f, 0.28f, 0.36f));
             blockStyle.wordWrap = false;
@@ -121,7 +121,7 @@ namespace PointCloudWorkbench
             activeBlockStyle = new GUIStyle(blockStyle);
             activeBlockStyle.normal.background = Tex(new Color(0.12f, 0.55f, 0.88f));
 
-            paletteBlockStyle = new GUIStyle(blockStyle) { fontSize = 10 };
+            paletteBlockStyle = new GUIStyle(blockStyle) { fontSize = 12 };
             paletteBlockStyle.normal.background = Tex(new Color(0.17f, 0.20f, 0.27f));
 
             stylesInitialized = true;
@@ -135,7 +135,7 @@ namespace PointCloudWorkbench
             if (editor == null || noiseFilterUI == null) return;
             InitStyles();
 
-            float barW = Screen.width - BAR_X - 20f;
+            float barW = Screen.width - BAR_X - RIGHT_W - 30f; // Calculate space in betweenleft and right panels
             float barH = TOP_H + PARAM_H;
             Rect bar = new Rect(BAR_X, BAR_Y, barW, barH);
 
@@ -369,16 +369,16 @@ namespace PointCloudWorkbench
             float lh = 21f;
 
             // --- 行1: タイトル + 有効化 + 除外 ---
-            GUI.Label(new Rect(x, y, 145f, 16f), $"⚙ {D(step.name)}", titleStyle);
-            step.enabled          = GUI.Toggle(new Rect(x + 150f, y + 2f, 75f, 16f), step.enabled, " 有効");
-            step.excludeFromNext  = GUI.Toggle(new Rect(x + 230f, y + 2f, 200f, 16f), step.excludeFromNext, " 次段から除外 (exclude)");
-            y += lh;
+            GUI.Label(new Rect(x, y, 175f, 22f), $"⚙ {D(step.name)}", titleStyle);
+            step.enabled          = GUI.Toggle(new Rect(x + 190f, y + 2f, 85f, 20f), step.enabled, " 有効");
+            step.excludeFromNext  = GUI.Toggle(new Rect(x + 285f, y + 2f, 230f, 20f), step.excludeFromNext, " 次段から除外 (exclude)");
+            y += lh + 4f;
 
             // --- 行2〜: スライダー (左右2カラム) ---
             float colW = (r.width - 20f) / 2f;
-            float lw   = 150f;
+            float lw   = 175f; // Label width expanded for larger font
             float vw   = 42f;
-            float sw   = Mathf.Max(colW - lw - vw - 12f, 30f);
+            float sw   = Mathf.Max(colW - lw - 15f, 30f);
 
             GUI.enabled = step.enabled;
 
@@ -406,14 +406,14 @@ namespace PointCloudWorkbench
             {
                 db.eps     = Slider   (x,        y, lw, sw, $"Eps倍率: {db.eps:F2}",       db.eps,     1f, 10f);
                 db.min     = SliderInt(x + colW, y, lw, sw, $"MinPoints: {db.min}",         db.min,     2, 50);
-                y += lh;
+                y += lh + 2f;
                 db.cluster = SliderInt(x,        y, lw, sw, $"最小クラスタ: {db.cluster}", db.cluster, 10, 1000);
             }
             else if (step is CcConfig cc)
             {
                 // 1行目: KNN/Radius トグル + 値スライダー
-                cc.useKnn = GUI.Toggle(new Rect(x,        y, 105f, 16f), cc.useKnn, " KNN");
-                cc.useKnn = !GUI.Toggle(new Rect(x + 110f, y, 115f, 16f), !cc.useKnn, " Radius");
+                cc.useKnn = GUI.Toggle(new Rect(x,        y, 115f, 20f), cc.useKnn, " KNN");
+                cc.useKnn = !GUI.Toggle(new Rect(x + 120f, y, 125f, 20f), !cc.useKnn, " Radius");
 
                 if (cc.useKnn)
                     cc.k      = SliderInt(x + colW, y, lw, sw, $"k: {cc.k}",                   cc.k,      3, 50);
@@ -421,9 +421,9 @@ namespace PointCloudWorkbench
                     cc.radius = Slider   (x + colW, y, lw, sw, $"半径: {cc.radius:F3} m",       cc.radius, 0.005f, 0.2f);
 
                 // 2行目: 相対/絶対 トグル + 値スライダー
-                y += lh;
-                cc.useRelative = GUI.Toggle(new Rect(x,         y, 105f, 16f), cc.useRelative, " 相対σ");
-                cc.useRelative = !GUI.Toggle(new Rect(x + 110f, y, 115f, 16f), !cc.useRelative, " 絶対誤差");
+                y += lh + 2f;
+                cc.useRelative = GUI.Toggle(new Rect(x,         y, 115f, 20f), cc.useRelative, " 相対σ");
+                cc.useRelative = !GUI.Toggle(new Rect(x + 120f, y, 125f, 20f), !cc.useRelative, " 絶対誤差");
 
                 if (cc.useRelative)
                     cc.sigma = Slider(x + colW, y, lw, sw, $"Sigma: {cc.sigma:F2}", cc.sigma, 0.1f, 3f);
@@ -431,8 +431,8 @@ namespace PointCloudWorkbench
                     cc.error = Slider(x + colW, y, lw, sw, $"Error: {cc.error:F4}", cc.error, 0.0001f, 0.05f);
 
                 // 3行目: 孤立点トグル
-                y += lh;
-                cc.removeIsolated = GUI.Toggle(new Rect(x, y, 160f, 16f), cc.removeIsolated, " 孤立点も除去");
+                y += lh + 2f;
+                cc.removeIsolated = GUI.Toggle(new Rect(x, y, 180f, 20f), cc.removeIsolated, " 孤立点も除去");
             }
 
             GUI.enabled = true;
@@ -443,14 +443,14 @@ namespace PointCloudWorkbench
         // =========================================================
         private float Slider(float x, float y, float lw, float sw, string lbl, float val, float mn, float mx)
         {
-            GUI.Label(new Rect(x, y, lw, 16f), lbl, labelStyle);
-            return GUI.HorizontalSlider(new Rect(x + lw + 2f, y + 4f, sw, 12f), val, mn, mx);
+            GUI.Label(new Rect(x, y, lw, 20f), lbl, labelStyle);
+            return GUI.HorizontalSlider(new Rect(x + lw + 2f, y + 4f, sw, 14f), val, mn, mx);
         }
 
         private int SliderInt(float x, float y, float lw, float sw, string lbl, int val, int mn, int mx)
         {
-            GUI.Label(new Rect(x, y, lw, 16f), lbl, labelStyle);
-            return Mathf.RoundToInt(GUI.HorizontalSlider(new Rect(x + lw + 2f, y + 4f, sw, 12f), val, mn, mx));
+            GUI.Label(new Rect(x, y, lw, 20f), lbl, labelStyle);
+            return Mathf.RoundToInt(GUI.HorizontalSlider(new Rect(x + lw + 2f, y + 4f, sw, 14f), val, mn, mx));
         }
 
         // =========================================================
