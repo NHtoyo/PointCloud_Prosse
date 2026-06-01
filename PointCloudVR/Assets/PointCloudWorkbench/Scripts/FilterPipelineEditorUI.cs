@@ -35,14 +35,13 @@ namespace PointCloudWorkbench
         private bool stylesInitialized = false;
 
         // レイアウト定数
-        // バー上端 Y=5, 幅=Screen.width-20-420(右パネル余白), 高さ=TOP_H+PARAM_H
+        // バー上端 Y=5, 幅=Screen.width-40(左右余白20), 高さ=TOP_H+PARAM_H
         private const float BAR_X      = 20f;
         private const float BAR_Y      = 5f;
-        private const float RIGHT_MARGIN = 420f;   // 右パネル幅400+余白20
         private const float PAL_W      = 140f;     // パレット列幅
         private const float TOP_H      = 130f;     // 上段高さ(パレット+レーン)
         private const float PARAM_H    = 90f;      // 下段高さ(パラメータ)
-        // 左右パネルは BarY+TOP_H+PARAM_H+5 = 230f から始める
+        // 左右パネルは BarY+TOP_H+PARAM_H+10 = 235f から始める
 
         private static readonly string[] AvailableTypes =
             { "white_haze", "cc_noise", "sor", "ror", "density", "dbscan" };
@@ -136,7 +135,7 @@ namespace PointCloudWorkbench
             if (editor == null || noiseFilterUI == null) return;
             InitStyles();
 
-            float barW = Screen.width - BAR_X - RIGHT_MARGIN;
+            float barW = Screen.width - BAR_X - 20f;
             float barH = TOP_H + PARAM_H;
             Rect bar = new Rect(BAR_X, BAR_Y, barW, barH);
 
