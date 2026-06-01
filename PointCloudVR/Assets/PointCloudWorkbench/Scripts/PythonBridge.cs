@@ -54,20 +54,12 @@ namespace PointCloudWorkbench
         /// </summary>
         /// <param name="inputPlyPath">入力PLY点群のパス</param>
         /// <param name="outputDir">バイナリファイルの出力先ディレクトリ</param>
-        /// <param name="mode">"full" または "downsample"</param>
-        /// <param name="voxelSize">Downsample時のボクセルサイズ（任意）</param>
+        /// <param name="filterParams">統合ノイズフィルタパラメータ</param>
         /// <param name="cancellationToken">キャンセル監視トークン</param>
         public static async Task<NoiseFilterResult> RunDenoiserAsync(
             string inputPlyPath, 
             string outputDir, 
-            string mode, 
-            float? voxelSize,
-            bool runSor, int sorNb, float sorStd,
-            bool runRor, float rorMul, int rorMin,
-            bool runDensity, int densityK, float densityThreshold,
-            bool runCc, int ccK, float ccSigma, float ccError, bool ccUseKnn, float ccRadius, bool ccRemoveIsolated, bool ccUseRelative,
-            bool runDbscan, float dbscanEps, int dbscanMin, int dbscanCluster, int dbscanTarget,
-            bool runWhiteHaze, float whBrightness, float whSaturation,
+            NoiseFilterParams filterParams,
             CancellationToken cancellationToken = default)
         {
             string pythonPath = GetPythonPath();
@@ -82,60 +74,12 @@ namespace PointCloudWorkbench
             Directory.CreateDirectory(outputDir);
 
             // 引数の組み立て
-            StringBuilder argsBuilder = new StringBuilder();
-            argsBuilder.Append("-u "); // Pythonの出力をバッファリングせずリアルタイムに出力させる
-            argsBuilder.Append($"\"{scriptPath}\"");
-            argsBuilder.Append($" --input \"{inputPlyPath}\"");
-            argsBuilder.Append($" --output_dir \"{outputDir}\"");
-            argsBuilder.Append($" --mode {mode}");
-            if (voxelSize.HasValue && mode == "downsample")
-            {
-                argsBuilder.Append($" --voxel_size {voxelSize.Value.ToString(System.Globalization.CultureInfo.InvariantCulture)}");
-            }
-
-            // フィルタの個別有効化指定
-            System.Collections.Generic.List<string> filters = new System.Collections.Generic.List<string>();
-            if (runSor) filters.Add("sor");
-            if (runRor) filters.Add("ror");
-            if (runDensity) filters.Add("density");
-            if (runCc) filters.Add("cc_noise");
-            if (runDbscan) filters.Add("dbscan");
-            if (runWhiteHaze) filters.Add("white_haze");
-
-            if (filters.Count > 0)
-            {
-                argsBuilder.Append(" --filters " + string.Join(" ", filters));
-            }
-            else
-            {
-                // すべて無効の場合は --filters なし（Python側は空リスト扱い）
-                argsBuilder.Append(" --filters none");
-            }
-
-            argsBuilder.Append($" --sor_nb {sorNb}");
-            argsBuilder.Append($" --sor_std {sorStd.ToString(System.Globalization.CultureInfo.InvariantCulture)}");
-            argsBuilder.Append($" --ror_mul {rorMul.ToString(System.Globalization.CultureInfo.InvariantCulture)}");
-            argsBuilder.Append($" --ror_min {rorMin}");
-            argsBuilder.Append($" --density_k {densityK}");
-            argsBuilder.Append($" --density_thresh {densityThreshold.ToString(System.Globalization.CultureInfo.InvariantCulture)}");
-            argsBuilder.Append($" --cc_k {ccK}");
-            argsBuilder.Append($" --cc_sigma {ccSigma.ToString(System.Globalization.CultureInfo.InvariantCulture)}");
-            argsBuilder.Append($" --cc_error {ccError.ToString(System.Globalization.CultureInfo.InvariantCulture)}");
-            argsBuilder.Append($" --cc_use_knn {(ccUseKnn ? "true" : "false")}");
-            argsBuilder.Append($" --cc_radius {ccRadius.ToString(System.Globalization.CultureInfo.InvariantCulture)}");
-            argsBuilder.Append($" --cc_remove_isolated {(ccRemoveIsolated ? "true" : "false")}");
-            argsBuilder.Append($" --cc_use_relative {(ccUseRelative ? "true" : "false")}");
-            argsBuilder.Append($" --dbscan_eps {dbscanEps.ToString(System.Globalization.CultureInfo.InvariantCulture)}");
-            argsBuilder.Append($" --dbscan_min {dbscanMin}");
-            argsBuilder.Append($" --dbscan_cluster {dbscanCluster}");
-            argsBuilder.Append($" --dbscan_target {dbscanTarget}");
-            argsBuilder.Append($" --wh_brightness {whBrightness.ToString(System.Globalization.CultureInfo.InvariantCulture)}");
-            argsBuilder.Append($" --wh_saturation {whSaturation.ToString(System.Globalization.CultureInfo.InvariantCulture)}");
+            string arguments = BuildArguments(scriptPath, inputPlyPath, outputDir, filterParams);
 
             ProcessStartInfo psi = new ProcessStartInfo
             {
                 FileName = pythonPath,
-                Arguments = argsBuilder.ToString(),
+                Arguments = arguments,
                 UseShellExecute = false,
                 RedirectStandardOutput = true,
                 RedirectStandardError = true,
@@ -143,6 +87,7 @@ namespace PointCloudWorkbench
                 StandardOutputEncoding = Encoding.UTF8,
                 StandardErrorEncoding = Encoding.UTF8
             };
+
 
             UnityEngine.Debug.Log($"[PythonBridge] 実行コマンド: {pythonPath} {psi.Arguments}");
 
@@ -256,6 +201,66 @@ namespace PointCloudWorkbench
             PointCloudProgressManager.Instance.Update(0.9f, "バイナリ結果データをロード中...");
             return LoadFilterResult(outputDir);
         }
+
+        /// <summary>
+        /// NoiseFilterParams オブジェクトから Python スクリプト実行用のコマンドライン引数を構築します。
+        /// </summary>
+        private static string BuildArguments(string scriptPath, string inputPlyPath, string outputDir, NoiseFilterParams p)
+        {
+            StringBuilder argsBuilder = new StringBuilder();
+            argsBuilder.Append("-u "); // Pythonの出力をバッファリングせずリアルタイムに出力させる
+            argsBuilder.Append($"\"{scriptPath}\"");
+            argsBuilder.Append($" --input \"{inputPlyPath}\"");
+            argsBuilder.Append($" --output_dir \"{outputDir}\"");
+            argsBuilder.Append($" --mode {p.processMode}");
+            if (p.processMode == "downsample")
+            {
+                argsBuilder.Append($" --voxel_size {p.voxelSize.ToString(System.Globalization.CultureInfo.InvariantCulture)}");
+            }
+
+            // 有効なフィルタのリストを作成
+            System.Collections.Generic.List<string> filters = new System.Collections.Generic.List<string>();
+            foreach (var step in p.GetPipeline())
+            {
+                if (step.enabled)
+                {
+                    filters.Add(step.name);
+                }
+            }
+
+            if (filters.Count > 0)
+            {
+                argsBuilder.Append(" --filters " + string.Join(" ", filters));
+            }
+            else
+            {
+                argsBuilder.Append(" --filters none");
+            }
+
+            // 個別のフィルタパラメータを設定
+            argsBuilder.Append($" --sor_nb {p.sor.nb}");
+            argsBuilder.Append($" --sor_std {p.sor.std.ToString(System.Globalization.CultureInfo.InvariantCulture)}");
+            argsBuilder.Append($" --ror_mul {p.ror.mul.ToString(System.Globalization.CultureInfo.InvariantCulture)}");
+            argsBuilder.Append($" --ror_min {p.ror.min}");
+            argsBuilder.Append($" --density_k {p.density.k}");
+            argsBuilder.Append($" --density_thresh {p.density.threshold.ToString(System.Globalization.CultureInfo.InvariantCulture)}");
+            argsBuilder.Append($" --cc_k {p.cc.k}");
+            argsBuilder.Append($" --cc_sigma {p.cc.sigma.ToString(System.Globalization.CultureInfo.InvariantCulture)}");
+            argsBuilder.Append($" --cc_error {p.cc.error.ToString(System.Globalization.CultureInfo.InvariantCulture)}");
+            argsBuilder.Append($" --cc_use_knn {(p.cc.useKnn ? "true" : "false")}");
+            argsBuilder.Append($" --cc_radius {p.cc.radius.ToString(System.Globalization.CultureInfo.InvariantCulture)}");
+            argsBuilder.Append($" --cc_remove_isolated {(p.cc.removeIsolated ? "true" : "false")}");
+            argsBuilder.Append($" --cc_use_relative {(p.cc.useRelative ? "true" : "false")}");
+            argsBuilder.Append($" --dbscan_eps {p.dbscan.eps.ToString(System.Globalization.CultureInfo.InvariantCulture)}");
+            argsBuilder.Append($" --dbscan_min {p.dbscan.min}");
+            argsBuilder.Append($" --dbscan_cluster {p.dbscan.cluster}");
+            argsBuilder.Append($" --dbscan_target {p.dbscan.target}");
+            argsBuilder.Append($" --wh_brightness {p.whiteHaze.brightness.ToString(System.Globalization.CultureInfo.InvariantCulture)}");
+            argsBuilder.Append($" --wh_saturation {p.whiteHaze.saturation.ToString(System.Globalization.CultureInfo.InvariantCulture)}");
+
+            return argsBuilder.ToString();
+        }
+
 
         /// <summary>
         /// 指定された出力ディレクトリのバイナリファイルおよびJSONを高速ロードします。

@@ -148,13 +148,19 @@ namespace PointCloudWorkbench
 
             // Undoスタックから値を復元
             int[] prevLabels = undoStack.Pop();
+            bool hasCandidates = false;
             for (int i = 0; i < points.Length; i++)
             {
                 points[i].label = prevLabels[i];
+                if ((prevLabels[i] & NOISE_CANDIDATE_BIT) != 0)
+                {
+                    hasCandidates = true;
+                }
             }
 
+            isPreviewActive = hasCandidates;
             renderer.UpdatePointBuffer();
-            UnityEngine.Debug.Log("[NoiseFilterManager] ノイズ除去操作を Undo しました。");
+            UnityEngine.Debug.Log($"[NoiseFilterManager] ノイズ除去操作を Undo しました。(プレビュー活性状態: {isPreviewActive})");
             return true;
         }
 
@@ -173,13 +179,19 @@ namespace PointCloudWorkbench
 
             // Redoスタックから値を復元
             int[] nextLabels = redoStack.Pop();
+            bool hasCandidates = false;
             for (int i = 0; i < points.Length; i++)
             {
                 points[i].label = nextLabels[i];
+                if ((nextLabels[i] & NOISE_CANDIDATE_BIT) != 0)
+                {
+                    hasCandidates = true;
+                }
             }
 
+            isPreviewActive = hasCandidates;
             renderer.UpdatePointBuffer();
-            UnityEngine.Debug.Log("[NoiseFilterManager] ノイズ除去操作を Redo しました。");
+            UnityEngine.Debug.Log($"[NoiseFilterManager] ノイズ除去操作を Redo しました。(プレビュー活性状態: {isPreviewActive})");
             return true;
         }
 
