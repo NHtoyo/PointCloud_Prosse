@@ -166,12 +166,13 @@ public class PointCloudEditorUI : MonoBehaviour
         float mouseX = Input.mousePosition.x;
         float mouseY = Input.mousePosition.y;
         
-        // Pipeline bar bounds: 20 to Screen.width-20, height 180 + parameters details 260 => total ~450 height from top
-        bool overPipelineBar = (mouseX >= 20f && mouseX <= Screen.width - 20f && mouseY >= (Screen.height - 470f) && mouseY <= Screen.height);
+        // Pipeline bar: X=20〜(Screen.width-420), Y=5〜225 (TOP_H=130 + PARAM_H=90)
+        bool overPipelineBar = (mouseX >= 20f && mouseX <= Screen.width - 420f
+                             && mouseY >= Screen.height - 225f && mouseY <= Screen.height - 5f);
         
         // Shipped panel bounds
-        bool overLeftUI = (mouseX >= 10f && mouseX <= 490f && mouseY >= (Screen.height - 930f) && mouseY <= (Screen.height - 220f));
-        bool overRightUI = (mouseX >= Screen.width - 430f && mouseX <= Screen.width - 10f && mouseY >= (Screen.height - 770f) && mouseY <= Screen.height);
+        bool overLeftUI = (mouseX >= 10f && mouseX <= 490f && mouseY >= (Screen.height - 940f) && mouseY <= (Screen.height - 230f));
+        bool overRightUI = (mouseX >= Screen.width - 430f && mouseX <= Screen.width - 10f && mouseY >= (Screen.height - 760f) && mouseY <= (Screen.height - 230f));
         return overPipelineBar || overLeftUI || overRightUI;
     }
 
@@ -183,10 +184,10 @@ public class PointCloudEditorUI : MonoBehaviour
         PointData[] points = editor.targetRenderer.GetPointData();
         int totalPoints = points != null ? points.Length : 0;
 
-        float width = 450f; // Scale up width from 390f
-        float height = 710f; // Adjusted height from 910f to make space for top bar
+        float width = 450f;
+        float height = 700f;
         float posX = 20f;
-        float posY = 220f; // Downwards shift to make space for top pipeline bar
+        float posY = 230f; // パイプラインバー(Y=5, H=220)の下に配置
 
         GUILayout.BeginArea(new Rect(posX, posY, width, height), windowStyle);
 
