@@ -62,14 +62,75 @@ def setup_argparser():
     parser.add_argument("--dbscan_target", type=int, default=200000, help="DBSCAN自動ダウンサンプル時の目標点数 (default: 200000)")
     parser.add_argument("--dbscan_timeout", type=int, default=120, help="DBSCANのタイムアウト秒数 (default: 120)")
     
-    # White Haze フィルタの引数
-    parser.add_argument("--wh_brightness", type=float, default=190.0, help="White Hazeの最小輝度閾値 (default: 190.0)")
-    parser.add_argument("--wh_saturation", type=float, default=0.20, help="White Hazeの最大彩度閾値 (default: 0.20)")
+    # JSON構成ファイルの指定（優先）
+    parser.add_argument("--config_json", default=None, help="パイプラインの順序とパラメータを記述したJSON構成ファイルのパス")
     
     parser.add_argument("--filters", nargs="*", choices=["sor", "ror", "dbscan", "density", "cc_noise", "white_haze", "none"], default=None,
                         help="有効にするフィルタのリスト (noneを指定した場合はすべて無効)")
     
     return parser
+
+def build_pipeline_from_json(json_path):
+    import json
+    from filter_pipeline import FilterPipeline, FilterStep
+    
+    with open(json_path, 'r', encoding='utf-8') as f:
+        config = json.load(f)
+        
+    pipeline = FilterPipeline()
+    steps_data = config.get("steps", [])
+    
+    # Python実行用の関数マッピング
+    func_map = {
+        "white_haze": noise_filters.compute_white_haze,
+        "cc_noise": noise_filters.compute_local_plane_cc,
+        "sor": noise_filters.compute_sor,
+        "ror": noise_filters.compute_ror,
+        "density": noise_filters.compute_density,
+        "dbscan": None # dbscanはパイプライン内部で直接処理
+    }
+    
+    # 最終的なパラメータ要約用
+    params = {
+        "sor": {"nb_neighbors": 20, "std_ratio": 1.5},
+        "ror": {"radius_multiplier": 3.0, "min_neighbors": 8},
+        "density": {"k": 8, "threshold": 0.0},
+        "cc_noise": {
+            "k": 20, "relative_sigma": 1.0, "absolute_error": 0.01,
+            "use_knn": True, "radius": 0.05, "remove_isolated_points": False
+        },
+        "dbscan": {
+            "eps_multiplier": 4.0, "min_points": 10, "min_cluster_size": 200,
+            "target_points": 200000, "timeout_sec": 120
+        },
+        "white_haze": {"brightness_min": 190.0, "saturation_max": 0.20}
+    }
+    
+    enabled_filters = set()
+    
+    for step_cfg in steps_data:
+        name = step_cfg["name"]
+        enabled = step_cfg.get("enabled", True)
+        exclude = step_cfg.get("excludeFromNext", False)
+        step_params = step_cfg.get("params", {})
+        
+        if enabled:
+            enabled_filters.add(name)
+            
+        # パラメータ構造を更新
+        if name in params:
+            params[name].update(step_params)
+            
+        step_obj = FilterStep(
+            name=name,
+            func=func_map.get(name),
+            params=step_params,
+            enabled=enabled,
+            exclude_from_next=exclude
+        )
+        pipeline.add_step(step_obj)
+        
+    return pipeline, params, enabled_filters
 
 def build_pipeline_from_args(args):
     # 有効フィルタ集合のパース
@@ -209,9 +270,21 @@ def main():
     print(f"点群ロード完了. 点数: {original_count:,}")
     
     # 2. パイプラインの構築
-    pipeline, params, enabled_filters = build_pipeline_from_args(args)
+    if args.config_json is not None:
+        print(f"JSON構成ファイルからパイプラインを構築します: {args.config_json}")
+        pipeline, params, enabled_filters = build_pipeline_from_json(args.config_json)
+    else:
+        pipeline, params, enabled_filters = build_pipeline_from_args(args)
     
     # 3. 実行モード別の処理
+    # JSON構成に processMode や voxelSize の設定値があれば反映させる
+    if args.config_json is not None:
+        import json
+        with open(args.config_json, 'r', encoding='utf-8') as f:
+            cfg = json.load(f)
+            args.mode = cfg.get("processMode", args.mode)
+            args.voxel_size = cfg.get("voxelSize", args.voxel_size)
+
     if args.mode == "downsample":
         results, analysis_count = run_downsample_mode(
             points, colors, params, enabled_filters, pipeline, args, original_count

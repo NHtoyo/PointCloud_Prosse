@@ -43,7 +43,7 @@ namespace PointCloudWorkbench
         {
             name = "cc_noise";
             enabled = true;
-            excludeFromNext = false;
+            excludeFromNext = true; // デフォルトで次段から除外
         }
     }
 
@@ -57,7 +57,7 @@ namespace PointCloudWorkbench
         {
             name = "sor";
             enabled = true;
-            excludeFromNext = false;
+            excludeFromNext = true; // デフォルトで次段から除外
         }
     }
 
@@ -71,7 +71,7 @@ namespace PointCloudWorkbench
         {
             name = "ror";
             enabled = false;
-            excludeFromNext = false;
+            excludeFromNext = true; // デフォルトで次段から除外
         }
     }
 
@@ -85,7 +85,7 @@ namespace PointCloudWorkbench
         {
             name = "density";
             enabled = false;
-            excludeFromNext = false;
+            excludeFromNext = true; // デフォルトで次段から除外
         }
     }
 
@@ -102,7 +102,7 @@ namespace PointCloudWorkbench
         {
             name = "dbscan";
             enabled = true;
-            excludeFromNext = false;
+            excludeFromNext = true; // デフォルトで次段から除外
         }
     }
 

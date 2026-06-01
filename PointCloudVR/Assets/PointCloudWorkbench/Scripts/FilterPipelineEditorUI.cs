@@ -535,7 +535,7 @@ namespace PointCloudWorkbench
                 case "ror":        return new RorConfig();
                 case "density":    return new DensityConfig();
                 case "dbscan":     return new DbscanConfig();
-                default:           return new FilterStepConfig { name = t, enabled = true };
+                default:           return new FilterStepConfig { name = t, enabled = true, excludeFromNext = true };
             }
         }
 

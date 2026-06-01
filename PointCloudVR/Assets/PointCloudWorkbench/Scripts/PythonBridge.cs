@@ -176,72 +176,100 @@ namespace PointCloudWorkbench
                         try
                         {
                             process.Kill();
-                            UnityEngine.Debug.LogError($"[PythonBridge] Pythonプロセスが {timeoutSeconds}秒 間応答しなかった（ログが出力されなかった）ため、強制終了しました。");
-                        }
-                        catch (Exception ex)
-                        {
-                            UnityEngine.Debug.LogError($"[PythonBridge] タイムアウト強制終了エラー: {ex.Message}");
-                        }
-                        throw new TimeoutException($"Pythonノイズフィルタの処理が {timeoutSeconds}秒 間ログを出力せず応答しなかったため、タイムアウトしました。\n[出力ログ]\n{outputLog.ToString()}\n[エラーログ]\n{errorLog.ToString()}");
-                    }
-
-                    // 100msウェイト
-                    await Task.Delay(100);
-                }
-
-                if (process.ExitCode != 0)
-                {
-                    string errText = errorLog.ToString();
-                    string outText = outputLog.ToString();
-                    throw new Exception($"Pythonノイズフィルタがエラーで終了しました (ExitCode: {process.ExitCode})\n[エラーログ]\n{errText}\n[出力ログ]\n{outText}");
-                }
-            }
-
-            // 終了後にバイナリファイルを読み込み
-            PointCloudProgressManager.Instance.Update(0.9f, "バイナリ結果データをロード中...");
-            return LoadFilterResult(outputDir);
-        }
-
-        /// <summary>
+                            UnityEngine.Debug.LogError($"[PythonBridge] Pythonプロセス�        /// <summary>
         /// NoiseFilterParams オブジェクトから Python スクリプト実行用のコマンドライン引数を構築します。
+        /// 同時に、順序と個別パラメータを含んだ JSON 構成ファイルを保存し、引数で渡します。
         /// </summary>
         private static string BuildArguments(string scriptPath, string inputPlyPath, string outputDir, NoiseFilterParams p)
         {
+            // パイプライン構成JSONの構築
+            var pipelineSteps = p.GetPipeline();
+            var jsonBuilder = new StringBuilder();
+            jsonBuilder.Append("{\n");
+            jsonBuilder.Append($"  \"processMode\": \"{p.processMode}\",\n");
+            jsonBuilder.Append($"  \"voxelSize\": {p.voxelSize.ToString(System.Globalization.CultureInfo.InvariantCulture)},\n");
+            jsonBuilder.Append("  \"steps\": [\n");
+
+            for (int i = 0; i < pipelineSteps.Count; i++)
+            {
+                var step = pipelineSteps[i];
+                jsonBuilder.Append("    {\n");
+                jsonBuilder.Append($"      \"name\": \"{step.name}\",\n");
+                jsonBuilder.Append($"      \"enabled\": {(step.enabled ? "true" : "false")},\n");
+                jsonBuilder.Append($"      \"excludeFromNext\": {(step.excludeFromNext ? "true" : "false")},\n");
+                jsonBuilder.Append("      \"params\": {\n");
+
+                // 各設定の個別パラメータをシリアライズ
+                if (step is WhiteHazeConfig wh)
+                {
+                    jsonBuilder.Append($"        \"brightness_min\": {wh.brightness.ToString(System.Globalization.CultureInfo.InvariantCulture)},\n");
+                    jsonBuilder.Append($"        \"saturation_max\": {wh.saturation.ToString(System.Globalization.CultureInfo.InvariantCulture)}\n");
+                }
+                else if (step is CcConfig cc)
+                {
+                    jsonBuilder.Append($"        \"use_knn\": {(cc.useKnn ? "true" : "false")},\n");
+                    jsonBuilder.Append($"        \"k\": {cc.k},\n");
+                    jsonBuilder.Append($"        \"radius\": {cc.radius.ToString(System.Globalization.CultureInfo.InvariantCulture)},\n");
+                    jsonBuilder.Append($"        \"remove_isolated_points\": {(cc.removeIsolated ? "true" : "false")},\n");
+                    jsonBuilder.Append($"        \"use_relative\": {(cc.useRelative ? "true" : "false")},\n");
+                    jsonBuilder.Append($"        \"relative_sigma\": {cc.sigma.ToString(System.Globalization.CultureInfo.InvariantCulture)},\n");
+                    jsonBuilder.Append($"        \"absolute_error\": {cc.error.ToString(System.Globalization.CultureInfo.InvariantCulture)}\n");
+                }
+                else if (step is SorConfig sor)
+                {
+                    jsonBuilder.Append($"        \"nb_neighbors\": {sor.nb},\n");
+                    jsonBuilder.Append($"        \"std_ratio\": {sor.std.ToString(System.Globalization.CultureInfo.InvariantCulture)}\n");
+                }
+                else if (step is RorConfig ror)
+                {
+                    jsonBuilder.Append($"        \"radius_multiplier\": {ror.mul.ToString(System.Globalization.CultureInfo.InvariantCulture)},\n");
+                    jsonBuilder.Append($"        \"min_neighbors\": {ror.min}\n");
+                }
+                else if (step is DensityConfig dn)
+                {
+                    jsonBuilder.Append($"        \"k\": {dn.k},\n");
+                    jsonBuilder.Append($"        \"threshold\": {dn.threshold.ToString(System.Globalization.CultureInfo.InvariantCulture)}\n");
+                }
+                else if (step is DbscanConfig db)
+                {
+                    jsonBuilder.Append($"        \"eps_multiplier\": {db.eps.ToString(System.Globalization.CultureInfo.InvariantCulture)},\n");
+                    jsonBuilder.Append($"        \"min_points\": {db.min},\n");
+                    jsonBuilder.Append($"        \"min_cluster_size\": {db.cluster},\n");
+                    jsonBuilder.Append($"        \"target_points\": {db.target},\n");
+                    jsonBuilder.Append($"        \"timeout_sec\": {db.timeout}\n");
+                }
+                else
+                {
+                    // フォールバック（パラメータなし）
+                    jsonBuilder.Append("        \"_dummy\": 0\n");
+                }
+
+                jsonBuilder.Append("      }\n");
+                jsonBuilder.Append(i < pipelineSteps.Count - 1 ? "    },\n" : "    }\n");
+            }
+            jsonBuilder.Append("  ]\n");
+            jsonBuilder.Append("}");
+
+            // JSONファイルの書き出し
+            string configJsonPath = Path.Combine(outputDir, "pipeline_config.json");
+            try
+            {
+                File.WriteAllText(configJsonPath, jsonBuilder.ToString());
+            }
+            catch (Exception ex)
+            {
+                UnityEngine.Debug.LogError($"[PythonBridge] パイプライン構成JSONの書き込みに失敗しました: {ex.Message}");
+            }
+
             StringBuilder argsBuilder = new StringBuilder();
             argsBuilder.Append("-u "); // Pythonの出力をバッファリングせずリアルタイムに出力させる
             argsBuilder.Append($"\"{scriptPath}\"");
             argsBuilder.Append($" --input \"{inputPlyPath}\"");
             argsBuilder.Append($" --output_dir \"{outputDir}\"");
-            argsBuilder.Append($" --mode {p.processMode}");
-            if (p.processMode == "downsample")
-            {
-                argsBuilder.Append($" --voxel_size {p.voxelSize.ToString(System.Globalization.CultureInfo.InvariantCulture)}");
-            }
+            argsBuilder.Append($" --config_json \"{configJsonPath}\"");
 
-            // 有効なフィルタのリストを作成
-            System.Collections.Generic.List<string> filters = new System.Collections.Generic.List<string>();
-            foreach (var step in p.GetPipeline())
-            {
-                if (step.enabled)
-                {
-                    filters.Add(step.name);
-                }
-            }
-
-            if (filters.Count > 0)
-            {
-                argsBuilder.Append(" --filters " + string.Join(" ", filters));
-            }
-            else
-            {
-                argsBuilder.Append(" --filters none");
-            }
-
-            // 個別のフィルタパラメータを設定
-            argsBuilder.Append($" --sor_nb {p.sor.nb}");
-            argsBuilder.Append($" --sor_std {p.sor.std.ToString(System.Globalization.CultureInfo.InvariantCulture)}");
-            argsBuilder.Append($" --ror_mul {p.ror.mul.ToString(System.Globalization.CultureInfo.InvariantCulture)}");
-            argsBuilder.Append($" --ror_min {p.ror.min}");
+            return argsBuilder.ToString();
+        }Builder.Append($" --ror_min {p.ror.min}");
             argsBuilder.Append($" --density_k {p.density.k}");
             argsBuilder.Append($" --density_thresh {p.density.threshold.ToString(System.Globalization.CultureInfo.InvariantCulture)}");
             argsBuilder.Append($" --cc_k {p.cc.k}");
