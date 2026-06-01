@@ -35,6 +35,7 @@ public class PointCloudEditorUI : MonoBehaviour
     private bool foldoutStats = true;
 
     private NoiseFilterUI noiseFilterUI;
+    private FilterPipelineEditorUI pipelineEditorUI;
 
     // Lasso drawing texture
     private Texture2D lineTex;
@@ -50,6 +51,11 @@ public class PointCloudEditorUI : MonoBehaviour
         if (noiseFilterUI == null)
         {
             noiseFilterUI = gameObject.AddComponent<NoiseFilterUI>();
+        }
+        pipelineEditorUI = GetComponent<FilterPipelineEditorUI>();
+        if (pipelineEditorUI == null)
+        {
+            pipelineEditorUI = gameObject.AddComponent<FilterPipelineEditorUI>();
         }
         RefreshFileList();
     }
@@ -159,9 +165,14 @@ public class PointCloudEditorUI : MonoBehaviour
 
         float mouseX = Input.mousePosition.x;
         float mouseY = Input.mousePosition.y;
-        bool overLeftUI = (mouseX >= 10f && mouseX <= 490f && mouseY >= (Screen.height - 950f) && mouseY <= Screen.height);
+        
+        // Pipeline bar bounds: 20 to Screen.width-20, height 180 + parameters details 260 => total ~450 height from top
+        bool overPipelineBar = (mouseX >= 20f && mouseX <= Screen.width - 20f && mouseY >= (Screen.height - 470f) && mouseY <= Screen.height);
+        
+        // Shipped panel bounds
+        bool overLeftUI = (mouseX >= 10f && mouseX <= 490f && mouseY >= (Screen.height - 930f) && mouseY <= (Screen.height - 220f));
         bool overRightUI = (mouseX >= Screen.width - 430f && mouseX <= Screen.width - 10f && mouseY >= (Screen.height - 770f) && mouseY <= Screen.height);
-        return overLeftUI || overRightUI;
+        return overPipelineBar || overLeftUI || overRightUI;
     }
 
     void OnGUI()
@@ -173,9 +184,9 @@ public class PointCloudEditorUI : MonoBehaviour
         int totalPoints = points != null ? points.Length : 0;
 
         float width = 450f; // Scale up width from 390f
-        float height = 910f; // Scale up height from 870f
+        float height = 710f; // Adjusted height from 910f to make space for top bar
         float posX = 20f;
-        float posY = 20f;
+        float posY = 220f; // Downwards shift to make space for top pipeline bar
 
         GUILayout.BeginArea(new Rect(posX, posY, width, height), windowStyle);
 
@@ -427,13 +438,6 @@ public class PointCloudEditorUI : MonoBehaviour
             GUILayout.Space(8);
         }
 
-        // --- 6.5. Noise Filter (Foldout) ---
-        foldoutNoiseFilter = GUILayout.Toggle(foldoutNoiseFilter, (foldoutNoiseFilter ? "▼ " : "▶ ") + "🧹 空中モヤ・浮遊点ノイズ除去", foldoutHeaderStyle);
-        if (foldoutNoiseFilter && noiseFilterUI != null)
-        {
-            noiseFilterUI.DrawNoiseFilterSection(width, textStyle, toggleStyle, buttonStyle, activeButtonStyle);
-            GUILayout.Space(8);
-        }
 
         // --- 7. Load File Selection (Foldout) ---
         foldoutLoad = GUILayout.Toggle(foldoutLoad, (foldoutLoad ? "▼ " : "▶ ") + "📂 読み込みPLYファイル選択", foldoutHeaderStyle);

@@ -124,11 +124,18 @@ namespace PointCloudWorkbench
         public string processMode = "full";
         public float voxelSize = 0.005f;
 
+        // 動的なパイプライン順序を保持するリスト
+        public List<FilterStepConfig> customPipeline = new List<FilterStepConfig>();
+
         /// <summary>
         /// パイプラインの順序定義リストを生成します。
         /// </summary>
         public List<FilterStepConfig> GetPipeline()
         {
+            if (customPipeline != null && customPipeline.Count > 0)
+            {
+                return customPipeline;
+            }
             return new List<FilterStepConfig>
             {
                 whiteHaze,

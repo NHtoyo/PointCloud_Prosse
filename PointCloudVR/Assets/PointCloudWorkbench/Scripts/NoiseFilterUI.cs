@@ -11,7 +11,7 @@ namespace PointCloudWorkbench
     public class NoiseFilterUI : MonoBehaviour
     {
         private PointCloudEditor editor;
-        private NoiseFilterParams _params = new NoiseFilterParams();
+        public NoiseFilterParams Params = new NoiseFilterParams();
 
         // 非同期スレッド完了検知用フラグ
         private volatile bool filterFinishedFlag = false;
@@ -73,36 +73,36 @@ namespace PointCloudWorkbench
         {
             GUILayout.Label("⚙ 処理モード設定", textStyle);
             GUILayout.BeginHorizontal();
-            if (GUILayout.Button("Full (全体適用)", _params.processMode == "full" ? activeButtonStyle : buttonStyle, GUILayout.Width((width - 35) / 2f)))
+            if (GUILayout.Button("Full (全体適用)", Params.processMode == "full" ? activeButtonStyle : buttonStyle, GUILayout.Width((width - 35) / 2f)))
             {
-                _params.processMode = "full";
+                Params.processMode = "full";
             }
             GUI.enabled = false; // 点数不一致バグ回避のため一時的に無効化
-            if (GUILayout.Button("Downsample (プレビュー)", _params.processMode == "downsample" ? activeButtonStyle : buttonStyle, GUILayout.Width((width - 35) / 2f)))
+            if (GUILayout.Button("Downsample (プレビュー)", Params.processMode == "downsample" ? activeButtonStyle : buttonStyle, GUILayout.Width((width - 35) / 2f)))
             {
-                _params.processMode = "downsample";
+                Params.processMode = "downsample";
             }
             GUI.enabled = true;
             GUILayout.EndHorizontal();
 
-            if (_params.processMode == "downsample")
+            if (Params.processMode == "downsample")
             {
-                GUILayout.Label($"  ボクセルサイズ: {_params.voxelSize:F4} m", textStyle);
-                _params.voxelSize = GUILayout.HorizontalSlider(_params.voxelSize, 0.001f, 0.02f);
+                GUILayout.Label($"  ボクセルサイズ: {Params.voxelSize:F4} m", textStyle);
+                Params.voxelSize = GUILayout.HorizontalSlider(Params.voxelSize, 0.001f, 0.02f);
             }
             GUILayout.Space(5);
         }
 
         private void DrawWhiteHazeSection(GUIStyle textStyle, GUIStyle toggleStyle)
         {
-            _params.whiteHaze.enabled = GUILayout.Toggle(_params.whiteHaze.enabled, " 空中白モヤ除去 (White Haze) を有効化", toggleStyle);
-            if (_params.whiteHaze.enabled)
+            Params.whiteHaze.enabled = GUILayout.Toggle(Params.whiteHaze.enabled, " 空中白モヤ除去 (White Haze) を有効化", toggleStyle);
+            if (Params.whiteHaze.enabled)
             {
-                GUILayout.Label($"    最小輝度 (Brightness >=): {_params.whiteHaze.brightness:F1}", textStyle);
-                _params.whiteHaze.brightness = GUILayout.HorizontalSlider(_params.whiteHaze.brightness, 100.0f, 255.0f);
+                GUILayout.Label($"    最小輝度 (Brightness >=): {Params.whiteHaze.brightness:F1}", textStyle);
+                Params.whiteHaze.brightness = GUILayout.HorizontalSlider(Params.whiteHaze.brightness, 100.0f, 255.0f);
 
-                GUILayout.Label($"    最大彩度 (Saturation <=): {_params.whiteHaze.saturation:F2}", textStyle);
-                _params.whiteHaze.saturation = GUILayout.HorizontalSlider(_params.whiteHaze.saturation, 0.01f, 1.0f);
+                GUILayout.Label($"    最大彩度 (Saturation <=): {Params.whiteHaze.saturation:F2}", textStyle);
+                Params.whiteHaze.saturation = GUILayout.HorizontalSlider(Params.whiteHaze.saturation, 0.01f, 1.0f);
 
                 GUILayout.Space(3);
                 var prevColor = GUI.contentColor;
@@ -115,8 +115,8 @@ namespace PointCloudWorkbench
 
         private void DrawCcSection(GUIStyle textStyle, GUIStyle toggleStyle)
         {
-            _params.cc.enabled = GUILayout.Toggle(_params.cc.enabled, " 平面推定ノイズ除去 (CC風・推奨) を有効化", toggleStyle);
-            if (_params.cc.enabled)
+            Params.cc.enabled = GUILayout.Toggle(Params.cc.enabled, " 平面推定ノイズ除去 (CC風・推奨) を有効化", toggleStyle);
+            if (Params.cc.enabled)
             {
                 var prevColor = GUI.contentColor;
                 GUI.contentColor = new Color(0.95f, 0.65f, 0.2f); // オレンジイエロー
@@ -125,114 +125,114 @@ namespace PointCloudWorkbench
 
                 GUILayout.BeginHorizontal();
                 GUILayout.Label("    近傍モード:", textStyle, GUILayout.Width(100));
-                bool selectedKnn = GUILayout.Toggle(_params.cc.useKnn, "KNN (近傍点数)", toggleStyle);
-                bool selectedRadius = GUILayout.Toggle(!_params.cc.useKnn, "Radius (近傍半径)", toggleStyle);
-                if (selectedKnn != _params.cc.useKnn)
+                bool selectedKnn = GUILayout.Toggle(Params.cc.useKnn, "KNN (近傍点数)", toggleStyle);
+                bool selectedRadius = GUILayout.Toggle(!Params.cc.useKnn, "Radius (近傍半径)", toggleStyle);
+                if (selectedKnn != Params.cc.useKnn)
                 {
-                    _params.cc.useKnn = selectedKnn;
+                    Params.cc.useKnn = selectedKnn;
                 }
-                else if (selectedRadius == _params.cc.useKnn)
+                else if (selectedRadius == Params.cc.useKnn)
                 {
-                    _params.cc.useKnn = !selectedRadius;
+                    Params.cc.useKnn = !selectedRadius;
                 }
                 GUILayout.EndHorizontal();
 
-                if (_params.cc.useKnn)
+                if (Params.cc.useKnn)
                 {
-                    GUILayout.Label($"      近傍点数 (k): {_params.cc.k}", textStyle);
-                    _params.cc.k = Mathf.RoundToInt(GUILayout.HorizontalSlider(_params.cc.k, 3f, 50f));
+                    GUILayout.Label($"      近傍点数 (k): {Params.cc.k}", textStyle);
+                    Params.cc.k = Mathf.RoundToInt(GUILayout.HorizontalSlider(Params.cc.k, 3f, 50f));
                 }
                 else
                 {
-                    GUILayout.Label($"      近傍半径 (radius): {_params.cc.radius:F3} m", textStyle);
-                    _params.cc.radius = GUILayout.HorizontalSlider(_params.cc.radius, 0.005f, 0.2f);
+                    GUILayout.Label($"      近傍半径 (radius): {Params.cc.radius:F3} m", textStyle);
+                    Params.cc.radius = GUILayout.HorizontalSlider(Params.cc.radius, 0.005f, 0.2f);
                 }
 
                 GUILayout.BeginHorizontal();
                 GUILayout.Label("    閾値モード:", textStyle, GUILayout.Width(100));
-                bool selectedRel = GUILayout.Toggle(_params.cc.useRelative, "相対シグマ", toggleStyle);
-                bool selectedAbs = GUILayout.Toggle(!_params.cc.useRelative, "絶対誤差", toggleStyle);
-                if (selectedRel != _params.cc.useRelative)
+                bool selectedRel = GUILayout.Toggle(Params.cc.useRelative, "相対シグマ", toggleStyle);
+                bool selectedAbs = GUILayout.Toggle(!Params.cc.useRelative, "絶対誤差", toggleStyle);
+                if (selectedRel != Params.cc.useRelative)
                 {
-                    _params.cc.useRelative = selectedRel;
+                    Params.cc.useRelative = selectedRel;
                 }
-                else if (selectedAbs == _params.cc.useRelative)
+                else if (selectedAbs == Params.cc.useRelative)
                 {
-                    _params.cc.useRelative = !selectedAbs;
+                    Params.cc.useRelative = !selectedAbs;
                 }
                 GUILayout.EndHorizontal();
 
-                if (_params.cc.useRelative)
+                if (Params.cc.useRelative)
                 {
-                    GUILayout.Label($"      標準偏差倍率 (Sigma): {_params.cc.sigma:F2}", textStyle);
-                    _params.cc.sigma = GUILayout.HorizontalSlider(_params.cc.sigma, 0.1f, 3.0f);
+                    GUILayout.Label($"      標準偏差倍率 (Sigma): {Params.cc.sigma:F2}", textStyle);
+                    Params.cc.sigma = GUILayout.HorizontalSlider(Params.cc.sigma, 0.1f, 3.0f);
                 }
                 else
                 {
-                    GUILayout.Label($"      絶対誤差閾値 (Error): {_params.cc.error:F4} m", textStyle);
-                    _params.cc.error = GUILayout.HorizontalSlider(_params.cc.error, 0.0001f, 0.05f);
+                    GUILayout.Label($"      絶対誤差閾値 (Error): {Params.cc.error:F4} m", textStyle);
+                    Params.cc.error = GUILayout.HorizontalSlider(Params.cc.error, 0.0001f, 0.05f);
                 }
 
-                _params.cc.removeIsolated = GUILayout.Toggle(_params.cc.removeIsolated, "    近傍不足の孤立点も除去する", toggleStyle);
+                Params.cc.removeIsolated = GUILayout.Toggle(Params.cc.removeIsolated, "    近傍不足の孤立点も除去する", toggleStyle);
             }
             GUILayout.Space(5);
         }
 
         private void DrawSorSection(GUIStyle textStyle, GUIStyle toggleStyle)
         {
-            _params.sor.enabled = GUILayout.Toggle(_params.sor.enabled, " 統計的ノイズ除去 (SOR) を有効化", toggleStyle);
-            if (_params.sor.enabled)
+            Params.sor.enabled = GUILayout.Toggle(Params.sor.enabled, " 統計的ノイズ除去 (SOR) を有効化", toggleStyle);
+            if (Params.sor.enabled)
             {
-                GUILayout.Label($"    隣接点数 (Neighbors): {_params.sor.nb}", textStyle);
-                _params.sor.nb = Mathf.RoundToInt(GUILayout.HorizontalSlider(_params.sor.nb, 5f, 50f));
+                GUILayout.Label($"    隣接点数 (Neighbors): {Params.sor.nb}", textStyle);
+                Params.sor.nb = Mathf.RoundToInt(GUILayout.HorizontalSlider(Params.sor.nb, 5f, 50f));
 
-                GUILayout.Label($"    標準偏差倍率 (StdMul): {_params.sor.std:F2}", textStyle);
-                _params.sor.std = GUILayout.HorizontalSlider(_params.sor.std, 0.5f, 3.0f);
+                GUILayout.Label($"    標準偏差倍率 (StdMul): {Params.sor.std:F2}", textStyle);
+                Params.sor.std = GUILayout.HorizontalSlider(Params.sor.std, 0.5f, 3.0f);
             }
             GUILayout.Space(5);
         }
 
         private void DrawRorSection(GUIStyle textStyle, GUIStyle toggleStyle)
         {
-            _params.ror.enabled = GUILayout.Toggle(_params.ror.enabled, " 半径外れ値除去 (ROR) を有効化 (補助)", toggleStyle);
-            if (_params.ror.enabled)
+            Params.ror.enabled = GUILayout.Toggle(Params.ror.enabled, " 半径外れ値除去 (ROR) を有効化 (補助)", toggleStyle);
+            if (Params.ror.enabled)
             {
-                GUILayout.Label($"    検索半径倍率 (RadiusMul): {_params.ror.mul:F2}", textStyle);
-                _params.ror.mul = GUILayout.HorizontalSlider(_params.ror.mul, 1.0f, 10.0f);
+                GUILayout.Label($"    検索半径倍率 (RadiusMul): {Params.ror.mul:F2}", textStyle);
+                Params.ror.mul = GUILayout.HorizontalSlider(Params.ror.mul, 1.0f, 10.0f);
 
-                GUILayout.Label($"    最小隣接点数 (MinNeighbors): {_params.ror.min}", textStyle);
-                _params.ror.min = Mathf.RoundToInt(GUILayout.HorizontalSlider(_params.ror.min, 1f, 30f));
+                GUILayout.Label($"    最小隣接点数 (MinNeighbors): {Params.ror.min}", textStyle);
+                Params.ror.min = Mathf.RoundToInt(GUILayout.HorizontalSlider(Params.ror.min, 1f, 30f));
             }
             GUILayout.Space(5);
         }
 
         private void DrawDensitySection(GUIStyle textStyle, GUIStyle toggleStyle)
         {
-            _params.density.enabled = GUILayout.Toggle(_params.density.enabled, " 低密度ノイズ判定を有効化", toggleStyle);
-            if (_params.density.enabled)
+            Params.density.enabled = GUILayout.Toggle(Params.density.enabled, " 低密度ノイズ判定を有効化", toggleStyle);
+            if (Params.density.enabled)
             {
-                GUILayout.Label($"    近傍点数 (Density k): {_params.density.k}", textStyle);
-                _params.density.k = Mathf.RoundToInt(GUILayout.HorizontalSlider(_params.density.k, 3f, 32f));
+                GUILayout.Label($"    近傍点数 (Density k): {Params.density.k}", textStyle);
+                Params.density.k = Mathf.RoundToInt(GUILayout.HorizontalSlider(Params.density.k, 3f, 32f));
 
-                GUILayout.Label($"    低密度閾値: {_params.density.threshold:F4}", textStyle);
-                _params.density.threshold = GUILayout.HorizontalSlider(_params.density.threshold, 0.0f, 100.0f);
+                GUILayout.Label($"    低密度閾値: {Params.density.threshold:F4}", textStyle);
+                Params.density.threshold = GUILayout.HorizontalSlider(Params.density.threshold, 0.0f, 100.0f);
             }
             GUILayout.Space(5);
         }
 
         private void DrawDbscanSection(GUIStyle textStyle, GUIStyle toggleStyle)
         {
-            _params.dbscan.enabled = GUILayout.Toggle(_params.dbscan.enabled, " クラスタノイズ除去 (DBSCAN) を有効化", toggleStyle);
-            if (_params.dbscan.enabled)
+            Params.dbscan.enabled = GUILayout.Toggle(Params.dbscan.enabled, " クラスタノイズ除去 (DBSCAN) を有効化", toggleStyle);
+            if (Params.dbscan.enabled)
             {
-                GUILayout.Label($"    近傍半径倍率 (EpsMul): {_params.dbscan.eps:F2}", textStyle);
-                _params.dbscan.eps = GUILayout.HorizontalSlider(_params.dbscan.eps, 1.0f, 10.0f);
+                GUILayout.Label($"    近傍半径倍率 (EpsMul): {Params.dbscan.eps:F2}", textStyle);
+                Params.dbscan.eps = GUILayout.HorizontalSlider(Params.dbscan.eps, 1.0f, 10.0f);
 
-                GUILayout.Label($"    最小近傍点数 (MinPoints): {_params.dbscan.min}", textStyle);
-                _params.dbscan.min = Mathf.RoundToInt(GUILayout.HorizontalSlider(_params.dbscan.min, 2f, 50f));
+                GUILayout.Label($"    最小近傍点数 (MinPoints): {Params.dbscan.min}", textStyle);
+                Params.dbscan.min = Mathf.RoundToInt(GUILayout.HorizontalSlider(Params.dbscan.min, 2f, 50f));
 
-                GUILayout.Label($"    最小クラスタサイズ: {_params.dbscan.cluster} 点", textStyle);
-                _params.dbscan.cluster = Mathf.RoundToInt(GUILayout.HorizontalSlider(_params.dbscan.cluster, 10f, 1000f));
+                GUILayout.Label($"    最小クラスタサイズ: {Params.dbscan.cluster} 点", textStyle);
+                Params.dbscan.cluster = Mathf.RoundToInt(GUILayout.HorizontalSlider(Params.dbscan.cluster, 10f, 1000f));
             }
             GUILayout.Space(8);
         }
@@ -291,7 +291,7 @@ namespace PointCloudWorkbench
             }
         }
 
-        private void RunNoiseFilterAnalysis()
+        public void RunNoiseFilterAnalysis()
         {
             if (editor == null || editor.targetRenderer == null) return;
             var loader = editor.targetRenderer.GetComponent<PointCloudLoader>();
@@ -317,7 +317,7 @@ namespace PointCloudWorkbench
                     NoiseFilterResult result = await PythonBridge.RunDenoiserAsync(
                         inputPath,
                         outputDir,
-                        _params,
+                        Params,
                         token
                     );
 
