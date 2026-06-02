@@ -39,7 +39,14 @@ public class PointCloudManager : MonoBehaviour
     private GUIStyle buttonStyle;
     private GUIStyle activeButtonStyle;
     private GUIStyle textStyle;
+    private GUIStyle foldoutHeaderStyle;
     private bool stylesInitialized = false;
+
+    // LOD & Stats variables ported from PointCloudEditorUI
+    private PointCloudEditor editorInstance;
+    private Vector2 rightScrollPos;
+    private bool foldoutLOD = true;
+    private bool foldoutStats = true;
 
     private CloudCompareCameraController ccCameraController;
 
@@ -451,6 +458,19 @@ public class PointCloudManager : MonoBehaviour
         textStyle.normal.textColor = new Color(0.9f, 0.9f, 0.9f);
         textStyle.margin = new RectOffset(0, 0, 2, 2);
 
+        Texture2D foldoutBg = new Texture2D(1, 1);
+        foldoutBg.SetPixel(0, 0, new Color(0.18f, 0.22f, 0.28f, 0.9f));
+        foldoutBg.Apply();
+
+        foldoutHeaderStyle = new GUIStyle(GUI.skin.button);
+        foldoutHeaderStyle.fontSize = 14;
+        foldoutHeaderStyle.fontStyle = FontStyle.Bold;
+        foldoutHeaderStyle.alignment = TextAnchor.MiddleLeft;
+        foldoutHeaderStyle.normal.textColor = Color.white;
+        foldoutHeaderStyle.padding = new RectOffset(10, 10, 6, 6);
+        foldoutHeaderStyle.margin = new RectOffset(0, 0, 5, 5);
+        foldoutHeaderStyle.normal.background = foldoutBg;
+
         stylesInitialized = true;
     }
 
@@ -458,17 +478,26 @@ public class PointCloudManager : MonoBehaviour
     {
         InitializeStyles();
 
-        // 400x740 size control window on the right side of the screen
+        // 400x910 size control window on the right side of the screen (height increased to 910 to match left UI and fit new sections)
         float width = 400f;
-        float height = 740f;
+        float height = 910f;
         float posX = Screen.width - width - 20f;
-        float posY = 20f; // 元の最上部付近に戻す
+        float posY = 20f;
  
         GUILayout.BeginArea(new Rect(posX, posY, width, height), windowStyle);
  
         GUILayout.Label("☁ CloudCompare Unity機能パネル", headerStyle);
         GUILayout.Box("", GUILayout.Height(2)); // Separator line
-        GUILayout.Space(10);
+        GUILayout.Space(5);
+
+        // Scrollview to fit everything cleanly
+        rightScrollPos = GUILayout.BeginScrollView(rightScrollPos, GUILayout.Width(width - 15), GUILayout.Height(height - 40));
+
+        // Find PointCloudEditor if not found
+        if (editorInstance == null)
+        {
+            editorInstance = Object.FindAnyObjectByType<PointCloudEditor>();
+        }
 
         // --- 1. Target Controls Selection ---
         GUILayout.Label("🎮 操作モード", textStyle);
@@ -569,7 +598,68 @@ public class PointCloudManager : MonoBehaviour
         {
             GUILayout.Label("C2C距離計算が未実行です。上のボタンを押してください。", textStyle);
         }
+        GUILayout.Space(15);
 
+        // --- 7. Ported: LOD & Culling settings (Foldout) ---
+        if (editorInstance != null && editorInstance.targetRenderer != null)
+        {
+            foldoutLOD = GUILayout.Toggle(foldoutLOD, (foldoutLOD ? "▼ " : "▶ ") + "💻 レンダリング最適化 (LOD & Culling)", foldoutHeaderStyle);
+            if (foldoutLOD)
+            {
+                GUILayout.Space(3);
+                var rend = editorInstance.targetRenderer;
+                rend.enableLOD = GUILayout.Toggle(rend.enableLOD, " LOD・カリングを有効化 (CCスタイル)");
+                
+                if (rend.enableLOD)
+                {
+                    GUILayout.Label($"  LOD閾値 (間引き率): {rend.lodThreshold:F4}", textStyle);
+                    rend.lodThreshold = GUILayout.HorizontalSlider(rend.lodThreshold, 0.005f, 0.1f);
+                    GUILayout.Label("  (右にするほど描画が粗くなります)", textStyle);
+                }
+                
+                if (rend.IsOctreeBuilding)
+                {
+                    GUILayout.Label("  ⏳ オクトリーをバックグラウンド構築中...", textStyle);
+                }
+                else if (rend.IsOctreeReady)
+                {
+                    GUILayout.Label("  ✅ オクトリー構築完了 (LOD有効)", textStyle);
+                }
+                GUILayout.Space(8);
+            }
+        }
+
+        // --- 8. Ported: Dataset Statistics (Foldout) ---
+        if (editorInstance != null && editorInstance.targetRenderer != null)
+        {
+            int totalPoints = editorInstance.targetRenderer.GetPointData() != null ? editorInstance.targetRenderer.GetPointData().Length : 0;
+            foldoutStats = GUILayout.Toggle(foldoutStats, (foldoutStats ? "▼ " : "▶ ") + "📊 データセット統計 (PointNet形式)", foldoutHeaderStyle);
+            if (foldoutStats)
+            {
+                GUILayout.Space(3);
+                GUILayout.Label($"総点数: {totalPoints:N0}", textStyle);
+                var rend = editorInstance.targetRenderer;
+                if (rend.enableLOD)
+                {
+                    GUILayout.Label($"描画点数: {rend.GetActiveDrawCount():N0} (LOD適用率: {((float)rend.GetActiveDrawCount() / Mathf.Max(totalPoints, 1) * 100f):F1}%)", textStyle);
+                }
+                else
+                {
+                    GUILayout.Label($"描画点数: {totalPoints:N0} (LOD無効)", textStyle);
+                }
+                int[] counts = editorInstance.GetLabelCounts();
+                GUILayout.Label($"  - 未分類 (0): {counts[0]:N0}", textStyle);
+                GUILayout.Label($"  - 茎 (茶色) (1): {counts[1]:N0}", textStyle);
+                GUILayout.Label($"  - 葉 (緑色) (2): {counts[2]:N0}", textStyle);
+                GUILayout.Label($"  - 果実 (赤色) (3): {counts[3]:N0}", textStyle);
+                GUILayout.Label($"  - 花 (黄色) (4): {counts[4]:N0}", textStyle);
+                GUILayout.Label($"  - 支柱 (青色) (5): {counts[5]:N0}", textStyle);
+                GUILayout.Label($"  - 削除済/ノイズ (6): {counts[6]:N0}", textStyle);
+                GUILayout.Space(5);
+            }
+        }
+
+        GUILayout.EndScrollView();
         GUILayout.EndArea();
     }
 }

@@ -492,64 +492,6 @@ public class PointCloudEditorUI : MonoBehaviour
             GUILayout.Space(8);
         }
 
-        // --- 8. LOD & Culling settings (Foldout) ---
-        foldoutLOD = GUILayout.Toggle(foldoutLOD, (foldoutLOD ? "▼ " : "▶ ") + "💻 レンダリング最適化 (LOD & Culling)", foldoutHeaderStyle);
-        if (foldoutLOD)
-        {
-            GUILayout.Space(3);
-            var rend = editor.targetRenderer;
-            if (rend != null)
-            {
-                rend.enableLOD = GUILayout.Toggle(rend.enableLOD, " LOD・カリングを有効化 (CCスタイル)");
-                
-                if (rend.enableLOD)
-                {
-                    GUILayout.Label($"  LOD閾値 (間引き率): {rend.lodThreshold:F4}", textStyle);
-                    rend.lodThreshold = GUILayout.HorizontalSlider(rend.lodThreshold, 0.005f, 0.1f);
-                    GUILayout.Label("  (右にするほど描画が粗くなります)", textStyle);
-                }
-                
-                if (rend.IsOctreeBuilding)
-                {
-                    GUILayout.Label("  ⏳ オクトリーをバックグラウンド構築中...", textStyle);
-                }
-                else if (rend.IsOctreeReady)
-                {
-                    GUILayout.Label("  ✅ オクトリー構築完了 (LOD有効)", textStyle);
-                }
-            }
-            GUILayout.Space(8);
-        }
-
-        // --- 9. Statistics Window (Foldout) ---
-        foldoutStats = GUILayout.Toggle(foldoutStats, (foldoutStats ? "▼ " : "▶ ") + "📊 データセット統計 (PointNet形式)", foldoutHeaderStyle);
-        if (foldoutStats)
-        {
-            GUILayout.Space(3);
-            GUILayout.Label($"総点数: {totalPoints:N0}", textStyle);
-            var rend = editor.targetRenderer;
-            if (rend != null)
-            {
-                if (rend.enableLOD)
-                {
-                    GUILayout.Label($"描画点数: {rend.GetActiveDrawCount():N0} (LOD適用率: {((float)rend.GetActiveDrawCount() / Mathf.Max(totalPoints, 1) * 100f):F1}%)", textStyle);
-                }
-                else
-                {
-                    GUILayout.Label($"描画点数: {totalPoints:N0} (LOD無効)", textStyle);
-                }
-            }
-            int[] counts = editor.GetLabelCounts();
-            GUILayout.Label($"  - 未分類 (0): {counts[0]:N0}", textStyle);
-            GUILayout.Label($"  - 茎 (茶色) (1): {counts[1]:N0}", textStyle);
-            GUILayout.Label($"  - 葉 (緑色) (2): {counts[2]:N0}", textStyle);
-            GUILayout.Label($"  - 果実 (赤色) (3): {counts[3]:N0}", textStyle);
-            GUILayout.Label($"  - 花 (黄色) (4): {counts[4]:N0}", textStyle);
-            GUILayout.Label($"  - 支柱 (青色) (5): {counts[5]:N0}", textStyle);
-            GUILayout.Label($"  - 削除済/ノイズ (6): {counts[6]:N0}", textStyle);
-            GUILayout.Space(5);
-        }
-
         // --- 10. PLY Export (Visible even when stats foldout is closed) ---
         GUILayout.Space(8);
         if (GUILayout.Button("💾 PLYをエクスポート", activeButtonStyle))
