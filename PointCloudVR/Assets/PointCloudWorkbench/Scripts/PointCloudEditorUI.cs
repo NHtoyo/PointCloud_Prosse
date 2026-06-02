@@ -34,6 +34,10 @@ public class PointCloudEditorUI : MonoBehaviour
     private bool foldoutLOD = true;
     private bool foldoutStats = true;
 
+    // Export Dialog Status
+    private bool showExportDialog = false;
+    private Rect exportDialogRect = new Rect(0, 0, 320, 160);
+
     private NoiseFilterUI noiseFilterUI;
     private FilterPipelineEditorUI pipelineEditorUI;
 
@@ -249,6 +253,7 @@ public class PointCloudEditorUI : MonoBehaviour
         else if (editor.activeTool == PointCloudEditor.EditTool.Connect)
         {
             GUILayout.Label("🌀 空間近接（接続探索）設定", textStyle);
+            editor.connectionRadius = Mathf.Clamp(editor.connectionRadius, 0.00005f, 0.02f);
             GUILayout.Label($"  接続しきい値 (距離): {editor.connectionRadius:F5} m", textStyle);
             editor.connectionRadius = GUILayout.HorizontalSlider(editor.connectionRadius, 0.00005f, 0.02f);
 
@@ -542,14 +547,16 @@ public class PointCloudEditorUI : MonoBehaviour
             GUILayout.Label($"  - 花 (黄色) (4): {counts[4]:N0}", textStyle);
             GUILayout.Label($"  - 支柱 (青色) (5): {counts[5]:N0}", textStyle);
             GUILayout.Label($"  - 削除済/ノイズ (6): {counts[6]:N0}", textStyle);
-            
-            GUILayout.Space(3);
-            if (GUILayout.Button("💾 ラベル付きPLYをエクスポート (ASCII)", activeButtonStyle))
-            {
-                editor.ExportLabeledPoints();
-            }
             GUILayout.Space(5);
         }
+
+        // --- 10. PLY Export (Visible even when stats foldout is closed) ---
+        GUILayout.Space(8);
+        if (GUILayout.Button("💾 PLYをエクスポート", activeButtonStyle))
+        {
+            showExportDialog = true;
+        }
+        GUILayout.Space(5);
 
         GUILayout.EndScrollView();
         GUILayout.EndArea();
@@ -580,6 +587,42 @@ public class PointCloudEditorUI : MonoBehaviour
         if (pm.IsRunning)
         {
             DrawProgressDialog(pm);
+        }
+
+        // --- 11. Format Selection Dialog for Export ---
+        if (showExportDialog)
+        {
+            exportDialogRect.x = (Screen.width - exportDialogRect.width) / 2f;
+            exportDialogRect.y = (Screen.height - exportDialogRect.height) / 2f;
+            exportDialogRect = GUI.Window(999, exportDialogRect, DrawExportDialogWindow, "💾 PLYエクスポート設定", windowStyle);
+            GUI.BringWindowToFront(999);
+        }
+    }
+
+    private void DrawExportDialogWindow(int windowID)
+    {
+        GUILayout.Space(10);
+        GUILayout.Label(" 出力フォーマットを選択してください:", textStyle);
+        GUILayout.Space(15);
+        
+        GUILayout.BeginHorizontal();
+        if (GUILayout.Button("ASCII (テキスト)", buttonStyle, GUILayout.Height(35)))
+        {
+            showExportDialog = false;
+            editor.ExportLabeledPoints(false);
+        }
+        GUILayout.Space(10);
+        if (GUILayout.Button("Binary (バイナリ)", buttonStyle, GUILayout.Height(35)))
+        {
+            showExportDialog = false;
+            editor.ExportLabeledPoints(true);
+        }
+        GUILayout.EndHorizontal();
+        
+        GUILayout.Space(15);
+        if (GUILayout.Button("キャンセル", buttonStyle, GUILayout.Height(25)))
+        {
+            showExportDialog = false;
         }
     }
 

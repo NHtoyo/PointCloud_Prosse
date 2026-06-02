@@ -80,6 +80,7 @@ public class PointCloudEditor : MonoBehaviour
     public int[] GetLabelCounts() => labelCounts;
     public void MarkStatsDirty() => statsDirty = true;
 
+
     void Start()
     {
         if (targetRenderer == null)
@@ -92,6 +93,9 @@ public class PointCloudEditor : MonoBehaviour
         {
             editorUI = gameObject.AddComponent<PointCloudEditorUI>();
         }
+
+        // シーン保存等による古い範囲外の値（0.03mなど）をクランプして初期スライダー表示崩れを防止
+        connectionRadius = Mathf.Clamp(connectionRadius, 0.00005f, 0.02f);
 
         CreateBrushVisual();
         statsDirty = true;
@@ -720,7 +724,7 @@ public class PointCloudEditor : MonoBehaviour
     }
 
     // Exporter in background thread to prevent freezing
-    public void ExportLabeledPoints()
+    public void ExportLabeledPoints(bool asBinary = false)
     {
         PointData[] points = targetRenderer.GetPointData();
         if (points == null || points.Length == 0)
@@ -737,7 +741,7 @@ public class PointCloudEditor : MonoBehaviour
         var pm = PointCloudProgressManager.Instance;
         pm.Start("PLYファイル書き出し", "書き出しデータ準備中...");
 
-        Debug.Log($"[PointCloudEditor] Starting background export to: {exportPath}");
+        Debug.Log($"[PointCloudEditor] Starting background export to: {exportPath} (Binary: {asBinary})");
 
         Task.Run(() =>
         {
@@ -753,47 +757,107 @@ public class PointCloudEditor : MonoBehaviour
                     if ((points[i].label & 0x20000) == 0) nonDeletedCount++;
                 }
 
-                using (StreamWriter writer = new StreamWriter(exportPath))
+                if (asBinary)
                 {
-                    // PLY ASCII Header
-                    writer.WriteLine("ply");
-                    writer.WriteLine("format ascii 1.0");
-                    writer.WriteLine($"element vertex {nonDeletedCount}");
-                    writer.WriteLine("property float x");
-                    writer.WriteLine("property float y");
-                    writer.WriteLine("property float z");
-                    writer.WriteLine("property uchar red");
-                    writer.WriteLine("property uchar green");
-                    writer.WriteLine("property uchar blue");
-                    writer.WriteLine("property int label");
-                    writer.WriteLine("end_header");
-
-                    int written = 0;
-                    int progressInterval = Mathf.Max(1000, nonDeletedCount / 100);
-
-                    for (int i = 0; i < points.Length; i++)
+                    using (FileStream fs = new FileStream(exportPath, FileMode.Create, FileAccess.Write))
+                    using (BinaryWriter binWriter = new BinaryWriter(fs))
                     {
-                        if (token.IsCancellationRequested)
-                        {
-                            writer.Close();
-                            if (File.Exists(exportPath)) File.Delete(exportPath);
-                            return;
-                        }
-
-                        int labelVal = points[i].label;
-                        bool isDeleted = (labelVal & 0x20000) != 0;
-                        if (isDeleted) continue; // skip noise
-
-                        Vector3 pos = points[i].position;
-                        Color32 col = PointData.UnpackColor(points[i].originalColor);
-                        int classId = labelVal & 0xFFFF;
-
-                        writer.WriteLine($"{pos.x.ToString(CultureInfo.InvariantCulture)} {pos.y.ToString(CultureInfo.InvariantCulture)} {pos.z.ToString(CultureInfo.InvariantCulture)} {col.r} {col.g} {col.b} {classId}");
+                        // PLY Header (ASCII characters)
+                        string header = "ply\n" +
+                                        "format binary_little_endian 1.0\n" +
+                                        $"element vertex {nonDeletedCount}\n" +
+                                        "property float x\n" +
+                                        "property float y\n" +
+                                        "property float z\n" +
+                                        "property uchar red\n" +
+                                        "property uchar green\n" +
+                                        "property uchar blue\n" +
+                                        "property int label\n" +
+                                        "end_header\n";
                         
-                        written++;
-                        if (written % progressInterval == 0)
+                        byte[] headerBytes = System.Text.Encoding.ASCII.GetBytes(header);
+                        binWriter.Write(headerBytes);
+
+                        int written = 0;
+                        int progressInterval = Mathf.Max(1000, nonDeletedCount / 100);
+
+                        for (int i = 0; i < points.Length; i++)
                         {
-                            pm.Update((float)written / nonDeletedCount, $"データを書き出し中... ({written:N0} / {nonDeletedCount:N0} 点)");
+                            if (token.IsCancellationRequested)
+                            {
+                                binWriter.Close();
+                                if (File.Exists(exportPath)) File.Delete(exportPath);
+                                return;
+                            }
+
+                            int labelVal = points[i].label;
+                            bool isDeleted = (labelVal & 0x20000) != 0;
+                            if (isDeleted) continue; // skip noise
+
+                            Vector3 pos = points[i].position;
+                            Color32 col = PointData.UnpackColor(points[i].originalColor);
+                            int classId = labelVal & 0xFFFF;
+
+                            binWriter.Write(pos.x);
+                            binWriter.Write(pos.y);
+                            binWriter.Write(pos.z);
+                            binWriter.Write(col.r);
+                            binWriter.Write(col.g);
+                            binWriter.Write(col.b);
+                            binWriter.Write(classId);
+
+                            written++;
+                            if (written % progressInterval == 0)
+                            {
+                                pm.Update((float)written / nonDeletedCount, $"データを書き出し中... ({written:N0} / {nonDeletedCount:N0} 点)");
+                            }
+                        }
+                    }
+                }
+                else
+                {
+                    using (StreamWriter writer = new StreamWriter(exportPath))
+                    {
+                        // PLY ASCII Header
+                        writer.WriteLine("ply");
+                        writer.WriteLine("format ascii 1.0");
+                        writer.WriteLine($"element vertex {nonDeletedCount}");
+                        writer.WriteLine("property float x");
+                        writer.WriteLine("property float y");
+                        writer.WriteLine("property float z");
+                        writer.WriteLine("property uchar red");
+                        writer.WriteLine("property uchar green");
+                        writer.WriteLine("property uchar blue");
+                        writer.WriteLine("property int label");
+                        writer.WriteLine("end_header");
+
+                        int written = 0;
+                        int progressInterval = Mathf.Max(1000, nonDeletedCount / 100);
+
+                        for (int i = 0; i < points.Length; i++)
+                        {
+                            if (token.IsCancellationRequested)
+                            {
+                                writer.Close();
+                                if (File.Exists(exportPath)) File.Delete(exportPath);
+                                return;
+                            }
+
+                            int labelVal = points[i].label;
+                            bool isDeleted = (labelVal & 0x20000) != 0;
+                            if (isDeleted) continue; // skip noise
+
+                            Vector3 pos = points[i].position;
+                            Color32 col = PointData.UnpackColor(points[i].originalColor);
+                            int classId = labelVal & 0xFFFF;
+
+                            writer.WriteLine($"{pos.x.ToString(CultureInfo.InvariantCulture)} {pos.y.ToString(CultureInfo.InvariantCulture)} {pos.z.ToString(CultureInfo.InvariantCulture)} {col.r} {col.g} {col.b} {classId}");
+                            
+                            written++;
+                            if (written % progressInterval == 0)
+                            {
+                                pm.Update((float)written / nonDeletedCount, $"データを書き出し中... ({written:N0} / {nonDeletedCount:N0} 点)");
+                            }
                         }
                     }
                 }
