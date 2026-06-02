@@ -249,8 +249,8 @@ public class PointCloudEditorUI : MonoBehaviour
         else if (editor.activeTool == PointCloudEditor.EditTool.Connect)
         {
             GUILayout.Label("🌀 空間近接（接続探索）設定", textStyle);
-            GUILayout.Label($"  接続しきい値 (距離): {editor.connectionRadius:F3} m", textStyle);
-            editor.connectionRadius = GUILayout.HorizontalSlider(editor.connectionRadius, 0.005f, 0.2f);
+            GUILayout.Label($"  接続しきい値 (距離): {editor.connectionRadius:F5} m", textStyle);
+            editor.connectionRadius = GUILayout.HorizontalSlider(editor.connectionRadius, 0.00005f, 0.02f);
 
             GUILayout.Label($"  最大接続制限点数: {editor.maxConnectionPoints:N0} 点", textStyle);
             

@@ -19,7 +19,7 @@ public class PointCloudEditor : MonoBehaviour
     public int activeLabelClass = 2; // Default to Leaf (2) for painting
 
     [Header("Advanced Selection Settings")]
-    public float connectionRadius = 0.03f;
+    public float connectionRadius = 0.005f;
     public int maxConnectionPoints = 50000;
 
     public enum RansacType { Plane, Cylinder }
