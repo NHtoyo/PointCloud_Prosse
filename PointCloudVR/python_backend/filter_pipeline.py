@@ -50,6 +50,23 @@ class FilterPipeline:
             base_spacing = estimate_base_spacing(points)
             print(f"[Pipeline] 基準点間隔の初期推定完了: {base_spacing:.6f} m")
  
+        # 重みの定義と各ステップの進捗範囲の動的計算
+        FILTER_WEIGHTS = {
+            "sor": 30.0,
+            "cc_noise": 32.0,
+            "ror": 15.0,
+            "density": 15.0,
+            "dbscan": 3.0,
+            "white_haze": 1.0
+        }
+        
+        enabled_steps = [step for step in self.steps if step.enabled]
+        total_weight = sum(FILTER_WEIGHTS.get(step.name, 10.0) for step in enabled_steps)
+        if total_weight == 0.0:
+            total_weight = 1.0
+            
+        accumulated_weight = 0.0
+
         for step in self.steps:
             if not step.enabled:
                 continue
@@ -61,8 +78,33 @@ class FilterPipeline:
             print(f"[Pipeline] Step '{step.name}' 実行中... (入力点数: {active_count:,})")
             t0 = time.time()
  
+            # 順序通りの進捗範囲を計算（同じフィルタが複数回登場しても正しく動くようにする）
+            w = FILTER_WEIGHTS.get(step.name, 10.0)
+            start_pct = (accumulated_weight / total_weight) * 100.0
+            end_pct = ((accumulated_weight + w) / total_weight) * 100.0
+
+            class ProgressThrottler:
+                def __init__(self, step_name, s_pct, e_pct):
+                    self.step_name = step_name
+                    self.s_pct = s_pct
+                    self.e_pct = e_pct
+                    self.last_emitted_pct = -999.0
+
+                def __call__(self, fraction):
+                    global_pct = self.s_pct + (self.e_pct - self.s_pct) * fraction
+                    # 0.5%以上進んだか、最初(0.0)・最後(1.0)のときだけ出力する
+                    if abs(global_pct - self.last_emitted_pct) >= 0.5 or fraction == 0.0 or fraction == 1.0:
+                        print(f"[Progress] {global_pct:.1f} {self.step_name}フィルタを実行中...", flush=True)
+                        self.last_emitted_pct = global_pct
+
+            def make_progress_callback(step_name, s_pct, e_pct):
+                return ProgressThrottler(step_name, s_pct, e_pct)
+
+            cb = make_progress_callback(step.name, start_pct, end_pct)
+
             # フィルタごとの個別処理
             if step.name == "white_haze":
+                cb(0.0)
                 # White Haze は色情報を必要とする
                 wh_res = step.func(
                     active_points,
@@ -70,6 +112,7 @@ class FilterPipeline:
                     brightness_min=step.params.get('brightness_min', 190.0),
                     saturation_max=step.params.get('saturation_max', 0.20)
                 )
+                cb(1.0)
                 
                 # 元サイズに展開して記録
                 candidate_mask_full = np.zeros(n_points, dtype=bool)
@@ -100,7 +143,8 @@ class FilterPipeline:
                         active_points,
                         tree,
                         nb_neighbors=step.params.get('nb_neighbors', 20),
-                        std_ratio=step.params.get('std_ratio', 1.5)
+                        std_ratio=step.params.get('std_ratio', 1.5),
+                        progress_callback=cb
                     )
                     
                     remove_mask_full = np.zeros(n_points, dtype=bool)
@@ -123,7 +167,8 @@ class FilterPipeline:
                         base_spacing,
                         tree,
                         radius_multiplier=step.params.get('radius_multiplier', 3.0),
-                        min_neighbors=step.params.get('min_neighbors', 8)
+                        min_neighbors=step.params.get('min_neighbors', 8),
+                        progress_callback=cb
                     )
                     
                     remove_mask_full = np.zeros(n_points, dtype=bool)
@@ -144,7 +189,8 @@ class FilterPipeline:
                     res = step.func(
                         active_points,
                         tree,
-                        k=step.params.get('k', 8)
+                        k=step.params.get('k', 8),
+                        progress_callback=cb
                     )
                     
                     density_score_full = np.zeros(n_points, dtype=np.float32)
@@ -175,7 +221,8 @@ class FilterPipeline:
                         use_knn=step.params.get('use_knn', True),
                         radius=step.params.get('radius', None),
                         remove_isolated_points=step.params.get('remove_isolated_points', False),
-                        chunk_size=step.params.get('chunk_size', 25000)
+                        chunk_size=step.params.get('chunk_size', 25000),
+                        progress_callback=cb
                     )
                     
                     remove_mask_full = np.zeros(n_points, dtype=bool)
@@ -193,6 +240,7 @@ class FilterPipeline:
                         active_mask = active_mask & ~remove_mask_full
  
             elif step.name == "dbscan":
+                cb(0.0)
                 # DBSCAN は自動ダウンサンプリング判定や KDTree 伝播など独自の内部制御が必要
                 dbscan_mode = 'full'
                 dbscan_voxel_size = None
@@ -244,6 +292,7 @@ class FilterPipeline:
                         cluster_id_full[active_indices] = dbscan_res['cluster_id']
                         remove_mask_full[active_indices] = dbscan_res['remove_mask']
                         dbscan_timeout = dbscan_res['timeout']
+                cb(1.0)
  
                 step_results.append({
                     'name': 'dbscan',
@@ -256,10 +305,12 @@ class FilterPipeline:
                 })
                 if step.exclude_from_next:
                     active_mask = active_mask & ~remove_mask_full
- 
+
+            # ステップ実行完了後に累積ウェイトを加算
+            accumulated_weight += w
             print(f"[Pipeline] Step '{step.name}' 完了. (所要時間: {time.time() - t0:.2f}秒)")
- 
-        # 後処理・マージ処理
+            
+                # 後処理・マージ処理
         # 各種マスク初期化
         remove_mask_wh = np.zeros(n_points, dtype=bool)
         remove_mask_sor = np.zeros(n_points, dtype=bool)

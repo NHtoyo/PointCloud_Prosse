@@ -46,7 +46,7 @@ def estimate_base_spacing(points: np.ndarray, k: int = 8) -> float:
     mean_dists = np.mean(dists, axis=1)
     return float(np.median(mean_dists))
 
-def compute_sor(points: np.ndarray, tree: cKDTree = None, nb_neighbors: int = 20, std_ratio: float = 1.5) -> dict:
+def compute_sor(points: np.ndarray, tree: cKDTree = None, nb_neighbors: int = 20, std_ratio: float = 1.5, progress_callback = None) -> dict:
     """
     SOR (Statistical Outlier Removal) を計算します。
     
@@ -56,18 +56,32 @@ def compute_sor(points: np.ndarray, tree: cKDTree = None, nb_neighbors: int = 20
             'sor_score': float32[N]
         }
     """
-    if len(points) == 0:
+    n_points = len(points)
+    if n_points == 0:
         return {'remove_mask': np.array([], dtype=bool), 'sor_score': np.array([], dtype=np.float32)}
-    if len(points) == 1:
+    if n_points == 1:
         return {'remove_mask': np.zeros(1, dtype=bool), 'sor_score': np.zeros(1, dtype=np.float32)}
 
     if tree is None:
         tree = cKDTree(points)
-    query_k = min(nb_neighbors + 1, len(points))
-    dists, _ = tree.query(points, k=query_k)
-    dists = np.atleast_2d(dists)
-    mean_dists = np.mean(dists[:, 1:], axis=1) if dists.shape[1] > 1 else np.zeros(len(points), dtype=np.float32)
+    query_k = min(nb_neighbors + 1, n_points)
     
+    mean_dists = np.zeros(n_points, dtype=np.float32)
+    chunk_size = 100000
+    total_chunks = math.ceil(n_points / chunk_size)
+    
+    for chunk_index, start in enumerate(range(0, n_points, chunk_size), start=1):
+        end = min(start + chunk_size, n_points)
+        chunk_points = points[start:end]
+        dists, _ = tree.query(chunk_points, k=query_k)
+        dists = np.atleast_2d(dists)
+        if dists.shape[1] > 1:
+            mean_dists[start:end] = np.mean(dists[:, 1:], axis=1)
+        else:
+            mean_dists[start:end] = 0.0
+        if progress_callback:
+            progress_callback(chunk_index / total_chunks)
+            
     mean = np.mean(mean_dists)
     std = np.std(mean_dists)
     
@@ -83,7 +97,7 @@ def compute_sor(points: np.ndarray, tree: cKDTree = None, nb_neighbors: int = 20
         'sor_score': sor_score.astype(np.float32)
     }
 
-def compute_ror(points: np.ndarray, base_spacing: float, tree: cKDTree = None, radius_multiplier: float = 3.0, min_neighbors: int = 8) -> dict:
+def compute_ror(points: np.ndarray, base_spacing: float, tree: cKDTree = None, radius_multiplier: float = 3.0, min_neighbors: int = 8, progress_callback = None) -> dict:
     """
     ROR (Radius Outlier Removal) を計算します。
     
@@ -93,16 +107,26 @@ def compute_ror(points: np.ndarray, base_spacing: float, tree: cKDTree = None, r
             'radius_neighbor_count': int32[N]
         }
     """
-    if len(points) == 0:
+    n_points = len(points)
+    if n_points == 0:
         return {'remove_mask': np.array([], dtype=bool), 'radius_neighbor_count': np.array([], dtype=np.int32)}
         
     radius = base_spacing * radius_multiplier
     if tree is None:
         tree = cKDTree(points)
-    counts = tree.query_ball_point(points, r=radius, return_length=True)
+        
+    neighbor_counts = np.zeros(n_points, dtype=np.int32)
+    chunk_size = 50000
+    total_chunks = math.ceil(n_points / chunk_size)
     
-    # 自身を除いた近傍点数
-    neighbor_counts = (counts - 1).clip(min=0)
+    for chunk_index, start in enumerate(range(0, n_points, chunk_size), start=1):
+        end = min(start + chunk_size, n_points)
+        chunk_points = points[start:end]
+        counts = tree.query_ball_point(chunk_points, r=radius, return_length=True)
+        neighbor_counts[start:end] = (counts - 1).clip(min=0)
+        if progress_callback:
+            progress_callback(chunk_index / total_chunks)
+            
     remove_mask = neighbor_counts < min_neighbors
     
     return {
@@ -110,7 +134,7 @@ def compute_ror(points: np.ndarray, base_spacing: float, tree: cKDTree = None, r
         'radius_neighbor_count': neighbor_counts.astype(np.int32)
     }
 
-def compute_density(points: np.ndarray, tree: cKDTree = None, k: int = 8) -> dict:
+def compute_density(points: np.ndarray, tree: cKDTree = None, k: int = 8, progress_callback = None) -> dict:
     """
     各点の局所密度スコアを計算します。
     density_score = 1 / (k近傍平均距離 + 1e-6)
@@ -120,17 +144,32 @@ def compute_density(points: np.ndarray, tree: cKDTree = None, k: int = 8) -> dic
             'density_score': float32[N]
         }
     """
-    if len(points) == 0:
+    n_points = len(points)
+    if n_points == 0:
         return {'density_score': np.array([], dtype=np.float32)}
-    if len(points) == 1:
+    if n_points == 1:
         return {'density_score': np.zeros(1, dtype=np.float32)}
 
     if tree is None:
         tree = cKDTree(points)
-    query_k = min(k + 1, len(points))
-    dists, _ = tree.query(points, k=query_k)
-    dists = np.atleast_2d(dists)
-    mean_dists = np.mean(dists[:, 1:], axis=1) if dists.shape[1] > 1 else np.zeros(len(points), dtype=np.float32)
+    query_k = min(k + 1, n_points)
+    
+    mean_dists = np.zeros(n_points, dtype=np.float32)
+    chunk_size = 100000
+    total_chunks = math.ceil(n_points / chunk_size)
+    
+    for chunk_index, start in enumerate(range(0, n_points, chunk_size), start=1):
+        end = min(start + chunk_size, n_points)
+        chunk_points = points[start:end]
+        dists, _ = tree.query(chunk_points, k=query_k)
+        dists = np.atleast_2d(dists)
+        if dists.shape[1] > 1:
+            mean_dists[start:end] = np.mean(dists[:, 1:], axis=1)
+        else:
+            mean_dists[start:end] = 0.0
+        if progress_callback:
+            progress_callback(chunk_index / total_chunks)
+            
     density_score = 1.0 / (mean_dists + 1e-6)
     
     return {
@@ -145,7 +184,8 @@ def compute_cc_noise(points: np.ndarray,
                      use_knn: bool = True,
                      radius: float = None,
                      remove_isolated_points: bool = False,
-                     chunk_size: int = 25000) -> dict:
+                     chunk_size: int = 25000,
+                     progress_callback = None) -> dict:
     """
     CloudCompare風の局所平面残差ノイズフィルタを計算します。
 
@@ -226,6 +266,8 @@ def compute_cc_noise(points: np.ndarray,
 
             if total_chunks > 1:
                 print(f"  CC局所平面解析 {chunk_index}/{total_chunks} チャンク完了")
+            if progress_callback:
+                progress_callback(chunk_index / total_chunks)
     else:
         if radius is None or radius <= 0.0:
             raise ValueError("CloudCompare風の Radius モードでは radius > 0 が必要です。")
@@ -269,6 +311,8 @@ def compute_cc_noise(points: np.ndarray,
 
             if total_chunks > 1:
                 print(f"  CC局所平面解析 {chunk_index}/{total_chunks} チャンク完了")
+            if progress_callback:
+                progress_callback(chunk_index / total_chunks)
 
     return {
         'remove_mask': remove_mask.astype(bool),

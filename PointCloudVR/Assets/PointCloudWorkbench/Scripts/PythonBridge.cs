@@ -70,10 +70,10 @@ namespace PointCloudWorkbench
                 throw new FileNotFoundException($"Python繝弱う繧ｺ繝輔ぅ繝ｫ繧ｿ繧ｹ繧ｯ繝ｪ繝励ヨ縺瑚ｦ九▽縺九ｊ縺ｾ縺帙ｓ: {scriptPath}");
             }
 
-            // 蜃ｺ蜉帙ョ繧｣繝ｬ繧ｯ繝医Μ縺ｮ菴懈�
+            // 出力ディレクトリの作成
             Directory.CreateDirectory(outputDir);
 
-            // 蠑墓焚縺ｮ邨�∩遶九※
+            // 引数の構築
             string arguments = BuildArguments(scriptPath, inputPlyPath, outputDir, filterParams);
 
             ProcessStartInfo psi = new ProcessStartInfo
@@ -89,7 +89,7 @@ namespace PointCloudWorkbench
             };
 
 
-            UnityEngine.Debug.Log($"[PythonBridge] 螳溯｡後さ繝槭Φ繝�: {pythonPath} {psi.Arguments}");
+            UnityEngine.Debug.Log($"[PythonBridge] 実行コマンド: {pythonPath} {psi.Arguments}");
 
             using (Process process = new Process())
             {
@@ -98,10 +98,10 @@ namespace PointCloudWorkbench
                 StringBuilder outputLog = new StringBuilder();
                 StringBuilder errorLog = new StringBuilder();
 
-                // 譛蠕後�繝ｭ繧ｰ騾壻ｿ｡譌･譎ゑｼ亥�譛溷､縺ｯUTC縺ｮ迴ｾ蝨ｨ縺ｮTick謨ｰ��
+                // 最後の活動時刻（処理時間はUTCの現在時刻のTick数）
                 long lastActivityTicks = System.DateTime.UtcNow.Ticks;
 
-                // 蜃ｺ蜉帙ｒ髱槫酔譛溘〒隱ｭ縺ｿ蜃ｺ縺励�ｲ謐励せ繝��繧ｿ繧ｹ繧呈峩譁ｰ縺吶ｋ
+                // 出力を非同期で読み出し、進捗ステータスを更新する
                 process.OutputDataReceived += (sender, e) =>
                 {
                     if (e.Data != null)
@@ -110,22 +110,34 @@ namespace PointCloudWorkbench
                         outputLog.AppendLine(e.Data);
                         UnityEngine.Debug.Log($"[Python Out] {e.Data}");
                         
-                        // 騾ｲ謐玲峩譁ｰ繝｡繝�そ繝ｼ繧ｸ縺ｮ邁｡譏薙ヱ繝ｼ繧ｵ繝ｼ
-                        if (e.Data.Contains("PLY繝輔ぃ繧､繝ｫ繧偵Ο繝ｼ繝我ｸｭ"))
+                        // 進捗更新メッセージのデシリアライズ/パーサー
+                        if (e.Data.StartsWith("[Progress]"))
                         {
-                            PointCloudProgressManager.Instance.Update(0.2f, "轤ｹ鄒､繝��繧ｿ繧単ython縺ｸ繝ｭ繝ｼ繝我ｸｭ...");
+                            string partsStr = e.Data.Substring(10).Trim();
+                            int spaceIndex = partsStr.IndexOf(' ');
+                            if (spaceIndex > 0)
+                            {
+                                string numStr = partsStr.Substring(0, spaceIndex);
+                                string msgStr = partsStr.Substring(spaceIndex + 1);
+                                if (float.TryParse(numStr, System.Globalization.NumberStyles.Any, System.Globalization.CultureInfo.InvariantCulture, out float pct))
+                                {
+                                    // Python側の0〜100%の進捗を、C#全体の0.2f〜0.8f（20%〜80%）にマッピング
+                                    float mappedProgress = 0.2f + 0.6f * (pct / 100f);
+                                    PointCloudProgressManager.Instance.Update(mappedProgress, msgStr);
+                                }
+                            }
                         }
-                        else if (e.Data.Contains("蜃ｦ逅�ｒ髢句ｧ九＠縺ｾ縺�"))
+                        else if (e.Data.Contains("PLYファイルをロード中") || e.Data.Contains("PLY繝輔ぃ繧､繝ｫ繧偵Ο繝ｼ繝我ｸｭ"))
                         {
-                            PointCloudProgressManager.Instance.Update(0.4f, "繝弱う繧ｺ髯､蜴ｻ繧｢繝ｫ繧ｴ繝ｪ繧ｺ繝�繧貞ｮ溯｡御ｸｭ (SOR/ROR/DBSCAN)...");
+                            PointCloudProgressManager.Instance.Update(0.1f, "点群データをPythonへロード中...");
                         }
-                        else if (e.Data.Contains("閾ｪ蜍輔ム繧ｦ繝ｳ繧ｵ繝ｳ繝励Μ繝ｳ繧ｰ"))
+                        else if (e.Data.Contains("処理を開始します") || e.Data.Contains("蜃ｦ逅ｒ髢句ｧ九＠縺ｾ縺"))
                         {
-                            PointCloudProgressManager.Instance.Update(0.6f, "DBSCAN繧ｯ繝ｩ繧ｹ繧ｿ讀懷�繧定�蜍輔ム繧ｦ繝ｳ繧ｵ繝ｳ繝励Ν縺励※螳溯｡御ｸｭ...");
+                            PointCloudProgressManager.Instance.Update(0.2f, "ノイズ除去処理を開始します...");
                         }
-                        else if (e.Data.Contains("邨先棡蜃ｺ蜉帙ョ繧｣繝ｬ繧ｯ繝医Μ"))
+                        else if (e.Data.Contains("結果出力ディレクトリ") || e.Data.Contains("邨先棡蜃ｺ蜉帙ョ繧｣繝ｬ繧ｯ繝医Μ"))
                         {
-                            PointCloudProgressManager.Instance.Update(0.8f, "邨先棡繝舌う繝翫Μ繝��繧ｿ繧剃ｿ晏ｭ倅ｸｭ...");
+                            PointCloudProgressManager.Instance.Update(0.8f, "結果バイナリデータを保存中...");
                         }
                     }
                 };
@@ -295,7 +307,9 @@ namespace PointCloudWorkbench
             argsBuilder.Append($" --config_json \"{configJsonPath}\"");
 
             return argsBuilder.ToString();
-        }/// <summary>
+        }
+
+        /// <summary>
         /// 謖�ｮ壹＆繧後◆蜃ｺ蜉帙ョ繧｣繝ｬ繧ｯ繝医Μ縺ｮ繝舌う繝翫Μ繝輔ぃ繧､繝ｫ縺翫ｈ縺ｳJSON繧帝ｫ倬溘Ο繝ｼ繝峨＠縺ｾ縺吶�
         /// </summary>
         private static NoiseFilterResult LoadFilterResult(string outputDir)

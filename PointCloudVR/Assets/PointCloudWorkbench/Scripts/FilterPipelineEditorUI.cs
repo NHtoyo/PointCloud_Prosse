@@ -136,7 +136,11 @@ namespace PointCloudWorkbench
             InitStyles();
 
             float barW = Screen.width - BAR_X - RIGHT_W - 30f; // Calculate space in betweenleft and right panels
-            float barH = TOP_H + PARAM_H;
+            
+            // ブロック選択の有無に応じて高さを動的に変更 (非選択時はパラメータ領域を非表示に)
+            var pl = noiseFilterUI?.Params?.customPipeline;
+            bool hasSelection = selectedBlockIndex >= 0 && pl != null && selectedBlockIndex < pl.Count;
+            float barH = hasSelection ? (TOP_H + PARAM_H) : TOP_H;
             Rect bar = new Rect(BAR_X, BAR_Y, barW, barH);
 
             // バー背景
@@ -146,11 +150,14 @@ namespace PointCloudWorkbench
             DrawPalette(bar);
             DrawLane(bar);
 
-            // 区切り線
-            DrawDivider(new Rect(BAR_X + 5, BAR_Y + TOP_H, barW - 10, 1));
+            if (hasSelection)
+            {
+                // 区切り線
+                DrawDivider(new Rect(BAR_X + 5, BAR_Y + TOP_H, barW - 10, 1));
 
-            // 下段: パラメータ（バー内に統合、外部には一切出ない）
-            DrawParamPanel(new Rect(BAR_X, BAR_Y + TOP_H + 1, barW, PARAM_H - 1));
+                // 下段: パラメータ（バー内に統合、選択時のみ描画）
+                DrawParamPanel(new Rect(BAR_X, BAR_Y + TOP_H + 1, barW, PARAM_H - 1));
+            }
 
             // ドラッグゴースト / コンテキストメニュー
             DrawDragGhost();

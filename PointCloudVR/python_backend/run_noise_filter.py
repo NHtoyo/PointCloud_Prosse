@@ -61,6 +61,8 @@ def setup_argparser():
     parser.add_argument("--dbscan_cluster", type=int, default=200, help="小クラスタと判定する閾値サイズ (default: 200)")
     parser.add_argument("--dbscan_target", type=int, default=200000, help="DBSCAN自動ダウンサンプル時の目標点数 (default: 200000)")
     parser.add_argument("--dbscan_timeout", type=int, default=120, help="DBSCANのタイムアウト秒数 (default: 120)")
+    parser.add_argument("--wh_brightness", type=float, default=190.0, help="White Haze判定の明るさ閾値 (default: 190.0)")
+    parser.add_argument("--wh_saturation", type=float, default=0.20, help="White Haze判定の彩度閾値 (default: 0.20)")
     
     # JSON構成ファイルの指定（優先）
     parser.add_argument("--config_json", default=None, help="パイプラインの順序とパラメータを記述したJSON構成ファイルのパス")
