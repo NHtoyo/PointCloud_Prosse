@@ -29,6 +29,13 @@ namespace PointCloudWorkbench
         // コピーバッファ
         private string copiedBlockType = null;
 
+        // プリセット用
+        private bool isPresetPopupOpen = false;
+        private bool shouldFocusPresetField = false;
+        private string presetSaveName = "NewPreset";
+        private Vector2 presetScroll = Vector2.zero;
+        private Rect presetPopupRect;
+
         // スタイル
         private GUIStyle panelStyle, titleStyle, hintStyle, labelStyle;
         private GUIStyle blockStyle, activeBlockStyle, paletteBlockStyle;
@@ -70,6 +77,7 @@ namespace PointCloudWorkbench
         // =========================================================
         private void HandleKeyboard()
         {
+            if (isPresetPopupOpen) return;
             if (noiseFilterUI?.Params?.customPipeline == null) return;
             var pl = noiseFilterUI.Params.customPipeline;
 
@@ -162,13 +170,88 @@ namespace PointCloudWorkbench
             // ドラッグゴースト / コンテキストメニュー
             DrawDragGhost();
             DrawContextMenu();
+            DrawPresetMenu();
 
             // このUIバーの外部をクリックした際にブロック選択を解除する
             var ev = Event.current;
-            if (ev.type == EventType.MouseDown && !bar.Contains(ev.mousePosition))
+            if (ev.type == EventType.MouseDown && !bar.Contains(ev.mousePosition) && !isPresetPopupOpen)
             {
                 selectedBlockIndex = -1;
             }
+        }
+
+        private void DrawPresetMenu()
+        {
+            if (!isPresetPopupOpen) return;
+
+            // GUI.Window を使用することで、クリックの背後へのすり抜け(Click-through)を防止し、
+            // テキストフィールドのフォーカス入力を確実に行えるようにします。
+            presetPopupRect = GUI.Window(99, presetPopupRect, DrawPresetWindow, "", panelStyle);
+
+            var ev = Event.current;
+            if (ev.type == EventType.MouseDown && !presetPopupRect.Contains(ev.mousePosition))
+            {
+                isPresetPopupOpen = false;
+                ev.Use();
+            }
+        }
+
+        private void DrawPresetWindow(int windowID)
+        {
+            // GUI.Windowの内部座標 (x=0, y=0 起点)
+            GUILayout.BeginArea(new Rect(5, 10, presetPopupRect.width - 10, presetPopupRect.height - 20));
+
+            GUILayout.Label("プリセット保存", titleStyle);
+            GUILayout.BeginHorizontal();
+            GUI.SetNextControlName("PresetNameField");
+            presetSaveName = GUILayout.TextField(presetSaveName, GUILayout.Width(210));
+            if (shouldFocusPresetField)
+            {
+                GUI.FocusControl("PresetNameField");
+                shouldFocusPresetField = false;
+            }
+            if (GUILayout.Button("保存", activeBlockStyle, GUILayout.Width(60)))
+            {
+                EnsurePipeline();
+                NoiseFilterPresetManager.SavePreset(presetSaveName, noiseFilterUI.Params);
+                isPresetPopupOpen = false;
+            }
+            GUILayout.EndHorizontal();
+
+            GUILayout.Space(10);
+            GUILayout.Label("プリセット読込", titleStyle);
+
+            presetScroll = GUILayout.BeginScrollView(presetScroll);
+            var presets = NoiseFilterPresetManager.GetPresetNames();
+            if (presets.Count == 0)
+            {
+                GUILayout.Label("プリセットはありません", hintStyle);
+            }
+            else
+            {
+                foreach (var p in presets)
+                {
+                    GUILayout.BeginHorizontal();
+                    if (GUILayout.Button(p, blockStyle, GUILayout.Width(220)))
+                    {
+                        NoiseFilterPresetManager.LoadPreset(p, noiseFilterUI.Params);
+                        selectedBlockIndex = -1;
+                        isPresetPopupOpen = false;
+                    }
+                    if (GUILayout.Button("削", paletteBlockStyle, GUILayout.Width(40)))
+                    {
+                        NoiseFilterPresetManager.DeletePreset(p);
+                    }
+                    GUILayout.EndHorizontal();
+                }
+            }
+            GUILayout.EndScrollView();
+
+            if (GUILayout.Button("閉じる", paletteBlockStyle))
+            {
+                isPresetPopupOpen = false;
+            }
+            GUILayout.EndArea();
         }
 
         // =========================================================
@@ -184,6 +267,7 @@ namespace PointCloudWorkbench
             float usable = TOP_H - titleH - 8f - (AvailableTypes.Length - 1) * 3f;
             float bH = Mathf.Floor(usable / AvailableTypes.Length);
             bH = Mathf.Clamp(bH, 18f, 32f); // パレットボタンの高さ制限を拡大 (14-22 -> 18-32)
+            bH = Mathf.Clamp(bH, 18f, 32f);
 
             GUI.Label(new Rect(px, py, bW, titleH), "パレット", titleStyle);
             py += titleH + 2f;
@@ -213,39 +297,40 @@ namespace PointCloudWorkbench
         }
 
         // =========================================================
-        // レーン描画（絶対座標）
+        // レーン描画
         // =========================================================
         private void DrawLane(Rect bar)
         {
             const float p      = 5f;
-            const float titleH = 22f; // タイトル高さを文字拡大に合わせる
-            const float btnW   = 85f;  // ボタン幅を文字拡大に合わせる
+            const float titleH = 22f;
+            const float btnW   = 85f;
             const float commitW = 95f;
+            const float presetW = 85f;
             const float resetW = 95f;
             const float undoW = 80f;
             const float redoW = 80f;
-            const float modeW  = 120f; // モード選択ボタンの幅を広げる
+            const float modeW  = 120f;
 
             float lx   = bar.x + PAL_W + 6f;
             float btnX = bar.x + bar.width - p - btnW;
             bool hasPreview = NoiseFilterManager.Instance.IsPreviewActive;
             float commitX = hasPreview ? btnX - 6f - commitW : btnX;
-            float resetX = commitX - 6f - resetW;
+            float presetX = commitX - 6f - presetW;
+            float resetX = presetX - 6f - resetW;
             float redoX = resetX - 6f - redoW;
             float undoX = redoX - 6f - undoW;
             float modeX = undoX - 6f - modeW;
 
-            // タイトル
-            GUI.Label(new Rect(lx, bar.y + p + 2f, modeX - lx - 4, titleH),
-                "順次実行レーン  (パレット D&D で追加 / ブロック D&D で並べ替え)", titleStyle);
+            GUI.Label(new Rect(lx, bar.y + p + 2f, modeX - lx - 4, titleH), "パイプライン・レーン", titleStyle);
 
-            // モードボタン (高さ 28f に拡大してフォントに合わせる)
             if (noiseFilterUI.Params != null)
             {
-                bool isFull = noiseFilterUI.Params.processMode == "full";
-                if (GUI.Button(new Rect(modeX, bar.y + p, modeW, 28f), isFull ? "全体適用" : "ダウンサンプル", activeBlockStyle))
-                    noiseFilterUI.Params.processMode = isFull ? "downsample" : "full";
+                if (GUI.Button(new Rect(modeX, bar.y + p, modeW, 28f), $"処理: {noiseFilterUI.Params.processMode}", blockStyle))
+                {
+                    noiseFilterUI.Params.processMode = noiseFilterUI.Params.processMode == "full" ? "downsample" : "full";
+                }
             }
+
             GUI.enabled = NoiseFilterManager.Instance.CanUndo;
             if (GUI.Button(new Rect(undoX, bar.y + p, undoW, 28f), "元に戻す", blockStyle))
             {
@@ -262,6 +347,16 @@ namespace PointCloudWorkbench
             if (GUI.Button(new Rect(resetX, bar.y + p, resetW, 28f), "標準構成", blockStyle))
             {
                 ResetToDefaultPipeline();
+            }
+            if (GUI.Button(new Rect(presetX, bar.y + p, presetW, 28f), "プリセット", blockStyle))
+            {
+                isPresetPopupOpen = !isPresetPopupOpen;
+                if (isPresetPopupOpen)
+                {
+                    presetSaveName = "NewPreset";
+                    presetPopupRect = new Rect(presetX - 100f, bar.y + p + 30f, 300f, 320f); // 少し左に広げる
+                    shouldFocusPresetField = true;
+                }
             }
             if (hasPreview && GUI.Button(new Rect(commitX, bar.y + p, commitW, 28f), "確定", activeBlockStyle))
             {
