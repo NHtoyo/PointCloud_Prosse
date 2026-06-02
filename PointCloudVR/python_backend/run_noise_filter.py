@@ -1,12 +1,17 @@
 import os
 import sys
 
-# OpenMP や MKL などのマルチスレッドライブラリのデッドロック防止（スレッド数を 1 に制限）
-os.environ["OMP_NUM_THREADS"] = "1"
-os.environ["MKL_NUM_THREADS"] = "1"
-os.environ["OPENBLAS_NUM_THREADS"] = "1"
-os.environ["VECLIB_MAXIMUM_THREADS"] = "1"
-os.environ["NUMEXPR_NUM_THREADS"] = "1"
+# 点群フィルタは近傍探索が主な負荷なので、既定ではCPUコアを使えるだけ使う。
+# BLAS系は小さな行列計算で過剰並列になりやすいため、既定では1に抑える。
+def _default_worker_count() -> str:
+    return str(max(1, (os.cpu_count() or 2) - 1))
+
+os.environ.setdefault("POINTCLOUD_FILTER_WORKERS", _default_worker_count())
+os.environ.setdefault("OMP_NUM_THREADS", os.environ["POINTCLOUD_FILTER_WORKERS"])
+os.environ.setdefault("MKL_NUM_THREADS", "1")
+os.environ.setdefault("OPENBLAS_NUM_THREADS", "1")
+os.environ.setdefault("VECLIB_MAXIMUM_THREADS", "1")
+os.environ.setdefault("NUMEXPR_NUM_THREADS", "1")
 
 import argparse
 import time
@@ -49,6 +54,8 @@ def setup_argparser():
     parser.add_argument("--density_k", type=int, default=8, help="密度推定 of k近傍数 (default: 8)")
     parser.add_argument("--density_thresh", type=float, default=0.0, 
                         help="密度による削除の閾値。0.0以下の場合は低密度削除を無効化 (default: 0.0)")
+    parser.add_argument("--density_percentile", type=float, default=3.0,
+                        help="密度スコアの下位何%を低密度候補にするか。0.0以下で無効 (default: 3.0)")
     parser.add_argument("--cc_k", type=int, default=20, help="CC平面フィルタの近傍点数 (default: 20)")
     parser.add_argument("--cc_sigma", type=float, default=1.0, help="CC平面フィルタの相対シグマ閾値 (default: 1.0)")
     parser.add_argument("--cc_error", type=float, default=0.0, help="CC平面フィルタの絶対誤差閾値 (default: 0.0)")
@@ -76,7 +83,7 @@ def build_pipeline_from_json(json_path):
     import json
     from filter_pipeline import FilterPipeline, FilterStep
     
-    with open(json_path, 'r', encoding='utf-8') as f:
+    with open(json_path, 'r', encoding='utf-8-sig') as f:
         config = json.load(f)
         
     pipeline = FilterPipeline()
@@ -136,14 +143,14 @@ def build_pipeline_from_json(json_path):
 
 def build_pipeline_from_args(args):
     # 有効フィルタ集合のパース
-    enabled_filters = set(args.filters or ["sor", "cc_noise", "dbscan", "white_haze"])
+    enabled_filters = set(args.filters or ["sor", "ror", "density", "cc_noise", "dbscan", "white_haze"])
     if "none" in enabled_filters:
         enabled_filters = set()
         
     params = {
         "sor": {"nb_neighbors": args.sor_nb, "std_ratio": args.sor_std},
         "ror": {"radius_multiplier": args.ror_mul, "min_neighbors": args.ror_min},
-        "density": {"k": args.density_k, "threshold": args.density_thresh},
+        "density": {"k": args.density_k, "threshold": args.density_thresh, "percentile": args.density_percentile},
         "cc_noise": {
             "k": args.cc_k,
             "relative_sigma": args.cc_sigma if args.cc_use_relative else 0.0,
@@ -255,6 +262,11 @@ def main():
     args = parser.parse_args()
     
     start_time = time.time()
+    print(
+        "並列設定: "
+        f"POINTCLOUD_FILTER_WORKERS={os.environ.get('POINTCLOUD_FILTER_WORKERS')}, "
+        f"OMP_NUM_THREADS={os.environ.get('OMP_NUM_THREADS')}"
+    )
     
     # 1. 入力ファイルの存在確認とロード
     if not os.path.exists(args.input):
@@ -282,7 +294,7 @@ def main():
     # JSON構成に processMode や voxelSize の設定値があれば反映させる
     if args.config_json is not None:
         import json
-        with open(args.config_json, 'r', encoding='utf-8') as f:
+        with open(args.config_json, 'r', encoding='utf-8-sig') as f:
             cfg = json.load(f)
             args.mode = cfg.get("processMode", args.mode)
             args.voxel_size = cfg.get("voxelSize", args.voxel_size)

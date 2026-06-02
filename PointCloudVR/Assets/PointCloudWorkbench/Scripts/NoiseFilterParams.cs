@@ -70,7 +70,7 @@ namespace PointCloudWorkbench
         public RorConfig()
         {
             name = "ror";
-            enabled = false;
+            enabled = true;
             excludeFromNext = true; // デフォルトで次段から除外
         }
     }
@@ -80,11 +80,12 @@ namespace PointCloudWorkbench
     {
         public int k = 8;
         public float threshold = 0.0f;
+        public float percentile = 3.0f;
 
         public DensityConfig()
         {
             name = "density";
-            enabled = false;
+            enabled = true;
             excludeFromNext = true; // デフォルトで次段から除外
         }
     }

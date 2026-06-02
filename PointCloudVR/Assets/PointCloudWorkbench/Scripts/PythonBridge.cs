@@ -266,7 +266,8 @@ namespace PointCloudWorkbench
                 else if (step is DensityConfig dn)
                 {
                     jsonBuilder.Append($"        \"k\": {dn.k},\n");
-                    jsonBuilder.Append($"        \"threshold\": {dn.threshold.ToString(System.Globalization.CultureInfo.InvariantCulture)}\n");
+                    jsonBuilder.Append($"        \"threshold\": {dn.threshold.ToString(System.Globalization.CultureInfo.InvariantCulture)},\n");
+                    jsonBuilder.Append($"        \"percentile\": {dn.percentile.ToString(System.Globalization.CultureInfo.InvariantCulture)}\n");
                 }
                 else if (step is DbscanConfig db)
                 {
@@ -328,14 +329,14 @@ namespace PointCloudWorkbench
             byte[] previewMask = LoadBinaryBytes(Path.Combine(outputDir, "preview_mask.bin"), count);
             byte[] whiteHazeCandidateMask = LoadBinaryBytes(Path.Combine(outputDir, "white_haze_candidate_mask.bin"), count);
             byte[] removeMask = LoadBinaryBytes(Path.Combine(outputDir, "remove_mask.bin"), count);
-            float[] sorScore = LoadBinaryFloats(Path.Combine(outputDir, "sor_score.bin"), count);
-            float[] densityScore = LoadBinaryFloats(Path.Combine(outputDir, "density_score.bin"), count);
-            int[] radiusNeighbor = LoadBinaryInts(Path.Combine(outputDir, "radius_neighbor_count.bin"), count);
-            float[] ccNoiseScore = LoadBinaryFloats(Path.Combine(outputDir, "cc_noise_score.bin"), count);
-            float[] whiteHazeScore = LoadBinaryFloats(Path.Combine(outputDir, "white_haze_score.bin"), count);
-            int[] clusterId = LoadBinaryInts(Path.Combine(outputDir, "cluster_id.bin"), count);
+            float[] sorScore = LoadBinaryFloatsOptional(Path.Combine(outputDir, "sor_score.bin"), count);
+            float[] densityScore = LoadBinaryFloatsOptional(Path.Combine(outputDir, "density_score.bin"), count);
+            int[] radiusNeighbor = LoadBinaryIntsOptional(Path.Combine(outputDir, "radius_neighbor_count.bin"), count, 0);
+            float[] ccNoiseScore = LoadBinaryFloatsOptional(Path.Combine(outputDir, "cc_noise_score.bin"), count);
+            float[] whiteHazeScore = LoadBinaryFloatsOptional(Path.Combine(outputDir, "white_haze_score.bin"), count);
+            int[] clusterId = LoadBinaryIntsOptional(Path.Combine(outputDir, "cluster_id.bin"), count, -1);
             int[] previewReason = LoadBinaryInts(Path.Combine(outputDir, "preview_reason.bin"), count);
-            int[] reason = LoadBinaryInts(Path.Combine(outputDir, "reason.bin"), count);
+            int[] reason = LoadBinaryIntsOptional(Path.Combine(outputDir, "reason.bin"), count, 0);
 
             return new NoiseFilterResult(count, previewMask, whiteHazeCandidateMask, removeMask, sorScore, densityScore, radiusNeighbor, ccNoiseScore, whiteHazeScore, clusterId, previewReason, reason);
         }
@@ -371,6 +372,15 @@ namespace PointCloudWorkbench
             return data;
         }
 
+        private static float[] LoadBinaryFloatsOptional(string path, int count)
+        {
+            if (!File.Exists(path))
+            {
+                return new float[count];
+            }
+            return LoadBinaryFloats(path, count);
+        }
+
         private static int[] LoadBinaryInts(string path, int count)
         {
             if (!File.Exists(path))
@@ -386,6 +396,23 @@ namespace PointCloudWorkbench
             int[] data = new int[count];
             Buffer.BlockCopy(rawBytes, 0, data, 0, rawBytes.Length);
             return data;
+        }
+
+        private static int[] LoadBinaryIntsOptional(string path, int count, int defaultValue)
+        {
+            if (!File.Exists(path))
+            {
+                int[] data = new int[count];
+                if (defaultValue != 0)
+                {
+                    for (int i = 0; i < data.Length; i++)
+                    {
+                        data[i] = defaultValue;
+                    }
+                }
+                return data;
+            }
+            return LoadBinaryInts(path, count);
         }
     }
 }

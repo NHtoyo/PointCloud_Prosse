@@ -1,4 +1,5 @@
 import math
+import os
 import numpy as np
 import open3d as o3d
 from scipy.spatial import cKDTree
@@ -9,6 +10,33 @@ import time
 DBSCAN_FULL_LIMIT    = 300_000   # これ以下ならFull DBSCANを許可
 DBSCAN_TARGET_POINTS = 200_000   # Downsample時の目標点数
 DBSCAN_TIMEOUT_SEC   = 120       # タイムアウト上限（秒）
+BASE_SPACING_SAMPLE_POINTS = 100_000
+
+def get_worker_count() -> int:
+    """
+    SciPy cKDTree の並列近傍探索に使うワーカー数を返します。
+    POINTCLOUD_FILTER_WORKERS を設定すると手動調整できます。
+    """
+    raw_value = os.environ.get("POINTCLOUD_FILTER_WORKERS", "")
+    try:
+        workers = int(raw_value)
+    except (TypeError, ValueError):
+        workers = max(1, (os.cpu_count() or 2) - 1)
+    return max(1, workers)
+
+KDTREE_WORKERS = get_worker_count()
+
+def _tree_query(tree: cKDTree, points: np.ndarray, k: int):
+    try:
+        return tree.query(points, k=k, workers=KDTREE_WORKERS)
+    except TypeError:
+        return tree.query(points, k=k)
+
+def _tree_query_ball_point(tree: cKDTree, points: np.ndarray, radius: float, return_length: bool = False):
+    try:
+        return tree.query_ball_point(points, r=radius, return_length=return_length, workers=KDTREE_WORKERS)
+    except TypeError:
+        return tree.query_ball_point(points, r=radius, return_length=return_length)
 
 def decide_dbscan_mode(n_points: int) -> str:
     """
@@ -22,21 +50,21 @@ def decide_dbscan_mode(n_points: int) -> str:
 def estimate_base_spacing(points: np.ndarray, k: int = 8) -> float:
     """
     点群の基準となる点間隔を推定します。
-    点数が非常に多い場合は、10万点をランダムサンプリングして高速に推定します。
+    点数が非常に多い場合は、等間隔サンプリングで高速かつ再現可能に推定します。
     """
     n = len(points)
     if n <= 1:
         return 0.0
     
-    if n > 100000:
-        indices = np.random.choice(n, 100000, replace=False)
+    if n > BASE_SPACING_SAMPLE_POINTS:
+        indices = np.linspace(0, n - 1, BASE_SPACING_SAMPLE_POINTS, dtype=np.int64)
         sample_points = points[indices]
     else:
         sample_points = points
         
     tree = cKDTree(sample_points)
     query_k = min(k + 1, len(sample_points))
-    dists, _ = tree.query(sample_points, k=query_k)
+    dists, _ = _tree_query(tree, sample_points, k=query_k)
     if query_k == 1:
         return 0.0
     # 自身(距離0)を除いた隣接点への距離
@@ -73,7 +101,7 @@ def compute_sor(points: np.ndarray, tree: cKDTree = None, nb_neighbors: int = 20
     for chunk_index, start in enumerate(range(0, n_points, chunk_size), start=1):
         end = min(start + chunk_size, n_points)
         chunk_points = points[start:end]
-        dists, _ = tree.query(chunk_points, k=query_k)
+        dists, _ = _tree_query(tree, chunk_points, k=query_k)
         dists = np.atleast_2d(dists)
         if dists.shape[1] > 1:
             mean_dists[start:end] = np.mean(dists[:, 1:], axis=1)
@@ -97,7 +125,9 @@ def compute_sor(points: np.ndarray, tree: cKDTree = None, nb_neighbors: int = 20
         'sor_score': sor_score.astype(np.float32)
     }
 
-def compute_ror(points: np.ndarray, base_spacing: float, tree: cKDTree = None, radius_multiplier: float = 3.0, min_neighbors: int = 8, progress_callback = None) -> dict:
+def compute_ror(points: np.ndarray, base_spacing: float, tree: cKDTree = None,
+                radius_multiplier: float = 3.0, min_neighbors: int = 8,
+                exact_count: bool = False, progress_callback = None) -> dict:
     """
     ROR (Radius Outlier Removal) を計算します。
     
@@ -114,15 +144,51 @@ def compute_ror(points: np.ndarray, base_spacing: float, tree: cKDTree = None, r
     radius = base_spacing * radius_multiplier
     if tree is None:
         tree = cKDTree(points)
-        
+
     neighbor_counts = np.zeros(n_points, dtype=np.int32)
+
+    if not exact_count:
+        min_neighbors = max(int(min_neighbors), 0)
+        if min_neighbors == 0:
+            return {
+                'remove_mask': np.zeros(n_points, dtype=bool),
+                'radius_neighbor_count': neighbor_counts
+            }
+        if n_points <= min_neighbors:
+            return {
+                'remove_mask': np.ones(n_points, dtype=bool),
+                'radius_neighbor_count': neighbor_counts
+            }
+
+        query_k = min_neighbors + 1  # 自分自身を含むので +1
+        chunk_size = 100000
+        total_chunks = math.ceil(n_points / chunk_size)
+        remove_mask = np.zeros(n_points, dtype=bool)
+
+        for chunk_index, start in enumerate(range(0, n_points, chunk_size), start=1):
+            end = min(start + chunk_size, n_points)
+            chunk_points = points[start:end]
+            dists, _ = _tree_query(tree, chunk_points, k=query_k)
+            dists = np.atleast_2d(dists)
+            kth_neighbor_dist = dists[:, min_neighbors]
+            chunk_remove_mask = kth_neighbor_dist > radius
+            remove_mask[start:end] = chunk_remove_mask
+            neighbor_counts[start:end] = np.where(chunk_remove_mask, 0, min_neighbors)
+            if progress_callback:
+                progress_callback(chunk_index / total_chunks)
+
+        return {
+            'remove_mask': remove_mask.astype(bool),
+            'radius_neighbor_count': neighbor_counts.astype(np.int32)
+        }
+
     chunk_size = 50000
     total_chunks = math.ceil(n_points / chunk_size)
     
     for chunk_index, start in enumerate(range(0, n_points, chunk_size), start=1):
         end = min(start + chunk_size, n_points)
         chunk_points = points[start:end]
-        counts = tree.query_ball_point(chunk_points, r=radius, return_length=True)
+        counts = _tree_query_ball_point(tree, chunk_points, radius, return_length=True)
         neighbor_counts[start:end] = (counts - 1).clip(min=0)
         if progress_callback:
             progress_callback(chunk_index / total_chunks)
@@ -161,7 +227,7 @@ def compute_density(points: np.ndarray, tree: cKDTree = None, k: int = 8, progre
     for chunk_index, start in enumerate(range(0, n_points, chunk_size), start=1):
         end = min(start + chunk_size, n_points)
         chunk_points = points[start:end]
-        dists, _ = tree.query(chunk_points, k=query_k)
+        dists, _ = _tree_query(tree, chunk_points, k=query_k)
         dists = np.atleast_2d(dists)
         if dists.shape[1] > 1:
             mean_dists[start:end] = np.mean(dists[:, 1:], axis=1)
@@ -184,7 +250,7 @@ def compute_cc_noise(points: np.ndarray,
                      use_knn: bool = True,
                      radius: float = None,
                      remove_isolated_points: bool = False,
-                     chunk_size: int = 25000,
+                     chunk_size: int = 200000,
                      progress_callback = None) -> dict:
     """
     CloudCompare風の局所平面残差ノイズフィルタを計算します。
@@ -224,7 +290,7 @@ def compute_cc_noise(points: np.ndarray,
             end = min(start + chunk_size, n_points)
             chunk_points = points[start:end]
 
-            dists, indices = tree.query(chunk_points, k=query_k)
+            dists, indices = _tree_query(tree, chunk_points, k=query_k)
             if query_k == 1:
                 dists = dists[:, np.newaxis]
                 indices = indices[:, np.newaxis]
@@ -250,12 +316,11 @@ def compute_cc_noise(points: np.ndarray,
             diff = chunk_points - means
             chunk_scores = np.abs(np.sum(diff * normals, axis=1))
 
-            nb_dists = np.abs(np.sum(deviations * normals[:, np.newaxis, :], axis=2))
-            nb_means = np.mean(nb_dists, axis=1)
-            nb_stds = np.std(nb_dists, axis=1)
-
             chunk_remove_mask = np.zeros(end - start, dtype=bool)
             if relative_sigma > 0.0:
+                nb_dists = np.abs(np.sum(deviations * normals[:, np.newaxis, :], axis=2))
+                nb_means = np.mean(nb_dists, axis=1)
+                nb_stds = np.std(nb_dists, axis=1)
                 threshold_rel = nb_means + relative_sigma * nb_stds
                 chunk_remove_mask |= (chunk_scores > threshold_rel)
             if absolute_error > 0.0:
@@ -278,7 +343,7 @@ def compute_cc_noise(points: np.ndarray,
         for chunk_index, start in enumerate(range(0, n_points, chunk_size), start=1):
             end = min(start + chunk_size, n_points)
             chunk_points = points[start:end]
-            neighbor_lists = tree.query_ball_point(chunk_points, r=radius)
+            neighbor_lists = _tree_query_ball_point(tree, chunk_points, radius)
 
             for local_i, neighbor_ids in enumerate(neighbor_lists):
                 global_i = start + local_i
@@ -301,8 +366,11 @@ def compute_cc_noise(points: np.ndarray,
                     continue
 
                 score = abs(np.dot(points[global_i] - mean, normal))
-                residuals = np.abs(deviations @ normal)
-                rel_threshold = residuals.mean() + relative_sigma * residuals.std() if relative_sigma > 0.0 else np.inf
+                if relative_sigma > 0.0:
+                    residuals = np.abs(deviations @ normal)
+                    rel_threshold = residuals.mean() + relative_sigma * residuals.std()
+                else:
+                    rel_threshold = np.inf
                 abs_threshold = absolute_error if absolute_error > 0.0 else np.inf
 
                 scores[global_i] = np.float32(score)
@@ -413,9 +481,8 @@ def run_all_filters(points: np.ndarray, params: dict, enabled_filters: set = Non
     後方互換性のためのラッパー関数です。
     """
     if enabled_filters is None:
-        enabled_filters = {"sor", "cc_noise", "dbscan", "white_haze"}
+        enabled_filters = set(params.keys()) if params else {"sor", "ror", "density", "cc_noise", "dbscan", "white_haze"}
     
     from filter_pipeline import build_default_pipeline
     pipeline = build_default_pipeline(params, enabled_filters, colors)
     return pipeline.run(points, colors)
-

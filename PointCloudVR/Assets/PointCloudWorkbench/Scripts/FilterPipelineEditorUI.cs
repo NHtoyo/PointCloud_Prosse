@@ -220,11 +220,20 @@ namespace PointCloudWorkbench
             const float p      = 5f;
             const float titleH = 22f; // タイトル高さを文字拡大に合わせる
             const float btnW   = 85f;  // ボタン幅を文字拡大に合わせる
+            const float commitW = 95f;
+            const float resetW = 95f;
+            const float undoW = 80f;
+            const float redoW = 80f;
             const float modeW  = 120f; // モード選択ボタンの幅を広げる
 
             float lx   = bar.x + PAL_W + 6f;
             float btnX = bar.x + bar.width - p - btnW;
-            float modeX = btnX - 6f - modeW;
+            bool hasPreview = NoiseFilterManager.Instance.IsPreviewActive;
+            float commitX = hasPreview ? btnX - 6f - commitW : btnX;
+            float resetX = commitX - 6f - resetW;
+            float redoX = resetX - 6f - redoW;
+            float undoX = redoX - 6f - undoW;
+            float modeX = undoX - 6f - modeW;
 
             // タイトル
             GUI.Label(new Rect(lx, bar.y + p + 2f, modeX - lx - 4, titleH),
@@ -236,6 +245,28 @@ namespace PointCloudWorkbench
                 bool isFull = noiseFilterUI.Params.processMode == "full";
                 if (GUI.Button(new Rect(modeX, bar.y + p, modeW, 28f), isFull ? "全体適用" : "ダウンサンプル", activeBlockStyle))
                     noiseFilterUI.Params.processMode = isFull ? "downsample" : "full";
+            }
+            GUI.enabled = NoiseFilterManager.Instance.CanUndo;
+            if (GUI.Button(new Rect(undoX, bar.y + p, undoW, 28f), "元に戻す", blockStyle))
+            {
+                NoiseFilterManager.Instance.Undo(editor.targetRenderer);
+                editor.MarkStatsDirty();
+            }
+            GUI.enabled = NoiseFilterManager.Instance.CanRedo;
+            if (GUI.Button(new Rect(redoX, bar.y + p, redoW, 28f), "やり直す", blockStyle))
+            {
+                NoiseFilterManager.Instance.Redo(editor.targetRenderer);
+                editor.MarkStatsDirty();
+            }
+            GUI.enabled = true;
+            if (GUI.Button(new Rect(resetX, bar.y + p, resetW, 28f), "標準構成", blockStyle))
+            {
+                ResetToDefaultPipeline();
+            }
+            if (hasPreview && GUI.Button(new Rect(commitX, bar.y + p, commitW, 28f), "確定", activeBlockStyle))
+            {
+                NoiseFilterManager.Instance.CommitRemoval(editor.targetRenderer);
+                editor.MarkStatsDirty();
             }
             // 実行ボタン (高さ 28f に拡大してフォントに合わせる)
             if (GUI.Button(new Rect(btnX, bar.y + p, btnW, 28f), "▶ 実行", activeBlockStyle))
@@ -419,8 +450,8 @@ namespace PointCloudWorkbench
             }
             else if (step is DensityConfig dn)
             {
-                dn.k         = SliderInt(x,        y, lw, sw, $"近傍点数 k: {dn.k}",          dn.k,         3, 32);
-                dn.threshold = Slider   (x + colW, y, lw, sw, $"低密度閾値: {dn.threshold:F2}", dn.threshold, 0f, 100f);
+                dn.k          = SliderInt(x,        y, lw, sw, $"近傍点数 k: {dn.k}",              dn.k,          3, 32);
+                dn.percentile = Slider   (x + colW, y, lw, sw, $"候補率(下位%): {dn.percentile:F1}", dn.percentile, 0f, 20f);
             }
             else if (step is DbscanConfig db)
             {
@@ -528,8 +559,24 @@ namespace PointCloudWorkbench
         // =========================================================
         private void EnsurePipeline()
         {
-            if (noiseFilterUI.Params.customPipeline == null)
+            if (noiseFilterUI.Params.customPipeline == null || noiseFilterUI.Params.customPipeline.Count == 0)
                 noiseFilterUI.Params.customPipeline = noiseFilterUI.Params.GetPipeline();
+        }
+
+        private void ResetToDefaultPipeline()
+        {
+            noiseFilterUI.Params.customPipeline = new List<FilterStepConfig>
+            {
+                noiseFilterUI.Params.whiteHaze,
+                noiseFilterUI.Params.cc,
+                noiseFilterUI.Params.sor,
+                noiseFilterUI.Params.ror,
+                noiseFilterUI.Params.density,
+                noiseFilterUI.Params.dbscan
+            };
+            noiseFilterUI.Params.ror.enabled = true;
+            noiseFilterUI.Params.density.enabled = true;
+            selectedBlockIndex = -1;
         }
 
         private FilterStepConfig MakeStep(string t)

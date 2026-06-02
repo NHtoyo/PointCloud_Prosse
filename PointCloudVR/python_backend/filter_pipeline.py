@@ -35,16 +35,34 @@ class FilterPipeline:
         
         # 全ステップ実行後の出力用配列を準備
         active_mask = np.ones(n_points, dtype=bool) # 次のフィルタに入力する点
-        
-        # フィルタごとの結果を保持
-        step_results = []
+
+        remove_mask_wh = np.zeros(n_points, dtype=bool)
+        remove_mask_sor = np.zeros(n_points, dtype=bool)
+        remove_mask_ror = np.zeros(n_points, dtype=bool)
+        remove_mask_density = np.zeros(n_points, dtype=bool)
+        remove_mask_cc = np.zeros(n_points, dtype=bool)
+        remove_mask_dbscan = np.zeros(n_points, dtype=bool)
+
+        sor_score = np.zeros(n_points, dtype=np.float32)
+        density_score = np.zeros(n_points, dtype=np.float32)
+        radius_neighbor_count = np.zeros(n_points, dtype=np.int32)
+        cc_noise_score = np.zeros(n_points, dtype=np.float32)
+        white_haze_score = np.zeros(n_points, dtype=np.float32)
+        cluster_id = np.full(n_points, -1, dtype=np.int32)
+
+        dbscan_mode = 'full'
+        dbscan_voxel_size = None
+        dbscan_analysis_count = 0
+        dbscan_timeout = False
+
+        print(f"[Pipeline] original_count={n_points:,}")
         
         # 共通の点間隔 base_spacing
         base_spacing = 0.01  # デフォルト値
         
         # 必要なフィルタが有効な場合、全体の active_points から base_spacing を推定
         # デフォルトのパイプラインでは最初の active_points (全体) で一度だけ推定する設計と互換
-        spacing_needed = any(step.enabled and step.name in ["sor", "ror", "dbscan"] for step in self.steps)
+        spacing_needed = any(step.enabled and step.name in ["ror", "dbscan"] for step in self.steps)
         if spacing_needed and n_points > 0:
             from noise_filters import estimate_base_spacing
             base_spacing = estimate_base_spacing(points)
@@ -66,14 +84,28 @@ class FilterPipeline:
             total_weight = 1.0
             
         accumulated_weight = 0.0
+        active_generation = 0
+        cached_generation = -1
+        cached_active_indices = None
+        cached_active_points = None
+        cached_tree = None
+
+        def get_active_data(require_tree: bool = False):
+            nonlocal cached_generation, cached_active_indices, cached_active_points, cached_tree
+            if cached_generation != active_generation:
+                cached_active_indices = np.where(active_mask)[0]
+                cached_active_points = points[cached_active_indices]
+                cached_tree = None
+                cached_generation = active_generation
+            if require_tree and cached_tree is None and len(cached_active_points) > 0:
+                cached_tree = cKDTree(cached_active_points)
+            return cached_active_indices, cached_active_points, len(cached_active_points), cached_tree
 
         for step in self.steps:
             if not step.enabled:
                 continue
  
-            active_indices = np.where(active_mask)[0]
-            active_points = points[active_indices]
-            active_count = len(active_points)
+            active_indices, active_points, active_count, _ = get_active_data()
  
             print(f"[Pipeline] Step '{step.name}' 実行中... (入力点数: {active_count:,})")
             t0 = time.time()
@@ -114,29 +146,24 @@ class FilterPipeline:
                 )
                 cb(1.0)
                 
-                # 元サイズに展開して記録
-                candidate_mask_full = np.zeros(n_points, dtype=bool)
-                candidate_mask_full[active_indices] = wh_res['candidate_mask']
-                
-                white_haze_score_full = np.zeros(n_points, dtype=np.float32)
-                white_haze_score_full[active_indices] = wh_res['white_haze_score']
-                
-                step_results.append({
-                    'name': 'white_haze',
-                    'candidate_mask': candidate_mask_full,
-                    'white_haze_score': white_haze_score_full
-                })
+                local_candidate_mask = wh_res['candidate_mask']
+                remove_mask_wh[active_indices] |= local_candidate_mask
+                white_haze_score[active_indices] = np.maximum(
+                    white_haze_score[active_indices],
+                    wh_res['white_haze_score']
+                )
+                print(f"[Pipeline] white_haze_candidate_count={int(np.sum(remove_mask_wh)):,}")
                 
                 # 前段除外の適用
                 if step.exclude_from_next:
                     # candidate_mask が True の点を active_mask から除外
-                    active_mask = active_mask & ~candidate_mask_full
+                    active_mask[active_indices[local_candidate_mask]] = False
+                    active_generation += 1
+                    print(f"[Pipeline] active_count_after_white_haze={int(np.sum(active_mask)):,}")
  
             elif step.name in ["sor", "ror", "density", "cc_noise"]:
-                # 近傍検索のためにローカルな cKDTree を構築
-                tree = None
-                if active_count > 0:
-                    tree = cKDTree(active_points)
+                # active_points が変わらない限り、同じ cKDTree を再利用する
+                active_indices, active_points, active_count, tree = get_active_data(require_tree=True)
  
                 if step.name == "sor":
                     res = step.func(
@@ -147,19 +174,12 @@ class FilterPipeline:
                         progress_callback=cb
                     )
                     
-                    remove_mask_full = np.zeros(n_points, dtype=bool)
-                    remove_mask_full[active_indices] = res['remove_mask']
-                    
-                    sor_score_full = np.zeros(n_points, dtype=np.float32)
-                    sor_score_full[active_indices] = res['sor_score']
-                    
-                    step_results.append({
-                        'name': 'sor',
-                        'remove_mask': remove_mask_full,
-                        'sor_score': sor_score_full
-                    })
+                    local_remove_mask = res['remove_mask']
+                    remove_mask_sor[active_indices] |= local_remove_mask
+                    sor_score[active_indices] = np.maximum(sor_score[active_indices], res['sor_score'])
                     if step.exclude_from_next:
-                        active_mask = active_mask & ~remove_mask_full
+                        active_mask[active_indices[local_remove_mask]] = False
+                        active_generation += 1
  
                 elif step.name == "ror":
                     res = step.func(
@@ -168,22 +188,19 @@ class FilterPipeline:
                         tree,
                         radius_multiplier=step.params.get('radius_multiplier', 3.0),
                         min_neighbors=step.params.get('min_neighbors', 8),
+                        exact_count=step.params.get('exact_count', False),
                         progress_callback=cb
                     )
                     
-                    remove_mask_full = np.zeros(n_points, dtype=bool)
-                    remove_mask_full[active_indices] = res['remove_mask']
-                    
-                    neighbor_count_full = np.zeros(n_points, dtype=np.int32)
-                    neighbor_count_full[active_indices] = res['radius_neighbor_count']
-                    
-                    step_results.append({
-                        'name': 'ror',
-                        'remove_mask': remove_mask_full,
-                        'radius_neighbor_count': neighbor_count_full
-                    })
+                    local_remove_mask = res['remove_mask']
+                    remove_mask_ror[active_indices] |= local_remove_mask
+                    radius_neighbor_count[active_indices] = np.maximum(
+                        radius_neighbor_count[active_indices],
+                        res['radius_neighbor_count']
+                    )
                     if step.exclude_from_next:
-                        active_mask = active_mask & ~remove_mask_full
+                        active_mask[active_indices[local_remove_mask]] = False
+                        active_generation += 1
  
                 elif step.name == "density":
                     res = step.func(
@@ -193,25 +210,27 @@ class FilterPipeline:
                         progress_callback=cb
                     )
                     
-                    density_score_full = np.zeros(n_points, dtype=np.float32)
-                    density_score_full[active_indices] = res['density_score']
+                    density_score[active_indices] = np.maximum(density_score[active_indices], res['density_score'])
                     
                     # 密度による削除閾値の判定
                     threshold = step.params.get('threshold', 0.0)
-                    remove_mask_full = np.zeros(n_points, dtype=bool)
+                    percentile = step.params.get('percentile', 0.0)
+                    local_remove_mask = np.zeros(active_count, dtype=bool)
                     if threshold > 0.0:
                         # 実行された active_indices の中で閾値未満のものを判定
-                        remove_mask_full[active_indices] = res['density_score'] < threshold
- 
-                    step_results.append({
-                        'name': 'density',
-                        'remove_mask': remove_mask_full,
-                        'density_score': density_score_full
-                    })
+                        local_remove_mask = res['density_score'] < threshold
+                    elif percentile > 0.0 and active_count > 0:
+                        auto_threshold = float(np.percentile(res['density_score'], percentile))
+                        print(f"[Pipeline] density_auto_threshold={auto_threshold:.6f} (下位{percentile:.1f}%)")
+                        local_remove_mask = res['density_score'] < auto_threshold
+                    if np.any(local_remove_mask):
+                        remove_mask_density[active_indices] |= local_remove_mask
                     if step.exclude_from_next:
-                        active_mask = active_mask & ~remove_mask_full
+                        active_mask[active_indices[local_remove_mask]] = False
+                        active_generation += 1
  
                 elif step.name == "cc_noise":
+                    print(f"[Pipeline] cc_noise_input_count={active_count:,}")
                     res = step.func(
                         active_points,
                         tree,
@@ -221,23 +240,16 @@ class FilterPipeline:
                         use_knn=step.params.get('use_knn', True),
                         radius=step.params.get('radius', None),
                         remove_isolated_points=step.params.get('remove_isolated_points', False),
-                        chunk_size=step.params.get('chunk_size', 25000),
+                        chunk_size=step.params.get('chunk_size', 200000),
                         progress_callback=cb
                     )
                     
-                    remove_mask_full = np.zeros(n_points, dtype=bool)
-                    remove_mask_full[active_indices] = res['remove_mask']
-                    
-                    cc_score_full = np.zeros(n_points, dtype=np.float32)
-                    cc_score_full[active_indices] = res['cc_noise_score']
-                    
-                    step_results.append({
-                        'name': 'cc_noise',
-                        'remove_mask': remove_mask_full,
-                        'cc_noise_score': cc_score_full
-                    })
+                    local_remove_mask = res['remove_mask']
+                    remove_mask_cc[active_indices] |= local_remove_mask
+                    cc_noise_score[active_indices] = np.maximum(cc_noise_score[active_indices], res['cc_noise_score'])
                     if step.exclude_from_next:
-                        active_mask = active_mask & ~remove_mask_full
+                        active_mask[active_indices[local_remove_mask]] = False
+                        active_generation += 1
  
             elif step.name == "dbscan":
                 cb(0.0)
@@ -246,12 +258,12 @@ class FilterPipeline:
                 dbscan_voxel_size = None
                 dbscan_analysis_count = active_count
                 dbscan_timeout = False
-                
-                cluster_id_full = np.full(n_points, -1, dtype=np.int32)
-                remove_mask_full = np.zeros(n_points, dtype=bool)
+                local_cluster_id = np.full(active_count, -1, dtype=np.int32)
+                local_remove_mask = np.zeros(active_count, dtype=bool)
+                print(f"[Pipeline] dbscan_input_count={active_count:,}")
  
                 if active_count > 0:
-                    from noise_filters import decide_dbscan_mode, compute_dbscan
+                    from noise_filters import decide_dbscan_mode, compute_dbscan, _tree_query
                     
                     target = step.params.get('target_points', 200000)
                     # 全体のモード判定
@@ -278,9 +290,9 @@ class FilterPipeline:
                         
                         if len(points_ds) > 0:
                             tree_ds = cKDTree(points_ds)
-                            _, nn_indices = tree_ds.query(active_points, k=1)
-                            cluster_id_full[active_indices] = dbscan_res['cluster_id'][nn_indices]
-                            remove_mask_full[active_indices] = dbscan_res['remove_mask'][nn_indices]
+                            _, nn_indices = _tree_query(tree_ds, active_points, k=1)
+                            local_cluster_id = dbscan_res['cluster_id'][nn_indices]
+                            local_remove_mask = dbscan_res['remove_mask'][nn_indices]
                     else:
                         dbscan_res = compute_dbscan(
                             active_points,
@@ -289,75 +301,22 @@ class FilterPipeline:
                             min_points=step.params.get('min_points', 10),
                             min_cluster_size=step.params.get('min_cluster_size', 200)
                         )
-                        cluster_id_full[active_indices] = dbscan_res['cluster_id']
-                        remove_mask_full[active_indices] = dbscan_res['remove_mask']
+                        local_cluster_id = dbscan_res['cluster_id']
+                        local_remove_mask = dbscan_res['remove_mask']
                         dbscan_timeout = dbscan_res['timeout']
                 cb(1.0)
- 
-                step_results.append({
-                    'name': 'dbscan',
-                    'remove_mask': remove_mask_full,
-                    'cluster_id': cluster_id_full,
-                    'dbscan_mode': dbscan_mode,
-                    'dbscan_voxel_size': dbscan_voxel_size,
-                    'dbscan_analysis_count': dbscan_analysis_count,
-                    'dbscan_timeout': dbscan_timeout
-                })
+
+                remove_mask_dbscan[active_indices] |= local_remove_mask
+                existing_cluster_ids = cluster_id[active_indices]
+                cluster_id[active_indices] = np.where(local_cluster_id != -1, local_cluster_id, existing_cluster_ids)
                 if step.exclude_from_next:
-                    active_mask = active_mask & ~remove_mask_full
+                    active_mask[active_indices[local_remove_mask]] = False
+                    active_generation += 1
 
             # ステップ実行完了後に累積ウェイトを加算
             accumulated_weight += w
             print(f"[Pipeline] Step '{step.name}' 完了. (所要時間: {time.time() - t0:.2f}秒)")
-            
-                # 後処理・マージ処理
-        # 各種マスク初期化
-        remove_mask_wh = np.zeros(n_points, dtype=bool)
-        remove_mask_sor = np.zeros(n_points, dtype=bool)
-        remove_mask_ror = np.zeros(n_points, dtype=bool)
-        remove_mask_density = np.zeros(n_points, dtype=bool)
-        remove_mask_cc = np.zeros(n_points, dtype=bool)
-        remove_mask_dbscan = np.zeros(n_points, dtype=bool)
- 
-        # 各種スコア・追加配列（複数実行時は最大値/最後のもので集約）
-        sor_score = np.zeros(n_points, dtype=np.float32)
-        density_score = np.zeros(n_points, dtype=np.float32)
-        radius_neighbor_count = np.zeros(n_points, dtype=np.int32)
-        cc_noise_score = np.zeros(n_points, dtype=np.float32)
-        white_haze_score = np.zeros(n_points, dtype=np.float32)
-        cluster_id = np.full(n_points, -1, dtype=np.int32)
- 
-        dbscan_mode = 'full'
-        dbscan_voxel_size = None
-        dbscan_analysis_count = 0
-        dbscan_timeout = False
- 
-        for res in step_results:
-            name = res['name']
-            if name == 'white_haze':
-                remove_mask_wh |= res['candidate_mask']
-                white_haze_score = np.maximum(white_haze_score, res['white_haze_score'])
-            elif name == 'sor':
-                remove_mask_sor |= res['remove_mask']
-                sor_score = np.maximum(sor_score, res['sor_score'])
-            elif name == 'ror':
-                remove_mask_ror |= res['remove_mask']
-                radius_neighbor_count = np.maximum(radius_neighbor_count, res['radius_neighbor_count'])
-            elif name == 'density':
-                remove_mask_density |= res['remove_mask']
-                density_score = np.maximum(density_score, res['density_score'])
-            elif name == 'cc_noise':
-                remove_mask_cc |= res['remove_mask']
-                cc_noise_score = np.maximum(cc_noise_score, res['cc_noise_score'])
-            elif name == 'dbscan':
-                remove_mask_dbscan |= res['remove_mask']
-                # DBSCANのクラスタIDは最後の有効クラスタを優先
-                cluster_id = np.where(res['cluster_id'] != -1, res['cluster_id'], cluster_id)
-                dbscan_mode = res['dbscan_mode']
-                dbscan_voxel_size = res['dbscan_voxel_size']
-                dbscan_analysis_count = res['dbscan_analysis_count']
-                dbscan_timeout = res['dbscan_timeout']
- 
+
         preview_mask = remove_mask_wh | remove_mask_sor | remove_mask_ror | remove_mask_cc | remove_mask_dbscan | remove_mask_density
         final_remove_mask = remove_mask_sor | remove_mask_ror | remove_mask_cc | remove_mask_dbscan | remove_mask_density
  
@@ -462,7 +421,7 @@ def build_default_pipeline(params: dict, enabled_filters: set, colors: np.ndarra
     ))
 
     # 5. Density (前段除外OFF)
-    density_p = params.get('density', {'k': 8, 'threshold': 0.0})
+    density_p = params.get('density', {'k': 8, 'threshold': 0.0, 'percentile': 3.0})
     pipeline.add_step(FilterStep(
         name="density",
         func=compute_density,
