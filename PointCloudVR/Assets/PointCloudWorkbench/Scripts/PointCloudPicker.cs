@@ -15,7 +15,7 @@ namespace PointCloudWorkbench
             float minCameraDist = float.MaxValue;
             bool found = false;
 
-            var renderers = Object.FindObjectsByType<PointCloudRenderer>(FindObjectsInactive.Exclude, FindObjectsSortMode.None);
+            var renderers = Object.FindObjectsByType<PointCloudRenderer>(FindObjectsInactive.Exclude);
             foreach (var renderer in renderers)
             {
                 PointData[] points = renderer.GetPointData();

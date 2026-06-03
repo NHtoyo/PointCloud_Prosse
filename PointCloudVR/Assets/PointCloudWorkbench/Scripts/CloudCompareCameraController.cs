@@ -104,7 +104,7 @@ public class CloudCompareCameraController : MonoBehaviour
 
     private void TryCenterOnPointCloud()
     {
-        var renderer = Object.FindFirstObjectByType<PointCloudRenderer>();
+        var renderer = Object.FindAnyObjectByType<PointCloudRenderer>();
         if (renderer == null) return;
         var positions = renderer.GetPositions();
         if (positions == null || positions.Length == 0) return;

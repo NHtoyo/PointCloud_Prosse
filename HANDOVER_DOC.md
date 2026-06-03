@@ -325,3 +325,14 @@ Unity上において数千万点規模の大規模な点群データ（PLY形式
     - アノテーション表示（`currentColorMode == ColorMode.Annotation`）がONのときにのみ、画面左下にインディゴ半透明背景の美しいアノテーション凡例を表示。
     - ユーザーから要望のあった「未分類 (0)：灰色」項目も凡例の最上部に含めて描画。
     - ノイズフィルタ除去のプレビュー表示時（水色や赤などのノイズ凡例が左下に表示されているとき）と重なって表示が崩れないよう、ノイズプレビュー検知時には自動的にアノテーション凡例の表示位置を右側（X=440f）へスライドさせる安全回避ロジックを実装。
+
+## 2026-06-03 ビルドアラーおよび非推奨警告の修正
+
+### 修正内容
+1. **ビルドエラーの解消 (CS0103)**
+   - `PointCloudManager.cs` の691行目で、`NoiseFilterManager` を名前空間 `PointCloudWorkbench.NoiseFilterManager` で完全修飾し、参照できないエラーを解決しました。
+2. **非推奨警告の解消 (CS0618, CS0219, CS0414)**
+   - `PointCloudRenderer.cs` で非推奨の `pointShader.GetInstanceID()` ログ出力を削除。
+   - `PointCloudPicker.cs` で `FindObjectsSortMode` を使用しない `FindObjectsByType` オーバーロードに変更。
+   - `PointCloudEditorUI.cs` で非推奨の `FindFirstObjectByType` を `FindAnyObjectByType` に置換。
+   - `FilterPipelineEditorUI.cs` および `PointCloudEditorUI.cs` に存在した未使用の変数 (`vw`) と未使用のフィールド (`foldoutNoiseFilter`, `foldoutLOD`, `foldoutStats`) を削除。

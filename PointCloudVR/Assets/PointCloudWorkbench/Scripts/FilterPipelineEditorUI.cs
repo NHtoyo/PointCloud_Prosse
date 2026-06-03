@@ -522,7 +522,6 @@ namespace PointCloudWorkbench
             // --- 行2〜: スライダー (左右2カラム) ---
             float colW = (r.width - 20f) / 2f;
             float lw   = 175f; // Label width expanded for larger font
-            float vw   = 42f;
             float sw   = Mathf.Max(colW - lw - 15f, 30f);
 
             GUI.enabled = step.enabled;

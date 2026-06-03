@@ -29,10 +29,7 @@ public class PointCloudEditorUI : MonoBehaviour
     private bool foldoutRansac = false;
     private bool foldoutFilter = false;
     private bool foldoutOperations = true;
-    private bool foldoutNoiseFilter = false;
     private bool foldoutLoad = true;
-    private bool foldoutLOD = true;
-    private bool foldoutStats = true;
 
     // Export Dialog Status
     private bool showExportDialog = false;
@@ -470,7 +467,7 @@ public class PointCloudEditorUI : MonoBehaviour
                                 {
                                     loader.fileName = fName;
                                     loader.LoadPointCloud(availablePlyFiles[i]);
-                                    var cam = Object.FindFirstObjectByType<CloudCompareCameraController>();
+                                    var cam = Object.FindAnyObjectByType<CloudCompareCameraController>();
                                     if (cam != null) cam.hasCenteredOnCloud = false;
                                     editor.MarkStatsDirty();
                                 }

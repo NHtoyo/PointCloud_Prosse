@@ -1,5 +1,6 @@
 using UnityEngine;
 using System.Collections.Generic;
+using PointCloudWorkbench;
 
 public class PointCloudManager : MonoBehaviour
 {
@@ -90,7 +91,7 @@ public class PointCloudManager : MonoBehaviour
         if (cameraRig == null)
         {
             // Find XR Origin or Main Camera
-            var xrOrigin = Object.FindFirstObjectByType<Unity.XR.CoreUtils.XROrigin>();
+            var xrOrigin = Object.FindAnyObjectByType<Unity.XR.CoreUtils.XROrigin>();
             if (xrOrigin != null)
             {
                 cameraRig = xrOrigin.transform;
@@ -687,7 +688,7 @@ public class PointCloudManager : MonoBehaviour
         float posY = Screen.height - height - 20f;
 
         // If Noise Filter Preview Legend is ALSO showing, offset Annotation Legend to the right so they don't overlap
-        if (NoiseFilterManager.Instance != null && NoiseFilterManager.Instance.IsPreviewActive)
+        if (PointCloudWorkbench.NoiseFilterManager.Instance != null && PointCloudWorkbench.NoiseFilterManager.Instance.IsPreviewActive)
         {
             posX = 440f; // Shift to the right of the noise legend (400 width + 20 margin + 20 space)
         }

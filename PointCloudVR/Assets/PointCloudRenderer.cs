@@ -99,7 +99,7 @@ public class PointCloudRenderer : MonoBehaviour
 
         pointMaterial = new Material(pointShader);
         isInitialized = true;
-        Debug.Log("[PointCloudRenderer] Initialized with shader: " + pointShader.name + " (Instance ID: " + pointShader.GetInstanceID() + ")");
+        Debug.Log("[PointCloudRenderer] Initialized with shader: " + pointShader.name);
     }
 
     // Set dynamic points from standard positions and colors (used by PointCloudLoader)
@@ -441,7 +441,7 @@ public class PointCloudRenderer : MonoBehaviour
         if (cam == null)
         {
 #if UNITY_2023_1_OR_NEWER
-            cam = FindFirstObjectByType<Camera>();
+            cam = FindAnyObjectByType<Camera>();
 #else
             cam = FindObjectOfType<Camera>();
 #endif
