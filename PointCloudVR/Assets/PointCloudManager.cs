@@ -19,7 +19,7 @@ public class PointCloudManager : MonoBehaviour
     private ControlMode currentMode = ControlMode.Camera;
 
     // Visualization Options
-    public enum ColorMode { Original, HeightMap, DistanceHeatmap }
+    public enum ColorMode { Original, Annotation }
     private ColorMode currentColorMode = ColorMode.Original;
 
     // Parameters
@@ -369,35 +369,17 @@ public class PointCloudManager : MonoBehaviour
 
     public void UpdateColors()
     {
-        if (referenceCloud == null || alignedCloud == null) return;
-
         if (currentColorMode == ColorMode.Original)
         {
-            referenceCloud.ShowOriginalColors();
-            alignedCloud.ShowOriginalColors();
+            if (referenceCloud != null) referenceCloud.ShowOriginalColors();
+            if (alignedCloud != null) alignedCloud.ShowOriginalColors();
         }
-        else if (currentColorMode == ColorMode.HeightMap)
+        else if (currentColorMode == ColorMode.Annotation)
         {
-            // Determine combined height limits
-            float minH = -2.0f;
-            float maxH = 5.0f;
-            referenceCloud.ShowHeightMap(minH, maxH);
-            alignedCloud.ShowHeightMap(minH, maxH);
+            if (referenceCloud != null) referenceCloud.colorMode = 2; // Label/Annotation mode in shader
+            if (alignedCloud != null) alignedCloud.colorMode = 2;     // Label/Annotation mode in shader
         }
-        else if (currentColorMode == ColorMode.DistanceHeatmap)
-        {
-            if (hasCompared && calculatedDistances != null)
-            {
-                referenceCloud.ShowOriginalColors(); // Keep reference original
-                alignedCloud.ShowDistanceMap(calculatedDistances, maxDistanceThreshold); // Update aligned cloud to heatmap
-            }
-            else
-            {
-                Debug.LogWarning("[PointCloudManager] Run C2C comparison first before enabling Distance Map.");
-                currentColorMode = ColorMode.Original;
-                UpdateColors();
-            }
-        }
+    }
     }
 
     public void ResetAlignedPosition()
@@ -524,18 +506,10 @@ public class PointCloudManager : MonoBehaviour
             currentColorMode = ColorMode.Original;
             UpdateColors();
         }
-        if (GUILayout.Button("高さマップ", currentColorMode == ColorMode.HeightMap ? activeButtonStyle : buttonStyle))
+        if (GUILayout.Button("アノテーション表示", currentColorMode == ColorMode.Annotation ? activeButtonStyle : buttonStyle))
         {
-            currentColorMode = ColorMode.HeightMap;
+            currentColorMode = ColorMode.Annotation;
             UpdateColors();
-        }
-        if (GUILayout.Button("距離ヒートマップ", currentColorMode == ColorMode.DistanceHeatmap ? activeButtonStyle : buttonStyle))
-        {
-            if (hasCompared)
-            {
-                currentColorMode = ColorMode.DistanceHeatmap;
-                UpdateColors();
-            }
         }
         GUILayout.EndHorizontal();
         GUILayout.Space(15);
@@ -578,10 +552,6 @@ public class PointCloudManager : MonoBehaviour
         if (Mathf.Abs(newThreshold - maxDistanceThreshold) > 0.01f)
         {
             maxDistanceThreshold = newThreshold;
-            if (currentColorMode == ColorMode.DistanceHeatmap && hasCompared)
-            {
-                UpdateColors();
-            }
         }
         GUILayout.Space(15);
 
