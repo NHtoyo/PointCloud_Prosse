@@ -1569,7 +1569,8 @@ public class PointCloudEditor : MonoBehaviour
         Vector3[] positions = targetRenderer.GetPositions();
         if (positions == null || positions.Length == 0) return;
 
-        float localTolerance = ransacTolerance / targetRenderer.transform.lossyScale.x;
+        float scaleX = targetRenderer != null ? targetRenderer.transform.lossyScale.x : 1.0f;
+        float localTolerance = ransacTolerance / scaleX;
         RansacType type = ransacType;
         bool selecting = brushSelectMode;
 
@@ -1727,7 +1728,11 @@ public class PointCloudEditor : MonoBehaviour
                         Vector2 center = new Vector2(xc, zc);
                         float radius = Vector2.Distance(a, center);
 
-                        if (radius > 0.08f) return; //トマト支柱の想定半径を超えたら棄却
+                        // スケール（拡大縮小）を考慮してワールド空間の想定半径（実寸）を算出
+                        float worldRadius = radius * scaleX;
+
+                        // 実寸で半径0.5cm未満、または8cmを超える円柱は支柱ではないとみなして棄却
+                        if (worldRadius < 0.005f || worldRadius > 0.08f) return;
 
                         // Allocation-free inlier counting, cache-friendly vector lookup
                         int currentInlierCount = 0;
