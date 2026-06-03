@@ -380,7 +380,6 @@ public class PointCloudManager : MonoBehaviour
             if (alignedCloud != null) alignedCloud.colorMode = 2;     // Label/Annotation mode in shader
         }
     }
-    }
 
     public void ResetAlignedPosition()
     {
