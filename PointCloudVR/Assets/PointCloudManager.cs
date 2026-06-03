@@ -478,9 +478,9 @@ public class PointCloudManager : MonoBehaviour
     {
         InitializeStyles();
 
-        // 400x910 size control window on the right side of the screen (height increased to 910 to match left UI and fit new sections)
-        float width = 400f;
-        float height = 910f;
+        // 460x930 size control window on the right side of the screen (height increased to match left UI and fit new sections)
+        float width = 460f;
+        float height = 930f;
         float posX = Screen.width - width - 20f;
         float posY = 20f;
  
@@ -502,12 +502,12 @@ public class PointCloudManager : MonoBehaviour
         // --- 1. Target Controls Selection ---
         GUILayout.Label("🎮 操作モード", textStyle);
         GUILayout.BeginHorizontal();
-        if (GUILayout.Button("カメラ視点操作 (WASD)", currentMode == ControlMode.Camera ? activeButtonStyle : buttonStyle))
+        if (GUILayout.Button("カメラ視点操作", currentMode == ControlMode.Camera ? activeButtonStyle : buttonStyle))
         {
             currentMode = ControlMode.Camera;
             UpdateControlStates();
         }
-        if (GUILayout.Button("点群位置合わせ (オブジェクト操作)", currentMode == ControlMode.AlignedObject ? activeButtonStyle : buttonStyle))
+        if (GUILayout.Button("点群位置合わせ", currentMode == ControlMode.AlignedObject ? activeButtonStyle : buttonStyle))
         {
             currentMode = ControlMode.AlignedObject;
             UpdateControlStates();
@@ -524,12 +524,12 @@ public class PointCloudManager : MonoBehaviour
             currentColorMode = ColorMode.Original;
             UpdateColors();
         }
-        if (GUILayout.Button("高さマップ (Height Map)", currentColorMode == ColorMode.HeightMap ? activeButtonStyle : buttonStyle))
+        if (GUILayout.Button("高さマップ", currentColorMode == ColorMode.HeightMap ? activeButtonStyle : buttonStyle))
         {
             currentColorMode = ColorMode.HeightMap;
             UpdateColors();
         }
-        if (GUILayout.Button("距離ヒートマップ (C2C)", currentColorMode == ColorMode.DistanceHeatmap ? activeButtonStyle : buttonStyle))
+        if (GUILayout.Button("距離ヒートマップ", currentColorMode == ColorMode.DistanceHeatmap ? activeButtonStyle : buttonStyle))
         {
             if (hasCompared)
             {
@@ -541,7 +541,7 @@ public class PointCloudManager : MonoBehaviour
         GUILayout.Space(15);
 
         // --- 3. Rendering Adjustments ---
-        GUILayout.Label($"⚪ 点のサイズ (Pixels): {pointSize:F0}", textStyle);
+        GUILayout.Label($"⚪ 点のサイズ: {pointSize:F0}", textStyle);
         float newSize = GUILayout.HorizontalSlider(pointSize, 1.0f, 20.0f);
         if (Mathf.Abs(newSize - pointSize) > 0.1f)
         {
@@ -567,7 +567,7 @@ public class PointCloudManager : MonoBehaviour
 
         // --- 5. Analysis / Cloud-to-Cloud Distance Comparison ---
         GUILayout.Label("🔬 変化検出 ＆ C2C 距離計算", textStyle);
-        if (GUILayout.Button("C2C 距離計算を実行 (Grid検索)", activeButtonStyle))
+        if (GUILayout.Button("C2C 距離計算を実行", activeButtonStyle))
         {
             CompareClouds();
         }
@@ -603,23 +603,22 @@ public class PointCloudManager : MonoBehaviour
         // --- 7. Ported: LOD & Culling settings (Foldout) ---
         if (editorInstance != null && editorInstance.targetRenderer != null)
         {
-            foldoutLOD = GUILayout.Toggle(foldoutLOD, (foldoutLOD ? "▼ " : "▶ ") + "💻 レンダリング最適化 (LOD & Culling)", foldoutHeaderStyle);
+            foldoutLOD = GUILayout.Toggle(foldoutLOD, (foldoutLOD ? "▼ " : "▶ ") + "💻 レンダリング最適化", foldoutHeaderStyle);
             if (foldoutLOD)
             {
                 GUILayout.Space(3);
                 var rend = editorInstance.targetRenderer;
-                rend.enableLOD = GUILayout.Toggle(rend.enableLOD, " LOD・カリングを有効化 (CCスタイル)");
+                rend.enableLOD = GUILayout.Toggle(rend.enableLOD, " LOD・カリングを有効化");
                 
                 if (rend.enableLOD)
                 {
-                    GUILayout.Label($"  LOD閾値 (間引き率): {rend.lodThreshold:F4}", textStyle);
+                    GUILayout.Label($"  LOD閾値: {rend.lodThreshold:F4}", textStyle);
                     rend.lodThreshold = GUILayout.HorizontalSlider(rend.lodThreshold, 0.005f, 0.1f);
-                    GUILayout.Label("  (右にするほど描画が粗くなります)", textStyle);
                 }
                 
                 if (rend.IsOctreeBuilding)
                 {
-                    GUILayout.Label("  ⏳ オクトリーをバックグラウンド構築中...", textStyle);
+                    GUILayout.Label("  ⏳ オクトリーを構築中...", textStyle);
                 }
                 else if (rend.IsOctreeReady)
                 {
@@ -633,7 +632,7 @@ public class PointCloudManager : MonoBehaviour
         if (editorInstance != null && editorInstance.targetRenderer != null)
         {
             int totalPoints = editorInstance.targetRenderer.GetPointData() != null ? editorInstance.targetRenderer.GetPointData().Length : 0;
-            foldoutStats = GUILayout.Toggle(foldoutStats, (foldoutStats ? "▼ " : "▶ ") + "📊 データセット統計 (PointNet形式)", foldoutHeaderStyle);
+            foldoutStats = GUILayout.Toggle(foldoutStats, (foldoutStats ? "▼ " : "▶ ") + "📊 データセット統計", foldoutHeaderStyle);
             if (foldoutStats)
             {
                 GUILayout.Space(3);
@@ -641,7 +640,7 @@ public class PointCloudManager : MonoBehaviour
                 var rend = editorInstance.targetRenderer;
                 if (rend.enableLOD)
                 {
-                    GUILayout.Label($"描画点数: {rend.GetActiveDrawCount():N0} (LOD適用率: {((float)rend.GetActiveDrawCount() / Mathf.Max(totalPoints, 1) * 100f):F1}%)", textStyle);
+                    GUILayout.Label($"描画点数: {rend.GetActiveDrawCount():N0} (LOD率: {((float)rend.GetActiveDrawCount() / Mathf.Max(totalPoints, 1) * 100f):F1}%)", textStyle);
                 }
                 else
                 {
@@ -649,11 +648,11 @@ public class PointCloudManager : MonoBehaviour
                 }
                 int[] counts = editorInstance.GetLabelCounts();
                 GUILayout.Label($"  - 未分類 (0): {counts[0]:N0}", textStyle);
-                GUILayout.Label($"  - 茎 (茶色) (1): {counts[1]:N0}", textStyle);
-                GUILayout.Label($"  - 葉 (緑色) (2): {counts[2]:N0}", textStyle);
-                GUILayout.Label($"  - 果実 (赤色) (3): {counts[3]:N0}", textStyle);
-                GUILayout.Label($"  - 花 (黄色) (4): {counts[4]:N0}", textStyle);
-                GUILayout.Label($"  - 支柱 (青色) (5): {counts[5]:N0}", textStyle);
+                GUILayout.Label($"  - 茎 (1): {counts[1]:N0}", textStyle);
+                GUILayout.Label($"  - 葉 (2): {counts[2]:N0}", textStyle);
+                GUILayout.Label($"  - 果実 (3): {counts[3]:N0}", textStyle);
+                GUILayout.Label($"  - 花 (4): {counts[4]:N0}", textStyle);
+                GUILayout.Label($"  - 支柱 (5): {counts[5]:N0}", textStyle);
                 GUILayout.Label($"  - 削除済/ノイズ (6): {counts[6]:N0}", textStyle);
                 GUILayout.Space(5);
             }

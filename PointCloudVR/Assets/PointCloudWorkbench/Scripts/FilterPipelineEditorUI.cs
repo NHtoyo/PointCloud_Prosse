@@ -41,11 +41,10 @@ namespace PointCloudWorkbench
         private GUIStyle blockStyle, activeBlockStyle, paletteBlockStyle;
         private bool stylesInitialized = false;
 
-        // レイアウト定数
-        // 左パネル(450px)と右パネル(400px)の間に配置する
-        private const float BAR_X      = 480f;     // 左パネル(450) + 余白(30)
+        // 左パネル(460px)と右パネル(460px)の間に配置する
+        private const float BAR_X      = 490f;     // 左パネル(460) + 余白(30)
         private const float BAR_Y      = 15f;
-        private const float RIGHT_W    = 400f;     // 右パネル幅
+        private const float RIGHT_W    = 480f;     // 右パネル(460) + 余白(20)
         private const float PAL_W      = 175f;     // パレット列幅 (文字拡大に合わせて広げる)
         private const float TOP_H      = 160f;     // 上段高さ(パレット+レーン) (130->160へ拡大)
         private const float PARAM_H    = 140f;     // 下段高さ(パラメータ) (90->140へ拡大)
