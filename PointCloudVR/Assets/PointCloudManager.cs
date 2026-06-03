@@ -48,6 +48,14 @@ public class PointCloudManager : MonoBehaviour
     private bool foldoutLOD = true;
     private bool foldoutStats = true;
 
+    // Legend UI styles and textures
+    private Texture2D legendBgTexture;
+    private Texture2D colorTexture;
+    private GUIStyle legendStyle;
+    private GUIStyle legendTitleStyle;
+    private GUIStyle legendTextStyle;
+    private bool legendStylesInitialized = false;
+
     private CloudCompareCameraController ccCameraController;
 
     // Loader references
@@ -629,5 +637,96 @@ public class PointCloudManager : MonoBehaviour
 
         GUILayout.EndScrollView();
         GUILayout.EndArea();
+
+        // Draw Annotation Legend in bottom left if currentColorMode == ColorMode.Annotation
+        if (currentColorMode == ColorMode.Annotation)
+        {
+            DrawAnnotationLegend();
+        }
+    }
+
+    private void InitializeLegendStyles()
+    {
+        if (legendStylesInitialized) return;
+
+        legendBgTexture = new Texture2D(1, 1);
+        legendBgTexture.SetPixel(0, 0, new Color(0.12f, 0.12f, 0.16f, 0.85f)); // Glassmorphism dark indigo transparent
+        legendBgTexture.Apply();
+
+        colorTexture = new Texture2D(1, 1);
+        colorTexture.SetPixel(0, 0, Color.white);
+        colorTexture.Apply();
+
+        legendStyle = new GUIStyle(GUI.skin.box);
+        legendStyle.normal.background = legendBgTexture;
+        legendStyle.padding = new RectOffset(15, 15, 15, 15);
+
+        legendTitleStyle = new GUIStyle(GUI.skin.label);
+        legendTitleStyle.fontSize = 16;
+        legendTitleStyle.fontStyle = FontStyle.Bold;
+        legendTitleStyle.normal.textColor = Color.white;
+        legendTitleStyle.alignment = TextAnchor.MiddleLeft;
+
+        legendTextStyle = new GUIStyle(GUI.skin.label);
+        legendTextStyle.fontSize = 14;
+        legendTextStyle.fontStyle = FontStyle.Bold;
+        legendTextStyle.normal.textColor = new Color(0.9f, 0.9f, 0.9f);
+        legendTextStyle.alignment = TextAnchor.MiddleLeft;
+
+        legendStylesInitialized = true;
+    }
+
+    private void DrawAnnotationLegend()
+    {
+        InitializeLegendStyles();
+
+        // 6 items + Title: Height is 210f (similar to noise legend)
+        float width = 360f;
+        float height = 210f;
+        float posX = 20f;
+        float posY = Screen.height - height - 20f;
+
+        // If Noise Filter Preview Legend is ALSO showing, offset Annotation Legend to the right so they don't overlap
+        if (NoiseFilterManager.Instance != null && NoiseFilterManager.Instance.IsPreviewActive)
+        {
+            posX = 440f; // Shift to the right of the noise legend (400 width + 20 margin + 20 space)
+        }
+
+        GUILayout.BeginArea(new Rect(posX, posY, width, height), legendStyle);
+
+        GUILayout.Label("🏷 アノテーション分類凡例", legendTitleStyle);
+        GUILayout.Space(8);
+
+        DrawLegendItem(new Color(0.7f, 0.7f, 0.7f, 1.0f), "未分類 (0)：灰色");
+        DrawLegendItem(new Color(0.55f, 0.35f, 0.15f, 1.0f), "茎 (1)：茶色");
+        DrawLegendItem(new Color(0.1f, 0.7f, 0.2f, 1.0f), "葉 (2)：緑色");
+        DrawLegendItem(new Color(1.0f, 0.1f, 0.1f, 1.0f), "果実 (3)：赤色");
+        DrawLegendItem(new Color(1.0f, 0.9f, 0.0f, 1.0f), "花 (4)：黄色");
+        DrawLegendItem(new Color(0.0f, 0.6f, 0.9f, 1.0f), "支柱 (5)：青色");
+
+        GUILayout.EndArea();
+    }
+
+    private void DrawLegendItem(Color color, string label)
+    {
+        GUILayout.BeginHorizontal();
+        
+        Rect rect = GUILayoutUtility.GetRect(16, 16, GUILayout.Width(16), GUILayout.Height(16));
+        Color oldColor = GUI.color;
+        GUI.color = color;
+        GUI.DrawTexture(rect, colorTexture);
+        GUI.color = oldColor;
+
+        GUILayout.Space(10);
+        GUILayout.Label(label, legendTextStyle);
+        
+        GUILayout.EndHorizontal();
+        GUILayout.Space(3);
+    }
+
+    void OnDestroy()
+    {
+        if (legendBgTexture != null) Destroy(legendBgTexture);
+        if (colorTexture != null) Destroy(colorTexture);
     }
 }
