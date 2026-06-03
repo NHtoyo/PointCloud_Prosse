@@ -45,6 +45,7 @@ Shader "PointCloudWorkbench/PointCloudShader"
             float _MaxHeight;
             float _MaxDistanceThreshold;
             float4x4 _LocalToWorld; // Passed manually from C# for transform tracking
+            float4 _LabelColors[64]; // Dynamic Label Colors lookup
 
             struct v2f
             {
@@ -85,15 +86,8 @@ Shader "PointCloudWorkbench/PointCloudShader"
             // Get color by Label ID (classId)
             float4 GetLabelColor(int label)
             {
-                if (label == 0) return float4(0.7, 0.7, 0.7, 1.0); // Unclassified
-                if (label == 1) return float4(0.55, 0.35, 0.15, 1.0); // Stem (Brown)
-                if (label == 2) return float4(0.1, 0.7, 0.2, 1.0); // Leaf (Green)
-                if (label == 3) return float4(1.0, 0.1, 0.1, 1.0); // Fruit (Red)
-                if (label == 4) return float4(1.0, 0.9, 0.0, 1.0); // Flower (Yellow)
-                if (label == 5) return float4(0.0, 0.6, 0.9, 1.0); // Support (Cyan/Blue)
-                if (label == 6) return float4(0.9, 0.0, 0.9, 1.0); // Noise (Magenta)
-                
-                return float4(0.5, 0.5, 0.5, 1.0);
+                int idx = clamp(label, 0, 63);
+                return _LabelColors[idx];
             }
 
             // CloudCompare style: Blue (close) -> Green -> Yellow -> Red (far)

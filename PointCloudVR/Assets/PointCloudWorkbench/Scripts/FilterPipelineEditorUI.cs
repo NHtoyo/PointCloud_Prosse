@@ -80,6 +80,9 @@ namespace PointCloudWorkbench
             if (noiseFilterUI?.Params?.customPipeline == null) return;
             var pl = noiseFilterUI.Params.customPipeline;
 
+            // テキスト入力フィールドにフォーカスがある場合はキー入力を無視する（IMEやBackspaceの競合を回避）
+            if (GUIUtility.keyboardControl != 0) return;
+
             if (selectedBlockIndex >= 0 && selectedBlockIndex < pl.Count)
             {
                 if (Input.GetKeyDown(KeyCode.Delete) || Input.GetKeyDown(KeyCode.Backspace))
@@ -135,9 +138,9 @@ namespace PointCloudWorkbench
         }
 
         // =========================================================
-        // OnGUI エントリ
+        // DrawGUI エントリ（OnGUI から明示的に呼び出される）
         // =========================================================
-        void OnGUI()
+        public void DrawGUI(ref float currentY)
         {
             if (editor == null || noiseFilterUI == null) return;
             InitStyles();
@@ -148,7 +151,7 @@ namespace PointCloudWorkbench
             var pl = noiseFilterUI?.Params?.customPipeline;
             bool hasSelection = selectedBlockIndex >= 0 && pl != null && selectedBlockIndex < pl.Count;
             float barH = hasSelection ? (TOP_H + PARAM_H) : TOP_H;
-            Rect bar = new Rect(BAR_X, BAR_Y, barW, barH);
+            Rect bar = new Rect(BAR_X, currentY, barW, barH);
 
             // バー背景
             GUI.Box(bar, "", panelStyle);
@@ -160,10 +163,10 @@ namespace PointCloudWorkbench
             if (hasSelection)
             {
                 // 区切り線
-                DrawDivider(new Rect(BAR_X + 5, BAR_Y + TOP_H, barW - 10, 1));
+                DrawDivider(new Rect(BAR_X + 5, currentY + TOP_H, barW - 10, 1));
 
                 // 下段: パラメータ（バー内に統合、選択時のみ描画）
-                DrawParamPanel(new Rect(BAR_X, BAR_Y + TOP_H + 1, barW, PARAM_H - 1));
+                DrawParamPanel(new Rect(BAR_X, currentY + TOP_H + 1, barW, PARAM_H - 1));
             }
 
             // ドラッグゴースト / コンテキストメニュー
@@ -177,6 +180,9 @@ namespace PointCloudWorkbench
             {
                 selectedBlockIndex = -1;
             }
+
+            // 描画した高さ分 currentY を進める (マージン 10f 追加)
+            currentY += barH + 10f;
         }
 
         private void DrawPresetMenu()

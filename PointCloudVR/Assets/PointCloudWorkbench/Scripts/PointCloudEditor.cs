@@ -45,8 +45,22 @@ public class PointCloudEditor : MonoBehaviour
     public List<Vector2> LassoPoints => lassoPoints;
 
     // Statistics
-    private int[] labelCounts = new int[7]; // Index 0-5 for classes, 6 for deleted/noise
+    private int[] labelCounts = new int[7]; // Legacy placeholder
+    private Dictionary<int, int> labelCountsMap = new Dictionary<int, int>();
+    private int noiseDeletedCount = 0;
     private bool statsDirty = true;
+    private AnnotationPipelineEditorUI annotationUI;
+
+    public Dictionary<int, int> GetLabelCountsMap() => labelCountsMap;
+    public int GetNoiseDeletedCount() => noiseDeletedCount;
+
+    // Annotation History (Deep copy labels)
+    private Stack<int[]> annotationUndoStack = new Stack<int[]>();
+    private Stack<int[]> annotationRedoStack = new Stack<int[]>();
+    private const int MAX_ANNOTATION_HISTORY = 5;
+
+    public bool CanAnnotationUndo => annotationUndoStack.Count > 0;
+    public bool CanAnnotationRedo => annotationRedoStack.Count > 0;
 
     // Asynchronous background task execution flags
     private volatile bool finishedConnectionFlag = false;
@@ -92,6 +106,12 @@ public class PointCloudEditor : MonoBehaviour
         if (editorUI == null)
         {
             editorUI = gameObject.AddComponent<PointCloudEditorUI>();
+        }
+
+        annotationUI = GetComponent<AnnotationPipelineEditorUI>();
+        if (annotationUI == null)
+        {
+            annotationUI = gameObject.AddComponent<AnnotationPipelineEditorUI>();
         }
 
         // シーン保存等による古い範囲外の値（0.03mなど）をクランプして初期スライダー表示崩れを防止
@@ -670,12 +690,100 @@ public class PointCloudEditor : MonoBehaviour
         statsDirty = true;
     }
 
+    public void PushAnnotationUndo()
+    {
+        PointData[] points = targetRenderer.GetPointData();
+        if (points == null) return;
+
+        if (annotationUndoStack.Count >= MAX_ANNOTATION_HISTORY)
+        {
+            // Drop oldest history
+            var list = new List<int[]>(annotationUndoStack);
+            list.RemoveAt(0);
+            annotationUndoStack = new Stack<int[]>(list);
+        }
+
+        int[] labels = new int[points.Length];
+        for (int i = 0; i < points.Length; i++)
+        {
+            labels[i] = points[i].label;
+        }
+        annotationUndoStack.Push(labels);
+    }
+
+    public void PushAnnotationRedo()
+    {
+        PointData[] points = targetRenderer.GetPointData();
+        if (points == null) return;
+
+        if (annotationRedoStack.Count >= MAX_ANNOTATION_HISTORY)
+        {
+            var list = new List<int[]>(annotationRedoStack);
+            list.RemoveAt(0);
+            annotationRedoStack = new Stack<int[]>(list);
+        }
+
+        int[] labels = new int[points.Length];
+        for (int i = 0; i < points.Length; i++)
+        {
+            labels[i] = points[i].label;
+        }
+        annotationRedoStack.Push(labels);
+    }
+
+    public void ClearAnnotationRedo()
+    {
+        annotationRedoStack.Clear();
+    }
+
+    public bool AnnotationUndo()
+    {
+        if (!CanAnnotationUndo || targetRenderer == null) return false;
+        PointData[] points = targetRenderer.GetPointData();
+        if (points == null) return false;
+
+        PushAnnotationRedo();
+
+        int[] prevLabels = annotationUndoStack.Pop();
+        for (int i = 0; i < points.Length; i++)
+        {
+            points[i].label = prevLabels[i];
+        }
+
+        targetRenderer.UpdatePointBuffer();
+        statsDirty = true;
+        return true;
+    }
+
+    public bool AnnotationRedo()
+    {
+        if (!CanAnnotationRedo || targetRenderer == null) return false;
+        PointData[] points = targetRenderer.GetPointData();
+        if (points == null) return false;
+
+        PushAnnotationUndo();
+
+        int[] nextLabels = annotationRedoStack.Pop();
+        for (int i = 0; i < points.Length; i++)
+        {
+            points[i].label = nextLabels[i];
+        }
+
+        targetRenderer.UpdatePointBuffer();
+        statsDirty = true;
+        return true;
+    }
+
     public void AssignLabelToSelected()
     {
         PointData[] points = targetRenderer.GetPointData();
         if (points == null) return;
 
-        int classVal = activeLabelClass & 0xFFFF;
+        // Save state for undo before applying label
+        PushAnnotationUndo();
+        ClearAnnotationRedo();
+
+        int classVal = activeLabelClass & 0xFF;
 
         Parallel.For(0, points.Length, i =>
         {
@@ -683,7 +791,7 @@ public class PointCloudEditor : MonoBehaviour
             if (isSelected)
             {
                 int label = points[i].label;
-                label &= ~0xFFFF;        // Clear class ID
+                label &= ~0xFF;          // Clear class ID (lower 8 bits)
                 label |= classVal;       // Set class ID
                 label &= ~0x10000;       // Clear selected
                 points[i].label = label;
@@ -699,26 +807,54 @@ public class PointCloudEditor : MonoBehaviour
         PointData[] points = targetRenderer.GetPointData();
         if (points == null) return;
 
-        System.Array.Clear(labelCounts, 0, labelCounts.Length);
+        labelCountsMap.Clear();
+        noiseDeletedCount = 0;
 
-        // Simple single-threaded count (extremely fast loop for simple integer checking)
+        // Initialize active classes to ensure 0 counts are shown
+        if (annotationUI != null && annotationUI.GetActivePreset() != null)
+        {
+            foreach (var cls in annotationUI.GetActivePreset().classes)
+            {
+                labelCountsMap[cls.id] = 0;
+            }
+        }
+        else
+        {
+            for (int i = 0; i <= 5; i++) labelCountsMap[i] = 0;
+        }
+
         for (int i = 0; i < points.Length; i++)
         {
             int labelVal = points[i].label;
             bool isDeleted = (labelVal & 0x20000) != 0;
             if (isDeleted)
             {
-                labelCounts[6]++; // Noise/Deleted
+                noiseDeletedCount++;
             }
             else
             {
-                int classId = labelVal & 0xFFFF;
-                if (classId >= 0 && classId < 6)
+                int classId = labelVal & 0xFF; // 下位8ビット
+                if (labelCountsMap.ContainsKey(classId))
                 {
-                    labelCounts[classId]++;
+                    labelCountsMap[classId]++;
+                }
+                else
+                {
+                    labelCountsMap[classId] = 1;
                 }
             }
         }
+
+        // Keep legacy array filled for fallback
+        System.Array.Clear(labelCounts, 0, labelCounts.Length);
+        for (int i = 0; i < 6; i++)
+        {
+            if (labelCountsMap.ContainsKey(i))
+            {
+                labelCounts[i] = labelCountsMap[i];
+            }
+        }
+        labelCounts[6] = noiseDeletedCount;
 
         statsDirty = false;
     }
@@ -796,7 +932,7 @@ public class PointCloudEditor : MonoBehaviour
 
                             Vector3 pos = points[i].position;
                             Color32 col = PointData.UnpackColor(points[i].originalColor);
-                            int classId = labelVal & 0xFFFF;
+                            int classId = labelVal & 0xFF;
 
                             binWriter.Write(pos.x);
                             binWriter.Write(pos.y);
@@ -849,7 +985,7 @@ public class PointCloudEditor : MonoBehaviour
 
                             Vector3 pos = points[i].position;
                             Color32 col = PointData.UnpackColor(points[i].originalColor);
-                            int classId = labelVal & 0xFFFF;
+                            int classId = labelVal & 0xFF;
 
                             writer.WriteLine($"{pos.x.ToString(CultureInfo.InvariantCulture)} {pos.y.ToString(CultureInfo.InvariantCulture)} {pos.z.ToString(CultureInfo.InvariantCulture)} {col.r} {col.g} {col.b} {classId}");
                             
@@ -948,7 +1084,7 @@ public class PointCloudEditor : MonoBehaviour
 
                         Vector3 pos = points[i].position;
                         Color32 col = PointData.UnpackColor(points[i].originalColor);
-                        int classId = labelVal & 0xFFFF; // クラスIDはそのまま書き出す
+                        int classId = labelVal & 0xFF; // クラスIDはそのまま書き出す
 
                         writer.WriteLine($"{pos.x.ToString(CultureInfo.InvariantCulture)} {pos.y.ToString(CultureInfo.InvariantCulture)} {pos.z.ToString(CultureInfo.InvariantCulture)} {col.r} {col.g} {col.b} {classId}");
                         
@@ -1004,7 +1140,8 @@ public class PointCloudEditor : MonoBehaviour
         }
 
         // Close and apply on Return key or Space key (Right-click removed to avoid camera rotation conflict)
-        if (Input.GetKeyDown(KeyCode.Return) || Input.GetKeyDown(KeyCode.Space))
+        // テキスト入力フィールドにフォーカスがある場合はキー入力を無視する（IMEやBackspaceの競合を回避）
+        if (GUIUtility.keyboardControl == 0 && (Input.GetKeyDown(KeyCode.Return) || Input.GetKeyDown(KeyCode.Space)))
         {
             if (lassoPoints.Count >= 3)
             {

@@ -30,6 +30,13 @@ public class PointCloudRenderer : MonoBehaviour
     private Bounds localBounds;
     private bool isInitialized = false;
 
+    // Dynamic label colors
+    private Vector4[] labelColors = new Vector4[64];
+
+    // Annotation layers
+    private Dictionary<string, byte[]> annotationLayers = new Dictionary<string, byte[]>();
+    private string activeAnnotationLayer = "Default";
+
     // Cache arrays to support legacy C# scripts accessing positions directly
     private Vector3[] cachedPositions;
     private Color[] cachedColors;
@@ -98,8 +105,132 @@ public class PointCloudRenderer : MonoBehaviour
         }
 
         pointMaterial = new Material(pointShader);
+        InitializeDefaultLabelColors();
         isInitialized = true;
         Debug.Log("[PointCloudRenderer] Initialized with shader: " + pointShader.name);
+    }
+
+    private void InitializeDefaultLabelColors()
+    {
+        // Initialize default dynamic label colors (0-6 matching original shader fallback)
+        for (int i = 0; i < 64; i++)
+        {
+            labelColors[i] = new Vector4(0.5f, 0.5f, 0.5f, 1.0f); // Default grey
+        }
+        labelColors[0] = new Vector4(0.7f, 0.7f, 0.7f, 1.0f); // Unclassified (Light Grey)
+        labelColors[1] = new Vector4(0.55f, 0.35f, 0.15f, 1.0f); // Stem (Brown)
+        labelColors[2] = new Vector4(0.1f, 0.7f, 0.2f, 1.0f); // Leaf (Green)
+        labelColors[3] = new Vector4(1.0f, 0.1f, 0.1f, 1.0f); // Fruit (Red)
+        labelColors[4] = new Vector4(1.0f, 0.9f, 0.0f, 1.0f); // Flower (Yellow)
+        labelColors[5] = new Vector4(0.0f, 0.6f, 0.9f, 1.0f); // Support (Cyan/Blue)
+        labelColors[6] = new Vector4(0.9f, 0.0f, 0.9f, 1.0f); // Noise (Magenta)
+    }
+
+    public void SetLabelColors(Vector4[] colors)
+    {
+        if (colors == null) return;
+        int count = Mathf.Min(colors.Length, labelColors.Length);
+        for (int i = 0; i < count; i++)
+        {
+            labelColors[i] = colors[i];
+        }
+
+        if (pointMaterial != null)
+        {
+            pointMaterial.SetVectorArray("_LabelColors", labelColors);
+        }
+    }
+
+    public void InitializeAnnotationLayers(int pointCount)
+    {
+        annotationLayers.Clear();
+        byte[] defaultLabels = new byte[pointCount];
+
+        if (pointData != null && pointData.Length == pointCount)
+        {
+            for (int i = 0; i < pointCount; i++)
+            {
+                defaultLabels[i] = (byte)(pointData[i].label & 0xFF);
+            }
+        }
+
+        annotationLayers["Default"] = defaultLabels;
+        activeAnnotationLayer = "Default";
+    }
+
+    public void AddAnnotationLayer(string layerName)
+    {
+        if (pointData == null) return;
+        if (!annotationLayers.ContainsKey(layerName))
+        {
+            annotationLayers[layerName] = new byte[pointData.Length];
+        }
+    }
+
+    public void DeleteAnnotationLayer(string layerName)
+    {
+        if (layerName == "Default") return;
+        if (annotationLayers.ContainsKey(layerName))
+        {
+            annotationLayers.Remove(layerName);
+            if (activeAnnotationLayer == layerName)
+            {
+                SwitchAnnotationLayer("Default");
+            }
+        }
+    }
+
+    public void SwitchAnnotationLayer(string newLayerName)
+    {
+        if (pointData == null) return;
+        int count = pointData.Length;
+
+        // Save current labels
+        if (annotationLayers.ContainsKey(activeAnnotationLayer))
+        {
+            byte[] currentLabels = annotationLayers[activeAnnotationLayer];
+            if (currentLabels.Length == count)
+            {
+                for (int i = 0; i < count; i++)
+                {
+                    currentLabels[i] = (byte)(pointData[i].label & 0xFF);
+                }
+            }
+        }
+
+        // Auto initialize new layer if it doesn't exist
+        if (!annotationLayers.ContainsKey(newLayerName))
+        {
+            annotationLayers[newLayerName] = new byte[count];
+        }
+
+        // Apply new labels
+        byte[] targetLabels = annotationLayers[newLayerName];
+        for (int i = 0; i < count; i++)
+        {
+            int labelVal = pointData[i].label;
+            labelVal &= ~0xFF;
+            labelVal |= targetLabels[i];
+            pointData[i].label = labelVal;
+        }
+
+        activeAnnotationLayer = newLayerName;
+        UpdatePointBuffer();
+    }
+
+    public List<string> GetAnnotationLayerNames()
+    {
+        return new List<string>(annotationLayers.Keys);
+    }
+
+    public string GetActiveAnnotationLayerName()
+    {
+        return activeAnnotationLayer;
+    }
+
+    public Dictionary<string, byte[]> GetAnnotationLayers()
+    {
+        return annotationLayers;
     }
 
     // Set dynamic points from standard positions and colors (used by PointCloudLoader)
@@ -144,6 +275,8 @@ public class PointCloudRenderer : MonoBehaviour
         // Start background octree construction
         StartOctreeBuild(positions);
 
+        InitializeAnnotationLayers(count);
+
         Debug.Log($"[PointCloudRenderer] ComputeBuffer initialized with {count} points.");
     }
 
@@ -176,6 +309,8 @@ public class PointCloudRenderer : MonoBehaviour
 
         // Start background octree construction
         StartOctreeBuild(cachedPositions);
+
+        InitializeAnnotationLayers(count);
     }
 
     private void RecreateComputeBuffer(int count)
@@ -469,6 +604,7 @@ public class PointCloudRenderer : MonoBehaviour
 
         // Set shader parameters
         pointMaterial.SetBuffer("_PointBuffer", pointBuffer);
+        pointMaterial.SetVectorArray("_LabelColors", labelColors);
 
         if (useLOD && drawCount > 0)
         {

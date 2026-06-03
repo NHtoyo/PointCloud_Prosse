@@ -1,5 +1,6 @@
 using UnityEngine;
 using System.IO;
+using System.Collections.Generic;
 using PointCloudWorkbench;
 
 [RequireComponent(typeof(PointCloudEditor))]
@@ -37,6 +38,12 @@ public class PointCloudEditorUI : MonoBehaviour
 
     private NoiseFilterUI noiseFilterUI;
     private FilterPipelineEditorUI pipelineEditorUI;
+    private AnnotationPipelineEditorUI annotationPipelineEditorUI;
+
+    // UI Toggle states
+    private bool showNoiseFilterUI = false;
+    private bool showAnnotationUI = true;
+    private string newLayerName = "NewLayer";
 
     // Lasso drawing texture
     private Texture2D lineTex;
@@ -58,11 +65,22 @@ public class PointCloudEditorUI : MonoBehaviour
         {
             pipelineEditorUI = gameObject.AddComponent<FilterPipelineEditorUI>();
         }
+        annotationPipelineEditorUI = GetComponent<AnnotationPipelineEditorUI>();
+        if (annotationPipelineEditorUI == null)
+        {
+            annotationPipelineEditorUI = gameObject.AddComponent<AnnotationPipelineEditorUI>();
+        }
         RefreshFileList();
     }
 
     void Update()
     {
+        // 日本語IME入力を有効化
+        if (Input.imeCompositionMode != IMECompositionMode.On)
+        {
+            Input.imeCompositionMode = IMECompositionMode.On;
+        }
+
         // 定期的なファイルリストの更新
         fileCheckTimer -= Time.deltaTime;
         if (fileCheckTimer <= 0f)
@@ -196,8 +214,14 @@ public class PointCloudEditorUI : MonoBehaviour
         GUILayout.Box("", GUILayout.Height(2));
         GUILayout.Space(5);
 
+        GUILayout.BeginHorizontal();
+        showAnnotationUI = GUILayout.Toggle(showAnnotationUI, " アノテーションUI", toggleStyle);
+        showNoiseFilterUI = GUILayout.Toggle(showNoiseFilterUI, " モヤ処理UI", toggleStyle);
+        GUILayout.EndHorizontal();
+        GUILayout.Space(5);
+
         // Scrollview to fit everything cleanly
-        mainScrollPos = GUILayout.BeginScrollView(mainScrollPos, GUILayout.Width(width - 15), GUILayout.Height(height - 40));
+        mainScrollPos = GUILayout.BeginScrollView(mainScrollPos, GUILayout.Width(width - 15), GUILayout.Height(height - 70));
 
         // --- 1. Tool Selection ---
         GUILayout.Label("🔧 操作ツール選択 (基本ツール)", textStyle);
@@ -420,23 +444,62 @@ public class PointCloudEditorUI : MonoBehaviour
             if (GUILayout.Button("選択点を削除", buttonStyle)) editor.DeleteSelected();
             GUILayout.EndHorizontal();
             if (GUILayout.Button("削除した点を復元 (ノイズ除去クリア)", buttonStyle)) editor.RestoreDeleted();
-            
-            GUILayout.Label("🏷 分類アノテーションラベル選択:", textStyle);
-            GUILayout.BeginHorizontal();
-            if (GUILayout.Button("茎 (1)", editor.activeLabelClass == 1 ? activeButtonStyle : buttonStyle)) editor.activeLabelClass = 1;
-            if (GUILayout.Button("葉 (2)", editor.activeLabelClass == 2 ? activeButtonStyle : buttonStyle)) editor.activeLabelClass = 2;
-            GUILayout.EndHorizontal();
-            GUILayout.BeginHorizontal();
-            if (GUILayout.Button("果実 (3)", editor.activeLabelClass == 3 ? activeButtonStyle : buttonStyle)) editor.activeLabelClass = 3;
-            if (GUILayout.Button("花 (4)", editor.activeLabelClass == 4 ? activeButtonStyle : buttonStyle)) editor.activeLabelClass = 4;
-            if (GUILayout.Button("支柱 (5)", editor.activeLabelClass == 5 ? activeButtonStyle : buttonStyle)) editor.activeLabelClass = 5;
-            GUILayout.EndHorizontal();
-            
-            GUILayout.Space(2);
-            if (GUILayout.Button("選択した点にラベルを適用", activeButtonStyle))
+            GUILayout.Space(10);
+
+            // --- Annotation Layer Management ---
+            var rend = editor.targetRenderer;
+            if (rend != null)
             {
-                editor.AssignLabelToSelected();
-                editor.targetRenderer.colorMode = 2; // Auto toggle to label color mode
+                GUILayout.Box("", GUILayout.Height(1)); // Separator line
+                GUILayout.Space(5);
+                GUILayout.Label("📑 アノテーションレイヤー管理 (マルチレイヤー)", textStyle);
+
+                List<string> layers = rend.GetAnnotationLayerNames();
+                string activeLayer = rend.GetActiveAnnotationLayerName();
+
+                GUILayout.Label($"現在のアクティブレイヤー: {activeLayer}", textStyle);
+
+                GUILayout.BeginHorizontal();
+                for (int i = 0; i < layers.Count; i++)
+                {
+                    string layer = layers[i];
+                    bool isActive = layer == activeLayer;
+                    if (GUILayout.Button(layer, isActive ? activeButtonStyle : buttonStyle, GUILayout.Width((width - 45) / 3f)))
+                    {
+                        rend.SwitchAnnotationLayer(layer);
+                        editor.MarkStatsDirty();
+                    }
+                    if ((i + 1) % 3 == 0 && i < layers.Count - 1)
+                    {
+                        GUILayout.EndHorizontal();
+                        GUILayout.BeginHorizontal();
+                    }
+                }
+                GUILayout.EndHorizontal();
+                GUILayout.Space(5);
+
+                GUILayout.BeginHorizontal();
+                newLayerName = GUILayout.TextField(newLayerName, GUILayout.Width(240));
+                if (GUILayout.Button("レイヤー追加", buttonStyle, GUILayout.Width(140)))
+                {
+                    if (!string.IsNullOrEmpty(newLayerName) && !layers.Contains(newLayerName))
+                    {
+                        rend.AddAnnotationLayer(newLayerName);
+                        rend.SwitchAnnotationLayer(newLayerName);
+                        editor.MarkStatsDirty();
+                        newLayerName = "NewLayer";
+                    }
+                }
+                GUILayout.EndHorizontal();
+
+                if (activeLayer != "Default")
+                {
+                    if (GUILayout.Button("❌ 現在のアクティブレイヤーを削除", activeButtonStyle))
+                    {
+                        rend.DeleteAnnotationLayer(activeLayer);
+                        editor.MarkStatsDirty();
+                    }
+                }
             }
             GUILayout.Space(8);
         }
@@ -520,6 +583,17 @@ public class PointCloudEditorUI : MonoBehaviour
 
         // Draw Lasso lines on screen if active
         DrawLassoLines();
+
+        // --- Draw Chained Pipeline/Annotation Windows ---
+        float currentCenterY = 15f;
+        if (showNoiseFilterUI && pipelineEditorUI != null)
+        {
+            pipelineEditorUI.DrawGUI(ref currentCenterY);
+        }
+        if (showAnnotationUI && annotationPipelineEditorUI != null)
+        {
+            annotationPipelineEditorUI.DrawGUI(ref currentCenterY);
+        }
 
         // Draw Progress Pop-up Window if running (Modal state)
         var pm = PointCloudProgressManager.Instance;

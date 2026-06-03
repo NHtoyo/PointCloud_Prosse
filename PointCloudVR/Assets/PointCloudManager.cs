@@ -45,6 +45,7 @@ public class PointCloudManager : MonoBehaviour
 
     // LOD & Stats variables ported from PointCloudEditorUI
     private PointCloudEditor editorInstance;
+    private AnnotationPipelineEditorUI annotationUI;
     private Vector2 rightScrollPos;
     private bool foldoutLOD = true;
     private bool foldoutStats = true;
@@ -113,7 +114,8 @@ public class PointCloudManager : MonoBehaviour
     void Update()
     {
         // Toggle Control Mode with Tab key
-        if (Input.GetKeyDown(KeyCode.Tab))
+        // テキスト入力フィールドにフォーカスがある場合はキー入力を無視する（IMEやBackspaceの競合を回避）
+        if (GUIUtility.keyboardControl == 0 && Input.GetKeyDown(KeyCode.Tab))
         {
             currentMode = (currentMode == ControlMode.Camera) ? ControlMode.AlignedObject : ControlMode.Camera;
             UpdateControlStates();
@@ -488,6 +490,10 @@ public class PointCloudManager : MonoBehaviour
         {
             editorInstance = Object.FindAnyObjectByType<PointCloudEditor>();
         }
+        if (annotationUI == null)
+        {
+            annotationUI = Object.FindAnyObjectByType<AnnotationPipelineEditorUI>();
+        }
 
         // --- 1. Target Controls Selection ---
         GUILayout.Label("🎮 操作モード", textStyle);
@@ -624,14 +630,29 @@ public class PointCloudManager : MonoBehaviour
                 {
                     GUILayout.Label($"描画点数: {totalPoints:N0} (LOD無効)", textStyle);
                 }
-                int[] counts = editorInstance.GetLabelCounts();
-                GUILayout.Label($"  - 未分類 (0): {counts[0]:N0}", textStyle);
-                GUILayout.Label($"  - 茎 (1): {counts[1]:N0}", textStyle);
-                GUILayout.Label($"  - 葉 (2): {counts[2]:N0}", textStyle);
-                GUILayout.Label($"  - 果実 (3): {counts[3]:N0}", textStyle);
-                GUILayout.Label($"  - 花 (4): {counts[4]:N0}", textStyle);
-                GUILayout.Label($"  - 支柱 (5): {counts[5]:N0}", textStyle);
-                GUILayout.Label($"  - 削除済/ノイズ (6): {counts[6]:N0}", textStyle);
+
+                // Dynamic annotation counts
+                Dictionary<int, int> countsMap = editorInstance.GetLabelCountsMap();
+                if (annotationUI != null && annotationUI.GetActivePreset() != null)
+                {
+                    foreach (var cls in annotationUI.GetActivePreset().classes)
+                    {
+                        int count = countsMap.ContainsKey(cls.id) ? countsMap[cls.id] : 0;
+                        GUILayout.Label($"  - {cls.name} ({cls.id}): {count:N0}", textStyle);
+                    }
+                }
+                else
+                {
+                    // Fallback
+                    int[] counts = editorInstance.GetLabelCounts();
+                    GUILayout.Label($"  - 未分類 (0): {counts[0]:N0}", textStyle);
+                    GUILayout.Label($"  - 茎 (1): {counts[1]:N0}", textStyle);
+                    GUILayout.Label($"  - 葉 (2): {counts[2]:N0}", textStyle);
+                    GUILayout.Label($"  - 果実 (3): {counts[3]:N0}", textStyle);
+                    GUILayout.Label($"  - 花 (4): {counts[4]:N0}", textStyle);
+                    GUILayout.Label($"  - 支柱 (5): {counts[5]:N0}", textStyle);
+                }
+                GUILayout.Label($"  - 削除済/ノイズ (物理非表示): {editorInstance.GetNoiseDeletedCount():N0}", textStyle);
                 GUILayout.Space(5);
             }
         }
@@ -681,16 +702,19 @@ public class PointCloudManager : MonoBehaviour
     {
         InitializeLegendStyles();
 
-        // 6 items + Title: Height is 210f (similar to noise legend)
+        if (annotationUI == null || annotationUI.GetActivePreset() == null) return;
+        var classes = annotationUI.GetActivePreset().classes;
+
+        // Dynamic height calculation: ~25f per item + ~40f title margin
         float width = 360f;
-        float height = 210f;
+        float height = 40f + classes.Count * 25f;
         float posX = 20f;
         float posY = Screen.height - height - 20f;
 
         // If Noise Filter Preview Legend is ALSO showing, offset Annotation Legend to the right so they don't overlap
         if (PointCloudWorkbench.NoiseFilterManager.Instance != null && PointCloudWorkbench.NoiseFilterManager.Instance.IsPreviewActive)
         {
-            posX = 440f; // Shift to the right of the noise legend (400 width + 20 margin + 20 space)
+            posX = 440f; // Shift to the right of the noise legend
         }
 
         GUILayout.BeginArea(new Rect(posX, posY, width, height), legendStyle);
@@ -698,12 +722,10 @@ public class PointCloudManager : MonoBehaviour
         GUILayout.Label("🏷 アノテーション分類凡例", legendTitleStyle);
         GUILayout.Space(8);
 
-        DrawLegendItem(new Color(0.7f, 0.7f, 0.7f, 1.0f), "未分類 (0)：灰色");
-        DrawLegendItem(new Color(0.55f, 0.35f, 0.15f, 1.0f), "茎 (1)：茶色");
-        DrawLegendItem(new Color(0.1f, 0.7f, 0.2f, 1.0f), "葉 (2)：緑色");
-        DrawLegendItem(new Color(1.0f, 0.1f, 0.1f, 1.0f), "果実 (3)：赤色");
-        DrawLegendItem(new Color(1.0f, 0.9f, 0.0f, 1.0f), "花 (4)：黄色");
-        DrawLegendItem(new Color(0.0f, 0.6f, 0.9f, 1.0f), "支柱 (5)：青色");
+        foreach (var cls in classes)
+        {
+            DrawLegendItem(cls.GetColor(), $"{cls.name} ({cls.id})");
+        }
 
         GUILayout.EndArea();
     }
