@@ -24,6 +24,7 @@ namespace PointCloudWorkbench
         private int draggingClassIndex = -1;
         private Vector2 dragMouseOffset;
         private bool isDragging = false;
+        private Vector2 dragStartMousePos;
 
         // クラス追加・名前変更で共有するテキスト入力フィールド
         private string classNameInput = "新規クラス";
@@ -216,6 +217,10 @@ namespace PointCloudWorkbench
             GUI.enabled = true;
             py += 36f;
 
+            // 上書き防止設定
+            editor.selectOnlyUnclassified = GUI.Toggle(new Rect(px, py, bW, 20f), editor.selectOnlyUnclassified, " 未分類のみを選択対象にする (上書き防止)");
+            py += 24f;
+
             // 選択した点にラベルを適用
             if (GUI.Button(new Rect(px, py, bW, 34f), "🏷 選択点に適用", activeBlockStyle))
             {
@@ -323,50 +328,77 @@ namespace PointCloudWorkbench
                     {
                         draggingClassIndex = i;
                         dragMouseOffset = ev.mousePosition - br.min;
-                        isDragging = true;
+                        dragStartMousePos = ev.mousePosition;
+                        isDragging = false;
+                        GUIUtility.hotControl = GUIUtility.GetControlID(FocusType.Passive);
                     }
                     ev.Use();
                 }
             }
 
-            // D&D のドロップ処理 (可変幅ブロックに対応した位置走査型に変更)
-            if (ev.type == EventType.MouseUp && isDragging)
+            if (ev.type == EventType.MouseDrag && draggingClassIndex > 0)
             {
-                isDragging = false;
-                if (lane.Contains(ev.mousePosition) && draggingClassIndex > 0)
+                if (Vector2.Distance(ev.mousePosition, dragStartMousePos) > 5f)
                 {
-                    float mouseX = ev.mousePosition.x;
-                    int targetIndex = 1; // 未分類(0)は移動不可なので1以上
+                    isDragging = true;
+                }
+            }
 
-                    float curX = lane.x + 5f;
-                    for (int i = 1; i < activePreset.classes.Count; i++)
+            // D&D のドロップ処理 (可変幅ブロックに対応した位置走査型に変更)
+            if (ev.type == EventType.MouseUp)
+            {
+                if (GUIUtility.hotControl != 0)
+                {
+                    GUIUtility.hotControl = 0;
+                }
+
+                if (isDragging)
+                {
+                    isDragging = false;
+                    if (lane.Contains(ev.mousePosition) && draggingClassIndex > 0)
                     {
-                        var cls = activePreset.classes[i];
-                        string txt = $"{(editor.activeLabelClass == cls.id ? "★ " : "")}{cls.name} ({cls.id})";
-                        float bW = Mathf.Max(120f, blockStyle.CalcSize(new GUIContent(txt)).x + 24f);
+                        var draggedCls = activePreset.classes[draggingClassIndex];
+                        string draggedTxt = $"{(editor.activeLabelClass == draggedCls.id ? "★ " : "")}{draggedCls.name} ({draggedCls.id})";
+                        float draggedW = Mathf.Max(120f, blockStyle.CalcSize(new GUIContent(draggedTxt)).x + 24f);
+                        float ghostCenterX = ev.mousePosition.x - dragMouseOffset.x + draggedW / 2f;
 
-                        // ブロックの中央位置を境にドロップ先インデックスを判定
-                        if (mouseX < curX + bW / 2f)
+                        int targetIndex = 1; // 未分類(0)は移動不可なので1以上
+
+                        float curX = lane.x + 5f;
+                        for (int i = 1; i < activePreset.classes.Count; i++)
                         {
-                            targetIndex = i;
-                            break;
+                            var cls = activePreset.classes[i];
+                            string txt = $"{(editor.activeLabelClass == cls.id ? "★ " : "")}{cls.name} ({cls.id})";
+                            float bW = Mathf.Max(120f, blockStyle.CalcSize(new GUIContent(txt)).x + 24f);
+
+                            // ゴーストの中央位置を境にドロップ先インデックスを判定
+                            if (ghostCenterX < curX + bW / 2f)
+                            {
+                                targetIndex = i;
+                                break;
+                            }
+                            else
+                            {
+                                targetIndex = i + 1;
+                            }
+                            curX += bW + bSpacing;
                         }
-                        else
+                        // 最後尾への追加も許可するため Count までClamp
+                        targetIndex = Mathf.Clamp(targetIndex, 1, activePreset.classes.Count);
+
+                        if (targetIndex != draggingClassIndex && targetIndex != draggingClassIndex + 1)
                         {
-                            targetIndex = i + 1;
+                            var dragged = activePreset.classes[draggingClassIndex];
+                            activePreset.classes.RemoveAt(draggingClassIndex);
+                            
+                            // 要素を一つ抜いたことでズレるインデックスを補正
+                            if (targetIndex > draggingClassIndex) targetIndex--;
+                            
+                            activePreset.classes.Insert(targetIndex, dragged);
+
+                            // 順序の入れ替えに合わせて、ID (1以上) を振り直す
+                            ReassignClassIds();
                         }
-                        curX += bW + bSpacing;
-                    }
-                    targetIndex = Mathf.Clamp(targetIndex, 1, activePreset.classes.Count - 1);
-
-                    if (targetIndex != draggingClassIndex)
-                    {
-                        var dragged = activePreset.classes[draggingClassIndex];
-                        activePreset.classes.RemoveAt(draggingClassIndex);
-                        activePreset.classes.Insert(targetIndex, dragged);
-
-                        // 順序の入れ替えに合わせて、ID (1以上) を振り直す
-                        ReassignClassIds();
                     }
                 }
                 draggingClassIndex = -1;

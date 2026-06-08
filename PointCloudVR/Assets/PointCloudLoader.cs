@@ -16,6 +16,7 @@ public class PointCloudLoader : MonoBehaviour
     [Tooltip("If checked, reads from E:\\VR\\PointCloudData\\<fileName> instead of StreamingAssets.")]
     public bool useExternalPath = true;
     public string externalFolderPath = @"E:\VR\PointCloudData";
+    public string CurrentFilePath { get; private set; } = "";
 
     [Header("Import Controls")]
     [Tooltip("Maximum points to load to prevent memory issues")]
@@ -129,6 +130,7 @@ public class PointCloudLoader : MonoBehaviour
         stopwatch.Start();
 
         Debug.Log($"[PointCloudLoader] Loading file: {filePath}");
+        CurrentFilePath = filePath;
         string extension = Path.GetExtension(filePath).ToLower();
 
         PointData[] loadedPoints = null;

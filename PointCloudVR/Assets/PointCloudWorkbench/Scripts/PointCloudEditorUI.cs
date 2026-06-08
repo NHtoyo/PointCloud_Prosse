@@ -343,14 +343,24 @@ public class PointCloudEditorUI : MonoBehaviour
             {
                 editor.ransacType = PointCloudEditor.RansacType.Plane;
             }
-            if (GUILayout.Button("鉛直円柱 (支柱)", editor.ransacType == PointCloudEditor.RansacType.Cylinder ? activeButtonStyle : buttonStyle))
+            if (GUILayout.Button("鉛直円柱", editor.ransacType == PointCloudEditor.RansacType.Cylinder ? activeButtonStyle : buttonStyle))
             {
                 editor.ransacType = PointCloudEditor.RansacType.Cylinder;
             }
+            if (GUILayout.Button("支柱拡張", activeButtonStyle))
+            {
+                editor.ApplySupportCylinderFromSelection();
+            }
             GUILayout.EndHorizontal();
 
-            GUILayout.Label($"適合許容誤差 (Tolerance): {editor.ransacTolerance * 100f:F1} cm", textStyle);
+            GUILayout.Label($"RANSAC用 許容誤差: {editor.ransacTolerance * 100f:F1} cm", textStyle);
             editor.ransacTolerance = GUILayout.HorizontalSlider(editor.ransacTolerance, 0.002f, 0.15f);
+
+            GUILayout.Label($"支柱 色許容: {editor.supportColorTolerance:F0}", textStyle);
+            editor.supportColorTolerance = GUILayout.HorizontalSlider(editor.supportColorTolerance, 20f, 180f);
+
+            GUILayout.Label($"支柱 太さ倍率: {editor.supportTubeMultiplier:F1}", textStyle);
+            editor.supportTubeMultiplier = GUILayout.HorizontalSlider(editor.supportTubeMultiplier, 1.0f, 8.0f);
 
             if (GUILayout.Button($"🚀 RANSAC 検出を実行 (インライア{(editor.brushSelectMode ? "選択" : "解除")})", activeButtonStyle))
             {

@@ -3,6 +3,7 @@ using System.IO;
 using System.Globalization;
 using System.Threading.Tasks;
 using System.Collections.Generic;
+using System.Text;
 using PointCloudWorkbench;
 
 public class PointCloudEditor : MonoBehaviour
@@ -16,15 +17,21 @@ public class PointCloudEditor : MonoBehaviour
     public EditTool activeTool = EditTool.None;
     public float brushRadius = 0.2f;
     public bool brushSelectMode = true; // true = select, false = deselect
+    public bool selectOnlyUnclassified = false; // true = ignore points with label > 0
     public int activeLabelClass = 2; // Default to Leaf (2) for painting
 
     [Header("Advanced Selection Settings")]
     public float connectionRadius = 0.005f;
     public int maxConnectionPoints = 50000;
+    public float ransacColorTolerance = 30f; // RGB Euclidean distance tolerance (0 to 441) for cylinder fitting
 
     public enum RansacType { Plane, Cylinder }
     public RansacType ransacType = RansacType.Plane;
     public float ransacTolerance = 0.02f;
+    public float supportColorTolerance = 90f;
+    public float supportTubeMultiplier = 4.0f;
+    public float supportHeightBinMultiplier = 4.0f;
+    public int supportMaxEmptyBins = 2;
 
     public enum FilterType { Height, Distance, Redness, Greenness }
     public FilterType filterType = FilterType.Height;
@@ -424,6 +431,7 @@ public class PointCloudEditor : MonoBehaviour
                 int label = points[i].label;
                 bool isDeleted = (label & 0x20000) != 0;
                 if (isDeleted) return;
+                if (selecting && selectOnlyUnclassified && (label & 0xFF) != 0) return;
 
                 float distSq = (points[i].position - localBrushCenter).sqrMagnitude;
                 if (distSq <= radiusSq)
@@ -442,6 +450,7 @@ public class PointCloudEditor : MonoBehaviour
                 int label = points[i].label;
                 bool isDeleted = (label & 0x20000) != 0;
                 if (isDeleted) return;
+                if (selecting && selectOnlyUnclassified && (label & 0xFF) != 0) return;
 
                 float distSq = (points[i].position - localBrushCenter).sqrMagnitude;
                 if (distSq <= radiusSq)
@@ -514,6 +523,7 @@ public class PointCloudEditor : MonoBehaviour
                 int label = points[i].label;
                 bool isDeleted = (label & 0x20000) != 0;
                 if (isDeleted) return;
+                if (selecting && selectOnlyUnclassified && (label & 0xFF) != 0) return;
 
                 Vector4 clipPos = localToScreen * new Vector4(points[i].position.x, points[i].position.y, points[i].position.z, 1f);
                 if (clipPos.w <= 0.0001f) return;
@@ -537,6 +547,7 @@ public class PointCloudEditor : MonoBehaviour
                 int label = points[i].label;
                 bool isDeleted = (label & 0x20000) != 0;
                 if (isDeleted) return;
+                if (selecting && selectOnlyUnclassified && (label & 0xFF) != 0) return;
 
                 Vector4 clipPos = localToScreen * new Vector4(points[i].position.x, points[i].position.y, points[i].position.z, 1f);
                 if (clipPos.w <= 0.0001f) return;
@@ -890,7 +901,7 @@ public class PointCloudEditor : MonoBehaviour
                 for (int i = 0; i < points.Length; i++)
                 {
                     if (token.IsCancellationRequested) return;
-                    if ((points[i].label & 0x20000) == 0) nonDeletedCount++;
+                    if ((points[i].label & 0x20000) == 0 && (points[i].label & 0x80000) == 0) nonDeletedCount++;
                 }
 
                 if (asBinary)
@@ -928,7 +939,8 @@ public class PointCloudEditor : MonoBehaviour
 
                             int labelVal = points[i].label;
                             bool isDeleted = (labelVal & 0x20000) != 0;
-                            if (isDeleted) continue; // skip noise
+                            bool isNoiseHidden = (labelVal & 0x80000) != 0;
+                            if (isDeleted || isNoiseHidden) continue; // skip noise
 
                             Vector3 pos = points[i].position;
                             Color32 col = PointData.UnpackColor(points[i].originalColor);
@@ -981,7 +993,8 @@ public class PointCloudEditor : MonoBehaviour
 
                             int labelVal = points[i].label;
                             bool isDeleted = (labelVal & 0x20000) != 0;
-                            if (isDeleted) continue; // skip noise
+                            bool isNoiseHidden = (labelVal & 0x80000) != 0;
+                            if (isDeleted || isNoiseHidden) continue; // skip noise
 
                             Vector3 pos = points[i].position;
                             Color32 col = PointData.UnpackColor(points[i].originalColor);
@@ -1188,6 +1201,7 @@ public class PointCloudEditor : MonoBehaviour
                 int i = searchCandidates[idxInCandidates];
                 int label = points[i].label;
                 if ((label & 0x20000) != 0) return;
+                if (selecting && selectOnlyUnclassified && (label & 0xFF) != 0) return;
 
                 Vector4 clipPos = localToScreen * new Vector4(points[i].position.x, points[i].position.y, points[i].position.z, 1f);
                 if (clipPos.w <= 0.0001f) return;
@@ -1209,6 +1223,7 @@ public class PointCloudEditor : MonoBehaviour
             {
                 int label = points[i].label;
                 if ((label & 0x20000) != 0) return;
+                if (selecting && selectOnlyUnclassified && (label & 0xFF) != 0) return;
 
                 Vector4 clipPos = localToScreen * new Vector4(points[i].position.x, points[i].position.y, points[i].position.z, 1f);
                 if (clipPos.w <= 0.0001f) return;
@@ -1537,6 +1552,7 @@ public class PointCloudEditor : MonoBehaviour
                     {
                         int idx = connQueue[i];
                         int label = points[idx].label;
+                        if (selecting && selectOnlyUnclassified && (label & 0xFF) != 0) continue;
                         if (selecting) label |= 0x10000;
                         else label &= ~0x10000;
                         points[idx].label = label;
@@ -1569,10 +1585,22 @@ public class PointCloudEditor : MonoBehaviour
         Vector3[] positions = targetRenderer.GetPositions();
         if (positions == null || positions.Length == 0) return;
 
-        float scaleX = targetRenderer != null ? targetRenderer.transform.lossyScale.x : 1.0f;
+        Transform trans = targetRenderer.transform;
+        float scaleX = targetRenderer != null ? trans.lossyScale.x : 1.0f;
         float localTolerance = ransacTolerance / scaleX;
+        float colorTol = ransacColorTolerance;
         RansacType type = ransacType;
         bool selecting = brushSelectMode;
+
+        // カメラから見た上・右・前方向ベクトルをローカル空間に変換 (スレッドセーフ化のためメインスレッドで事前取得)
+        Camera mainCam = Camera.main;
+        Vector3 camUpWorld = mainCam != null ? mainCam.transform.up : Vector3.up;
+        Vector3 camRightWorld = mainCam != null ? mainCam.transform.right : Vector3.right;
+        Vector3 camForwardWorld = mainCam != null ? mainCam.transform.forward : Vector3.forward;
+
+        Vector3 localUp = trans.InverseTransformDirection(camUpWorld).normalized;
+        Vector3 localRight = trans.InverseTransformDirection(camRightWorld).normalized;
+        Vector3 localForward = trans.InverseTransformDirection(camForwardWorld).normalized;
 
         var pm = PointCloudProgressManager.Instance;
         pm.Start($"RANSAC検出 ({type})", "点群データを解析中...");
@@ -1584,12 +1612,20 @@ public class PointCloudEditor : MonoBehaviour
                 var token = pm.CancellationToken;
 
                 List<int> activeIndices = new List<int>(points.Length / 2);
+                List<int> selectedIndices = new List<int>(points.Length / 100);
+
                 for (int i = 0; i < points.Length; i++)
                 {
                     if (token.IsCancellationRequested) return;
-                    if ((points[i].label & 0x20000) == 0)
+                    int label = points[i].label;
+                    if ((label & 0x20000) == 0)
                     {
+                        if (selecting && selectOnlyUnclassified && (label & 0xFF) != 0) continue;
                         activeIndices.Add(i);
+                        if ((label & 0x10000) != 0)
+                        {
+                            selectedIndices.Add(i);
+                        }
                     }
                 }
 
@@ -1597,6 +1633,85 @@ public class PointCloudEditor : MonoBehaviour
                 {
                     pm.Complete();
                     return;
+                }
+
+                bool isSelectedPointFit = (selectedIndices.Count >= 3);
+                List<int> fitSourceIndices = isSelectedPointFit ? selectedIndices : activeIndices;
+
+                // PCA (主成分分析) で支柱の軸 (pcaUp) を決定
+                Vector3 pcaUp = localUp;
+                Color32 targetAvgColor = new Color32(0, 0, 0, 0);
+                bool hasColorConstraint = false;
+                float rEst = 0.01f / scaleX; // 座標スケール推定用の基準半径（デフォルト1cm相当）
+
+                if (isSelectedPointFit)
+                {
+                    // 1. 重心および平均色の計算
+                    Vector3 mean = Vector3.zero;
+                    long totalR = 0, totalG = 0, totalB = 0;
+                    for (int i = 0; i < selectedIndices.Count; i++)
+                    {
+                        int idx = selectedIndices[i];
+                        mean += positions[idx];
+                        Color32 col = PointData.UnpackColor(points[idx].originalColor);
+                        totalR += col.r;
+                        totalG += col.g;
+                        totalB += col.b;
+                    }
+                    mean /= selectedIndices.Count;
+                    targetAvgColor = new Color32(
+                        (byte)(totalR / selectedIndices.Count),
+                        (byte)(totalG / selectedIndices.Count),
+                        (byte)(totalB / selectedIndices.Count),
+                        255
+                    );
+                    hasColorConstraint = true;
+
+                    // 2. 分散共分散行列 (3x3) の計算
+                    float cxx = 0, cxy = 0, cxz = 0;
+                    float cyy = 0, cyz = 0, czz = 0;
+                    for (int i = 0; i < selectedIndices.Count; i++)
+                    {
+                        Vector3 diff = positions[selectedIndices[i]] - mean;
+                        cxx += diff.x * diff.x;
+                        cxy += diff.x * diff.y;
+                        cxz += diff.x * diff.z;
+                        cyy += diff.y * diff.y;
+                        cyz += diff.y * diff.z;
+                        czz += diff.z * diff.z;
+                    }
+                    int count = selectedIndices.Count;
+                    cxx /= count; cxy /= count; cxz /= count;
+                    cyy /= count; cyz /= count; czz /= count;
+
+                    // 3. べき乗法 (Power Iteration) による第一主成分（主要な伸びの軸）の算出
+                    Vector3 v = localUp;
+                    if (v.sqrMagnitude < 0.01f) v = Vector3.up;
+                    for (int iter = 0; iter < 15; iter++)
+                    {
+                        float nx = cxx * v.x + cxy * v.y + cxz * v.z;
+                        float ny = cxy * v.x + cyy * v.y + cyz * v.z;
+                        float nz = cxz * v.x + cyz * v.y + czz * v.z;
+                        Vector3 nextV = new Vector3(nx, ny, nz);
+                        float mag = nextV.magnitude;
+                        if (mag < 0.0001f) break;
+                        v = nextV / mag;
+                    }
+                    pcaUp = v.normalized;
+
+                    // 4. 選択された点群からPCA軸までの平均距離 (rEst) を算出（座標系のスケールを自動抽出）
+                    Vector3 rAxis = Vector3.Cross(pcaUp, Mathf.Abs(pcaUp.y) > 0.9f ? Vector3.right : Vector3.up).normalized;
+                    Vector3 fAxis = Vector3.Cross(rAxis, pcaUp).normalized;
+                    float totalDist = 0f;
+                    Vector2 meanProj = new Vector2(Vector3.Dot(mean, rAxis), Vector3.Dot(mean, fAxis));
+                    for (int i = 0; i < selectedIndices.Count; i++)
+                    {
+                        Vector3 p = positions[selectedIndices[i]];
+                        Vector2 proj = new Vector2(Vector3.Dot(p, rAxis), Vector3.Dot(p, fAxis));
+                        totalDist += Vector2.Distance(proj, meanProj);
+                    }
+                    rEst = totalDist / selectedIndices.Count;
+                    if (rEst < 0.0001f) rEst = 0.01f / scaleX;
                 }
 
                 object locker = new object();
@@ -1607,6 +1722,9 @@ public class PointCloudEditor : MonoBehaviour
                 Vector4 bestPlaneEq = Vector4.zero;
                 Vector2 bestCylinderCenter = Vector2.zero;
                 float bestCylinderRadius = 0f;
+                Vector3 bestCylinderUp = pcaUp;
+                Vector3 bestCylinderRight = Vector3.Cross(pcaUp, Mathf.Abs(pcaUp.y) > 0.9f ? Vector3.right : Vector3.up).normalized;
+                Vector3 bestCylinderForward = Vector3.Cross(bestCylinderRight, pcaUp).normalized;
 
                 int iterations = 250;
 
@@ -1681,6 +1799,10 @@ public class PointCloudEditor : MonoBehaviour
                 }
                 else
                 {
+                    // PCA軸に直交する基底を作る
+                    Vector3 uAxis = Vector3.Cross(pcaUp, Mathf.Abs(pcaUp.y) > 0.9f ? Vector3.right : Vector3.up).normalized;
+                    Vector3 vAxis = Vector3.Cross(pcaUp, uAxis).normalized;
+
                     Parallel.For(0, iterations, (iter, state) =>
                     {
                         if (token.IsCancellationRequested)
@@ -1697,7 +1819,8 @@ public class PointCloudEditor : MonoBehaviour
                                 if (sw.ElapsedMilliseconds - lastProgressUpdate > 50)
                                 {
                                     lastProgressUpdate = sw.ElapsedMilliseconds;
-                                    pm.Update((float)iter / iterations, $"鉛直円柱フィッティング中... (イテレーション {iter}/{iterations})");
+                                    string msg = isSelectedPointFit ? "選択点から支柱フィッティング中..." : "鉛直円柱フィッティング中...";
+                                    pm.Update((float)iter / iterations, $"{msg} (イテレーション {iter}/{iterations})");
                                 }
                             }
                         }
@@ -1705,9 +1828,26 @@ public class PointCloudEditor : MonoBehaviour
                         // Thread-local random source using unique seeds
                         var rand = new System.Random(System.Guid.NewGuid().GetHashCode() + iter);
 
-                        int idx1 = activeIndices[rand.Next(0, activeIndices.Count)];
-                        int idx2 = activeIndices[rand.Next(0, activeIndices.Count)];
-                        int idx3 = activeIndices[rand.Next(0, activeIndices.Count)];
+                        // PCA軸からの揺らぎ（最大5度）を考慮した localUp_iter の生成
+                        float maxAngleRad = 5f * Mathf.Deg2Rad;
+                        float theta = (float)(rand.NextDouble() * maxAngleRad);
+                        float phi = (float)(rand.NextDouble() * 2.0 * Mathf.PI);
+
+                        // 傾斜した軸ベクトル
+                        Vector3 localUp_iter = (pcaUp * Mathf.Cos(theta) + (uAxis * Mathf.Cos(phi) + vAxis * Mathf.Sin(phi)) * Mathf.Sin(theta)).normalized;
+
+                        // localUp_iter に直交する直交座標系 (localRight_iter, localForward_iter) を構築
+                        Vector3 localRight_iter = Vector3.Cross(localUp_iter, localForward).normalized;
+                        if (localRight_iter.sqrMagnitude < 0.001f)
+                        {
+                            localRight_iter = Vector3.Cross(localUp_iter, localRight).normalized;
+                        }
+                        Vector3 localForward_iter = Vector3.Cross(localRight_iter, localUp_iter).normalized;
+
+                        // 母集団 fitSourceIndices から3点をランダムに選択
+                        int idx1 = fitSourceIndices[rand.Next(0, fitSourceIndices.Count)];
+                        int idx2 = fitSourceIndices[rand.Next(0, fitSourceIndices.Count)];
+                        int idx3 = fitSourceIndices[rand.Next(0, fitSourceIndices.Count)];
 
                         if (idx1 == idx2 || idx2 == idx3 || idx1 == idx3) return;
 
@@ -1715,9 +1855,15 @@ public class PointCloudEditor : MonoBehaviour
                         Vector3 p2 = positions[idx2];
                         Vector3 p3 = positions[idx3];
 
-                        Vector2 a = new Vector2(p1.x, p1.z);
-                        Vector2 b = new Vector2(p2.x, p2.z);
-                        Vector2 c = new Vector2(p3.x, p3.z);
+                        Vector2 a = new Vector2(Vector3.Dot(p1, localRight_iter), Vector3.Dot(p1, localForward_iter));
+                        Vector2 b = new Vector2(Vector3.Dot(p2, localRight_iter), Vector3.Dot(p2, localForward_iter));
+                        Vector2 c = new Vector2(Vector3.Dot(p3, localRight_iter), Vector3.Dot(p3, localForward_iter));
+
+                        // 投影点の相互距離が 0.2 * rEst 未満の場合は数値的安定性のために即時棄却 (一直線上サンプリング防止)
+                        float minDistSqr = (rEst * 0.2f) * (rEst * 0.2f);
+                        if (Vector2.SqrMagnitude(a - b) < minDistSqr ||
+                            Vector2.SqrMagnitude(b - c) < minDistSqr ||
+                            Vector2.SqrMagnitude(c - a) < minDistSqr) return;
 
                         float dVal = 2f * (a.x * (b.y - c.y) + b.x * (c.y - a.y) + c.x * (a.y - b.y));
                         if (Mathf.Abs(dVal) < 0.0001f) return;
@@ -1728,23 +1874,34 @@ public class PointCloudEditor : MonoBehaviour
                         Vector2 center = new Vector2(xc, zc);
                         float radius = Vector2.Distance(a, center);
 
-                        // スケール（拡大縮小）を考慮してワールド空間の想定半径（実寸）を算出
-                        float worldRadius = radius * scaleX;
+                        // 基準半径 rEst に基づく相対半径制限（0.4倍〜2.0倍）により、植物巻き込みを防止
+                        if (radius < rEst * 0.4f || radius > rEst * 2.0f) return;
 
-                        // 実寸で半径0.5cm未満、または8cmを超える円柱は支柱ではないとみなして棄却
-                        if (worldRadius < 0.005f || worldRadius > 0.08f) return;
+                        // インライア判定の誤差許容度（REstの0.5倍以下に動的制限し、植物侵入を排除）
+                        float toleranceWithSlack = Mathf.Min(localTolerance * 1.5f, rEst * 0.5f);
 
-                        // Allocation-free inlier counting, cache-friendly vector lookup
+                        // 母集団 fitSourceIndices に対してインライア数を数える
                         int currentInlierCount = 0;
-                        for (int i = 0; i < activeIndices.Count; i++)
+                        for (int i = 0; i < fitSourceIndices.Count; i++)
                         {
-                            int idx = activeIndices[i];
+                            int idx = fitSourceIndices[i];
                             Vector3 p = positions[idx];
-                            float distFromCenter = Vector2.Distance(new Vector2(p.x, p.z), center);
+                            Vector2 projP = new Vector2(Vector3.Dot(p, localRight_iter), Vector3.Dot(p, localForward_iter));
+                            float distFromCenter = Vector2.Distance(projP, center);
                             float error = Mathf.Abs(distFromCenter - radius);
 
-                            if (error < localTolerance)
+                            if (error < toleranceWithSlack)
                             {
+                                // 色情報によるフィルタリング（ハサミや葉っぱの混入防止）
+                                if (hasColorConstraint)
+                                {
+                                    Color32 col = PointData.UnpackColor(points[idx].originalColor);
+                                    float rDiff = (float)col.r - targetAvgColor.r;
+                                    float gDiff = (float)col.g - targetAvgColor.g;
+                                    float bDiff = (float)col.b - targetAvgColor.b;
+                                    float colorDist = Mathf.Sqrt(rDiff * rDiff + gDiff * gDiff + bDiff * bDiff);
+                                    if (colorDist > colorTol) continue;
+                                }
                                 currentInlierCount++;
                             }
                         }
@@ -1756,6 +1913,9 @@ public class PointCloudEditor : MonoBehaviour
                                 bestInlierCount = currentInlierCount;
                                 bestCylinderCenter = center;
                                 bestCylinderRadius = radius;
+                                bestCylinderUp = localUp_iter;
+                                bestCylinderRight = localRight_iter;
+                                bestCylinderForward = localForward_iter;
                             }
                         }
                     });
@@ -1765,7 +1925,10 @@ public class PointCloudEditor : MonoBehaviour
                 {
                     pm.Update(0.95f, "適合データを点群に適用中...");
                     
-                    // Final extraction of best model's inliers in parallel
+                    // 円柱時の許容誤差を rEst * 0.5f に自動的に引き締め
+                    float toleranceWithSlack = (type == RansacType.Plane) ? localTolerance * 1.5f : Mathf.Min(localTolerance * 1.5f, rEst * 0.5f);
+
+                    // Final extraction of best model's inliers in parallel (点群全体 activeIndices に適用)
                     Parallel.For(0, activeIndices.Count, i =>
                     {
                         int idx = activeIndices[i];
@@ -1778,12 +1941,26 @@ public class PointCloudEditor : MonoBehaviour
                         }
                         else
                         {
-                            float distFromCenter = Vector2.Distance(new Vector2(p.x, p.z), bestCylinderCenter);
+                            Vector2 projP = new Vector2(Vector3.Dot(p, bestCylinderRight), Vector3.Dot(p, bestCylinderForward));
+                            float distFromCenter = Vector2.Distance(projP, bestCylinderCenter);
                             dist = Mathf.Abs(distFromCenter - bestCylinderRadius);
                         }
 
-                        if (dist < localTolerance)
+                        float allowedTolerance = (type == RansacType.Plane) ? localTolerance : toleranceWithSlack;
+
+                        if (dist < allowedTolerance)
                         {
+                            // 円柱検出かつ色制約ありの場合、最終適用でも色をチェックしてハサミや葉っぱを除外する
+                            if (type == RansacType.Cylinder && hasColorConstraint)
+                            {
+                                Color32 col = PointData.UnpackColor(points[idx].originalColor);
+                                float rDiff = (float)col.r - targetAvgColor.r;
+                                float gDiff = (float)col.g - targetAvgColor.g;
+                                float bDiff = (float)col.b - targetAvgColor.b;
+                                float colorDist = Mathf.Sqrt(rDiff * rDiff + gDiff * gDiff + bDiff * bDiff);
+                                if (colorDist > colorTol) return;
+                            }
+
                             int label = points[idx].label;
                             if (selecting) label |= 0x10000;
                             else label &= ~0x10000;
@@ -1796,6 +1973,176 @@ public class PointCloudEditor : MonoBehaviour
             catch (System.Exception ex)
             {
                 Debug.LogError($"[PointCloudEditor] RANSAC failed: {ex.Message}");
+            }
+            finally
+            {
+                finishedRansacFlag = true;
+            }
+        });
+    }
+
+    public void ApplySupportCylinderFromSelection()
+    {
+        PointData[] points = targetRenderer.GetPointData();
+        if (points == null || points.Length == 0) return;
+
+        List<int> selectedIndices = new List<int>(4096);
+        for (int i = 0; i < points.Length; i++)
+        {
+            int label = points[i].label;
+            if ((label & 0x20000) != 0) continue;
+            if ((label & 0x10000) != 0)
+            {
+                selectedIndices.Add(i);
+            }
+        }
+
+        if (selectedIndices.Count < 12)
+        {
+            Debug.LogWarning("[SupportCylinder] 先に支柱の一部だけを12点以上選択してください。");
+            return;
+        }
+
+        PointCloudLoader loader = targetRenderer.GetComponent<PointCloudLoader>();
+        if (loader == null)
+        {
+            loader = GetComponent<PointCloudLoader>();
+        }
+
+        string inputPath = loader != null && !string.IsNullOrEmpty(loader.CurrentFilePath)
+            ? loader.CurrentFilePath
+            : (loader != null ? loader.GetFilePath() : "");
+
+        if (string.IsNullOrEmpty(inputPath) || !File.Exists(inputPath))
+        {
+            Debug.LogError($"[SupportCylinder] 現在ロード中のPLYファイルが見つかりません: {inputPath}");
+            return;
+        }
+
+        bool selecting = brushSelectMode;
+        float tubeMultiplier = supportTubeMultiplier;
+        float colorTolerance = supportColorTolerance;
+        float heightBinMultiplier = supportHeightBinMultiplier;
+        int maxEmptyBins = supportMaxEmptyBins;
+
+        string backendDir = Path.GetFullPath(Path.Combine(Application.dataPath, "../python_backend"));
+        string outputDir = Path.Combine(backendDir, "output_support");
+        string seedPath = Path.Combine(outputDir, "support_seed_indices.bin");
+        string scriptPath = Path.Combine(backendDir, "run_support_cylinder.py");
+        string pythonPath = Path.Combine(backendDir, ".venv/Scripts/python.exe");
+        if (!File.Exists(pythonPath)) pythonPath = "python";
+
+        Directory.CreateDirectory(outputDir);
+        using (BinaryWriter writer = new BinaryWriter(File.Open(seedPath, FileMode.Create, FileAccess.Write)))
+        {
+            for (int i = 0; i < selectedIndices.Count; i++)
+            {
+                writer.Write(selectedIndices[i]);
+            }
+        }
+
+        var pm = PointCloudProgressManager.Instance;
+        pm.Start("支柱抽出 Python", "Pythonバックエンドを起動中...");
+
+        Task.Run(() =>
+        {
+            try
+            {
+                string args =
+                    $"-u \"{scriptPath}\"" +
+                    $" --input \"{inputPath}\"" +
+                    $" --seed_indices \"{seedPath}\"" +
+                    $" --output_dir \"{outputDir}\"" +
+                    $" --tube_multiplier {tubeMultiplier.ToString(CultureInfo.InvariantCulture)}" +
+                    $" --color_tolerance {colorTolerance.ToString(CultureInfo.InvariantCulture)}" +
+                    $" --height_bin_multiplier {heightBinMultiplier.ToString(CultureInfo.InvariantCulture)}" +
+                    $" --max_empty_bins {maxEmptyBins}";
+
+                System.Diagnostics.ProcessStartInfo psi = new System.Diagnostics.ProcessStartInfo
+                {
+                    FileName = pythonPath,
+                    Arguments = args,
+                    UseShellExecute = false,
+                    RedirectStandardOutput = true,
+                    RedirectStandardError = true,
+                    CreateNoWindow = true,
+                    StandardOutputEncoding = Encoding.UTF8,
+                    StandardErrorEncoding = Encoding.UTF8
+                };
+
+                Debug.Log($"[SupportCylinder] Python command: {pythonPath} {args}");
+
+                StringBuilder outLog = new StringBuilder();
+                StringBuilder errLog = new StringBuilder();
+                using (System.Diagnostics.Process process = new System.Diagnostics.Process())
+                {
+                    process.StartInfo = psi;
+                    process.OutputDataReceived += (sender, e) =>
+                    {
+                        if (e.Data == null) return;
+                        outLog.AppendLine(e.Data);
+                        Debug.Log($"[SupportCylinder Out] {e.Data}");
+                        if (e.Data.StartsWith("[Progress]"))
+                        {
+                            string rest = e.Data.Substring(10).Trim();
+                            int split = rest.IndexOf(' ');
+                            if (split > 0 &&
+                                float.TryParse(rest.Substring(0, split), NumberStyles.Any, CultureInfo.InvariantCulture, out float pct))
+                            {
+                                pm.Update(0.05f + 0.85f * (pct / 100f), rest.Substring(split + 1));
+                            }
+                        }
+                    };
+                    process.ErrorDataReceived += (sender, e) =>
+                    {
+                        if (e.Data == null) return;
+                        errLog.AppendLine(e.Data);
+                        Debug.LogError($"[SupportCylinder Err] {e.Data}");
+                    };
+
+                    if (!process.Start())
+                    {
+                        throw new System.Exception("Python支柱抽出プロセスの開始に失敗しました。");
+                    }
+                    process.BeginOutputReadLine();
+                    process.BeginErrorReadLine();
+                    process.WaitForExit();
+
+                    if (process.ExitCode != 0)
+                    {
+                        throw new System.Exception($"Python支柱抽出がエラーで終了しました (ExitCode: {process.ExitCode})\n{errLog}\n{outLog}");
+                    }
+                }
+
+                string maskPath = Path.Combine(outputDir, "support_mask.bin");
+                if (!File.Exists(maskPath))
+                {
+                    throw new FileNotFoundException($"support_mask.bin が見つかりません: {maskPath}");
+                }
+
+                byte[] mask = File.ReadAllBytes(maskPath);
+                if (mask.Length != points.Length)
+                {
+                    throw new System.Exception($"support_mask.bin の点数が一致しません。mask={mask.Length}, points={points.Length}");
+                }
+
+                pm.Update(0.95f, "支柱選択結果をUnityへ反映中...");
+                int changed = 0;
+                for (int i = 0; i < points.Length; i++)
+                {
+                    if (mask[i] == 0) continue;
+                    int label = points[i].label;
+                    int nextLabel = selecting ? (label | 0x10000) : (label & ~0x10000);
+                    if (nextLabel == label) continue;
+                    points[i].label = nextLabel;
+                    changed++;
+                }
+
+                Debug.Log($"[SupportCylinder] Python mask applied. changed={changed:N0}, seed={selectedIndices.Count:N0}");
+            }
+            catch (System.Exception ex)
+            {
+                Debug.LogError($"[SupportCylinder] Python支柱抽出に失敗しました: {ex.Message}");
             }
             finally
             {

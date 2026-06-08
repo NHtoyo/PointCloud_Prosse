@@ -17,6 +17,8 @@ namespace PointCloudWorkbench
         private string draggingBlockType = null;
         private int    draggingSourceIndex = -1;
         private Vector2 dragMouseOffset;
+        private Vector2 dragStartMousePos;
+        private bool   isDragging = false;
 
         // 選択
         private int selectedBlockIndex = -1;
@@ -425,6 +427,9 @@ namespace PointCloudWorkbench
                         draggingBlockType   = step.name;
                         draggingSourceIndex = i;
                         dragMouseOffset     = ev.mousePosition - br.min;
+                        dragStartMousePos   = ev.mousePosition;
+                        isDragging          = false;
+                        GUIUtility.hotControl = GUIUtility.GetControlID(FocusType.Passive);
                         ev.Use();
                     }
                     else if (ev.button == 1)
@@ -444,44 +449,63 @@ namespace PointCloudWorkbench
                 ev.Use();
             }
 
-            // ドロップ処理
-            if (ev.type == EventType.MouseUp && draggingBlockType != null)
+            // ドラッグ開始判定
+            if (ev.type == EventType.MouseDrag && draggingBlockType != null)
             {
-                if (lane.Contains(ev.mousePosition))
+                if (Vector2.Distance(ev.mousePosition, dragStartMousePos) > 5f)
                 {
-                    const float targetBlockWidth = 130f;
-                    const float targetSpacing = 22f;
-                    
-                    // レーン左端余白(5f)を考慮し、クリックされた位置からインデックスを計算
-                    float relativeX = ev.mousePosition.x - (lane.x + 5f);
-                    int ins = Mathf.Clamp(
-                        Mathf.RoundToInt(relativeX / (targetBlockWidth + targetSpacing)),
-                        0, pl.Count);
-
-                    if (draggingSourceIndex >= 0)
-                    {
-                        var tmp = pl[draggingSourceIndex];
-                        pl.RemoveAt(draggingSourceIndex);
-                        if (ins > draggingSourceIndex) ins--;
-                        ins = Mathf.Clamp(ins, 0, pl.Count);
-                        pl.Insert(ins, tmp);
-                        selectedBlockIndex = ins;
-                    }
-                    else
-                    {
-                        var ns = MakeStep(draggingBlockType);
-                        pl.Insert(ins, ns);
-                        selectedBlockIndex = ins;
-                    }
+                    isDragging = true;
                 }
-                else if (draggingSourceIndex >= 0)
+            }
+
+            // ドロップ処理
+            if (ev.type == EventType.MouseUp)
+            {
+                if (GUIUtility.hotControl != 0)
                 {
-                    pl.RemoveAt(draggingSourceIndex);
-                    if (selectedBlockIndex == draggingSourceIndex) selectedBlockIndex = -1;
+                    GUIUtility.hotControl = 0;
+                }
+
+                if (isDragging && draggingBlockType != null)
+                {
+                    if (lane.Contains(ev.mousePosition))
+                    {
+                        const float targetBlockWidth = 130f;
+                        const float targetSpacing = 22f;
+                        
+                        // マウス位置ではなく、ゴーストUIの中央座標を基準にする
+                        float ghostCenterX = ev.mousePosition.x - dragMouseOffset.x + (targetBlockWidth / 2f);
+                        float relativeX = ghostCenterX - (lane.x + 5f);
+                        int ins = Mathf.Clamp(
+                            Mathf.RoundToInt(relativeX / (targetBlockWidth + targetSpacing)),
+                            0, pl.Count);
+
+                        if (draggingSourceIndex >= 0)
+                        {
+                            var tmp = pl[draggingSourceIndex];
+                            pl.RemoveAt(draggingSourceIndex);
+                            if (ins > draggingSourceIndex) ins--;
+                            ins = Mathf.Clamp(ins, 0, pl.Count);
+                            pl.Insert(ins, tmp);
+                            selectedBlockIndex = ins;
+                        }
+                        else
+                        {
+                            var ns = MakeStep(draggingBlockType);
+                            pl.Insert(ins, ns);
+                            selectedBlockIndex = ins;
+                        }
+                    }
+                    else if (draggingSourceIndex >= 0)
+                    {
+                        pl.RemoveAt(draggingSourceIndex);
+                        if (selectedBlockIndex == draggingSourceIndex) selectedBlockIndex = -1;
+                    }
                 }
 
                 draggingBlockType   = null;
                 draggingSourceIndex = -1;
+                isDragging = false;
                 ev.Use();
             }
         }
@@ -608,7 +632,7 @@ namespace PointCloudWorkbench
         // =========================================================
         private void DrawDragGhost()
         {
-            if (draggingBlockType == null) return;
+            if (!isDragging || draggingBlockType == null) return;
             var mp = Event.current.mousePosition;
             Rect gr = new Rect(mp.x - dragMouseOffset.x, mp.y - dragMouseOffset.y, 130f, 50f); // 拡大したブロックに大きさを合わせる (100x30 -> 130x50)
             Color old = GUI.color;
