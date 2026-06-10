@@ -662,6 +662,7 @@ public class PointCloudManager : MonoBehaviour
             GUILayout.BeginHorizontal();
             editorUIInstance.showAnnotationUI = GUILayout.Toggle(editorUIInstance.showAnnotationUI, " アノテーションUI", toggleStyle);
             editorUIInstance.showNoiseFilterUI = GUILayout.Toggle(editorUIInstance.showNoiseFilterUI, " モヤ処理UI", toggleStyle);
+            editorUIInstance.showMeasurementUI = GUILayout.Toggle(editorUIInstance.showMeasurementUI, " 二点間距離計測UI", toggleStyle);
             GUILayout.EndHorizontal();
             
             GUILayout.Space(15);
@@ -672,12 +673,14 @@ public class PointCloudManager : MonoBehaviour
             GUILayout.Label("⚖ スケール同定 & ダウンサンプリング", textStyle);
             GUILayout.Space(10);
 
-            if (GUILayout.Button("📏 スケール校正 (基準球設定)", activeButtonStyle, GUILayout.Height(45)))
+            if (GUILayout.Button("📐 スケール校正を実行 (基準球実寸設定)", activeButtonStyle, GUILayout.Height(45)))
             {
                 editorUIInstance.showScaleCalibDialog = true;
                 editorUIInstance.showDownsampleDialog = false;
             }
             GUILayout.Space(10);
+
+
 
             if (GUILayout.Button("📥 ダウンサンプリング処理実行", activeButtonStyle, GUILayout.Height(45)))
             {

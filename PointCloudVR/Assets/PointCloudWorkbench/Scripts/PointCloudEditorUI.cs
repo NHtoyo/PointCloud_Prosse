@@ -39,6 +39,7 @@ public class PointCloudEditorUI : MonoBehaviour
     private NoiseFilterUI noiseFilterUI;
     private FilterPipelineEditorUI pipelineEditorUI;
     private AnnotationPipelineEditorUI annotationPipelineEditorUI;
+    private DistanceMeasurementUI distanceMeasurementUI;
 
     // UI Toggle states
     public bool showNoiseFilterUI = false;
@@ -53,13 +54,14 @@ public class PointCloudEditorUI : MonoBehaviour
     private Texture2D progressBgTex;
 
     // --- Scale Calibration / Downsampling Modals & Variables ---
-    public bool showScaleCalibDialog = false;
+    public bool showMeasurementUI = true;
+    public bool showScaleCalibDialog = false; // kept for backward compatibility/stubs
     private Rect scaleCalibDialogRect = new Rect(0, 0, 420, 260);
     public bool showDownsampleDialog = false;
     private Rect downsampleDialogRect = new Rect(0, 0, 480, 360);
 
-    private string scaleRealDiameterStr = "60";
-    private string scaleMeasurementsStr = "";
+    public string scaleRealDiameterStr = "60";
+    public string scaleMeasurementsStr = "";
     private string downsampleVoxelSizeStr = "5.0";
     private int downsampleMode = 1;
     private string downsampleInputDir = "../PointCloudData";
@@ -74,7 +76,7 @@ public class PointCloudEditorUI : MonoBehaviour
     private volatile bool downsampleFailedFlag = false;
     private volatile string downsampleErrorMessage = "";
 
-    private void LoadSettings()
+    public void LoadSettings()
     {
         scaleRealDiameterStr = PlayerPrefs.GetString("ScaleCalib_RealDiameterStr", "60");
         scaleMeasurementsStr = PlayerPrefs.GetString("ScaleCalib_Measurements", "");
@@ -84,7 +86,7 @@ public class PointCloudEditorUI : MonoBehaviour
         downsampleOutputDir = PlayerPrefs.GetString("Downsample_OutputDir", "../PointCloudData/downsample");
     }
 
-    private void SaveSettings()
+    public void SaveSettings()
     {
         PlayerPrefs.SetString("ScaleCalib_RealDiameterStr", scaleRealDiameterStr);
         PlayerPrefs.SetString("ScaleCalib_Measurements", scaleMeasurementsStr);
@@ -112,6 +114,11 @@ public class PointCloudEditorUI : MonoBehaviour
         if (annotationPipelineEditorUI == null)
         {
             annotationPipelineEditorUI = gameObject.AddComponent<AnnotationPipelineEditorUI>();
+        }
+        distanceMeasurementUI = GetComponent<DistanceMeasurementUI>();
+        if (distanceMeasurementUI == null)
+        {
+            distanceMeasurementUI = gameObject.AddComponent<DistanceMeasurementUI>();
         }
         LoadSettings();
         RefreshFileList();
@@ -311,7 +318,7 @@ public class PointCloudEditorUI : MonoBehaviour
     public bool IsMouseOverUI()
     {
         // Block mouse interactions if modal progress dialog is running or parameters dialogs are open
-        if (PointCloudProgressManager.Instance.IsRunning || showScaleCalibDialog || showDownsampleDialog || showExportDialog) return true;
+        if (PointCloudProgressManager.Instance.IsRunning || showDownsampleDialog || showExportDialog) return true;
 
         float mouseX = Input.mousePosition.x;
         float mouseY = Input.mousePosition.y;
@@ -640,6 +647,9 @@ public class PointCloudEditorUI : MonoBehaviour
         }
 
 
+        // foldoutScaleCalib and Scale Calibration settings are completely removed from left panel OnGUI
+
+
         // --- 7. Load File Selection (Foldout) ---
         foldoutLoad = GUILayout.Toggle(foldoutLoad, (foldoutLoad ? "▼ " : "▶ ") + "📂 読み込みPLYファイル選択", foldoutHeaderStyle);
         if (foldoutLoad)
@@ -700,13 +710,6 @@ public class PointCloudEditorUI : MonoBehaviour
 
 
         // --- 12. Modal Input Dialogs for Scale Calibration / Downsampling ---
-        if (showScaleCalibDialog)
-        {
-            scaleCalibDialogRect.x = (Screen.width - scaleCalibDialogRect.width) / 2f;
-            scaleCalibDialogRect.y = (Screen.height - scaleCalibDialogRect.height) / 2f;
-            scaleCalibDialogRect = GUI.Window(998, scaleCalibDialogRect, DrawScaleCalibWindow, "📏 スケール校正パラメータ設定", windowStyle);
-            GUI.BringWindowToFront(998);
-        }
 
         if (showDownsampleDialog)
         {
@@ -714,6 +717,14 @@ public class PointCloudEditorUI : MonoBehaviour
             downsampleDialogRect.y = (Screen.height - downsampleDialogRect.height) / 2f;
             downsampleDialogRect = GUI.Window(997, downsampleDialogRect, DrawDownsampleWindow, "📥 ダウンサンプリングパラメータ設定", windowStyle);
             GUI.BringWindowToFront(997);
+        }
+
+        if (showScaleCalibDialog)
+        {
+            scaleCalibDialogRect.x = (Screen.width - scaleCalibDialogRect.width) / 2f;
+            scaleCalibDialogRect.y = (Screen.height - scaleCalibDialogRect.height) / 2f;
+            scaleCalibDialogRect = GUI.Window(998, scaleCalibDialogRect, DrawScaleCalibWindow, "📐 スケール校正パラメータ設定", windowStyle);
+            GUI.BringWindowToFront(998);
         }
 
         // Draw 2D Marquee Box on screen if active
@@ -737,7 +748,7 @@ public class PointCloudEditorUI : MonoBehaviour
         // Draw Lasso lines on screen if active
         DrawLassoLines();
 
-        // --- Draw Chained Pipeline/Annotation Windows ---
+        // --- Draw Chained Pipeline/Annotation/Calibration Windows ---
         float currentCenterY = 15f;
         if (showNoiseFilterUI && pipelineEditorUI != null)
         {
@@ -746,6 +757,10 @@ public class PointCloudEditorUI : MonoBehaviour
         if (showAnnotationUI && annotationPipelineEditorUI != null)
         {
             annotationPipelineEditorUI.DrawGUI(ref currentCenterY);
+        }
+        if (showMeasurementUI && distanceMeasurementUI != null)
+        {
+            distanceMeasurementUI.DrawGUI(ref currentCenterY);
         }
 
         // Draw Progress Pop-up Window if running (Modal state)
@@ -932,45 +947,6 @@ public class PointCloudEditorUI : MonoBehaviour
         }
     }
 
-    private void DrawScaleCalibWindow(int windowID)
-    {
-        GUILayout.Space(10);
-        GUILayout.Label("基準球の実寸および計測値を入力してください。", textStyle);
-        GUILayout.Space(10);
-
-        GUILayout.BeginHorizontal();
-        GUILayout.Label("基準球の実寸 (mm):", textStyle, GUILayout.Width(180));
-        scaleRealDiameterStr = GUILayout.TextField(scaleRealDiameterStr);
-        GUILayout.EndHorizontal();
-
-        GUILayout.Space(5);
-        GUILayout.Label("NeRFでの計測値 (unit) (カンマ区切りで複数入力可):", textStyle);
-        scaleMeasurementsStr = GUILayout.TextField(scaleMeasurementsStr);
-        GUILayout.Label("例: 0.052, 0.051, 0.053", textStyle);
-
-        GUILayout.Space(20);
-
-        GUILayout.BeginHorizontal();
-        if (GUILayout.Button("実行", activeButtonStyle, GUILayout.Height(35)))
-        {
-            if (string.IsNullOrEmpty(scaleMeasurementsStr.Trim()))
-            {
-                UnityEngine.Debug.LogError("計測値が空です。");
-            }
-            else
-            {
-                showScaleCalibDialog = false;
-                SaveSettings();
-                ExecuteScaleCalibration();
-            }
-        }
-        GUILayout.Space(10);
-        if (GUILayout.Button("キャンセル", buttonStyle, GUILayout.Height(35)))
-        {
-            showScaleCalibDialog = false;
-        }
-        GUILayout.EndHorizontal();
-    }
 
     private void DrawDownsampleWindow(int windowID)
     {
@@ -1022,7 +998,52 @@ public class PointCloudEditorUI : MonoBehaviour
         GUILayout.EndHorizontal();
     }
 
-    private void ExecuteScaleCalibration()
+    private void DrawScaleCalibWindow(int windowID)
+    {
+        GUILayout.Space(10);
+        GUILayout.Label("実寸法（mm）と計測値（unit）を指定してスケール校正を実行します。", textStyle);
+        GUILayout.Space(10);
+
+        GUILayout.BeginHorizontal();
+        GUILayout.Label("実寸法 (mm):", textStyle, GUILayout.Width(150));
+        scaleRealDiameterStr = GUILayout.TextField(scaleRealDiameterStr);
+        GUILayout.EndHorizontal();
+
+        GUILayout.Space(5);
+        GUILayout.Label("計測値 (unit) (カンマ区切りで複数可):", textStyle);
+        scaleMeasurementsStr = GUILayout.TextField(scaleMeasurementsStr);
+        GUILayout.Label("例: 0.052, 0.051, 0.053", textStyle);
+
+        if (editor != null && editor.hasMeasurePoint1 && editor.hasMeasurePoint2)
+        {
+            float localDist = Vector3.Distance(editor.measurePoint1, editor.measurePoint2);
+            if (GUILayout.Button($"[現在の計測距離をコピー ({localDist:F5})]", buttonStyle))
+            {
+                scaleMeasurementsStr = localDist.ToString("F5", System.Globalization.CultureInfo.InvariantCulture);
+            }
+        }
+
+        GUILayout.Space(20);
+
+        GUILayout.BeginHorizontal();
+        bool hasValidInput = !string.IsNullOrEmpty(scaleMeasurementsStr.Trim());
+        GUI.enabled = hasValidInput;
+        if (GUILayout.Button("校正実行", activeButtonStyle, GUILayout.Height(35)))
+        {
+            showScaleCalibDialog = false;
+            SaveSettings();
+            ExecuteScaleCalibration();
+        }
+        GUI.enabled = true;
+        GUILayout.Space(10);
+        if (GUILayout.Button("キャンセル", buttonStyle, GUILayout.Height(35)))
+        {
+            showScaleCalibDialog = false;
+        }
+        GUILayout.EndHorizontal();
+    }
+
+    public void ExecuteScaleCalibration()
     {
         if (!float.TryParse(scaleRealDiameterStr, System.Globalization.NumberStyles.Any, System.Globalization.CultureInfo.InvariantCulture, out float parsedDiameter))
         {

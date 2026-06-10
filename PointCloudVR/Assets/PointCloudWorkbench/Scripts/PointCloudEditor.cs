@@ -9,7 +9,7 @@ using PointCloudWorkbench;
 
 public class PointCloudEditor : MonoBehaviour
 {
-    public enum EditTool { None, Brush, Marquee, Lasso, Connect }
+    public enum EditTool { None, Brush, Marquee, Lasso, Connect, Measure }
 
     [Header("References")]
     public PointCloudRenderer targetRenderer;
@@ -38,6 +38,16 @@ public class PointCloudEditor : MonoBehaviour
     public FilterType filterType = FilterType.Height;
     public float filterMin = 0f;
     public float filterMax = 1f;
+
+    [Header("Measurement Settings")]
+    public bool hasMeasurePoint1 = false;
+    public bool hasMeasurePoint2 = false;
+    public Vector3 measurePoint1;
+    public Vector3 measurePoint2;
+
+    private GameObject measureMarker1;
+    private GameObject measureMarker2;
+    private LineRenderer measureLine;
 
     [Header("Visual Elements")]
     public Color brushColor = new Color(1f, 0.9f, 0f, 0.3f);
@@ -187,9 +197,22 @@ public class PointCloudEditor : MonoBehaviour
         }
 
         // Clean up brush visual if tool changed
-        if (activeTool != EditTool.Brush && brushVisual.activeSelf)
+        if (activeTool != EditTool.Brush && brushVisual != null && brushVisual.activeSelf)
         {
             brushVisual.SetActive(false);
+        }
+
+        // Clean up or update measure visuals based on active tool
+        bool shouldShowMeasure = (activeTool == EditTool.Measure);
+        if (!shouldShowMeasure)
+        {
+            if (measureMarker1 != null && measureMarker1.activeSelf) measureMarker1.SetActive(false);
+            if (measureMarker2 != null && measureMarker2.activeSelf) measureMarker2.SetActive(false);
+            if (measureLine != null && measureLine.gameObject.activeSelf) measureLine.gameObject.SetActive(false);
+        }
+        else
+        {
+            UpdateMeasureVisuals();
         }
 
         // Handle tool interactions
@@ -208,6 +231,10 @@ public class PointCloudEditor : MonoBehaviour
         else if (activeTool == EditTool.Connect)
         {
             HandleConnectTool();
+        }
+        else if (activeTool == EditTool.Measure)
+        {
+            HandleMeasureTool();
         }
 
         // Recalculate stats if marked dirty
@@ -2214,5 +2241,166 @@ public class PointCloudEditor : MonoBehaviour
     {
         if (brushVisual != null) Destroy(brushVisual);
         if (brushMaterial != null) Destroy(brushMaterial);
+        if (measureMarker1 != null) Destroy(measureMarker1);
+        if (measureMarker2 != null) Destroy(measureMarker2);
+        if (measureLine != null) Destroy(measureLine.gameObject);
+    }
+
+    void CreateMeasureVisuals()
+    {
+        if (targetRenderer == null) return;
+
+        var overlayShader = Shader.Find("PointCloudWorkbench/OverlayColor");
+        if (overlayShader == null) overlayShader = Shader.Find("Sprites/Default");
+
+        if (measureMarker1 == null)
+        {
+            measureMarker1 = GameObject.CreatePrimitive(PrimitiveType.Sphere);
+            Destroy(measureMarker1.GetComponent<SphereCollider>());
+            measureMarker1.name = "Measure_Marker_1";
+            measureMarker1.transform.SetParent(targetRenderer.transform, false);
+            var mat = new Material(overlayShader);
+            mat.color = Color.red;
+            measureMarker1.GetComponent<MeshRenderer>().sharedMaterial = mat;
+            measureMarker1.SetActive(false);
+        }
+        if (measureMarker2 == null)
+        {
+            measureMarker2 = GameObject.CreatePrimitive(PrimitiveType.Sphere);
+            Destroy(measureMarker2.GetComponent<SphereCollider>());
+            measureMarker2.name = "Measure_Marker_2";
+            measureMarker2.transform.SetParent(targetRenderer.transform, false);
+            var mat = new Material(overlayShader);
+            mat.color = Color.blue;
+            measureMarker2.GetComponent<MeshRenderer>().sharedMaterial = mat;
+            measureMarker2.SetActive(false);
+        }
+        if (measureLine == null)
+        {
+            GameObject lineObj = new GameObject("Measure_Line");
+            measureLine = lineObj.AddComponent<LineRenderer>();
+            measureLine.positionCount = 2;
+            measureLine.useWorldSpace = true;
+            measureLine.numCapVertices = 0;
+            measureLine.numCornerVertices = 0;
+            var mat = new Material(overlayShader);
+            mat.color = Color.yellow;
+            measureLine.sharedMaterial = mat;
+            measureLine.gameObject.SetActive(false);
+        }
+    }
+
+    public void UpdateMeasureVisuals()
+    {
+        if (targetRenderer == null) return;
+        CreateMeasureVisuals();
+
+        float scaleX = targetRenderer.transform.lossyScale.x;
+        float markerScale = 0.00025f / Mathf.Max(scaleX, 0.0001f);
+
+        if (hasMeasurePoint1)
+        {
+            measureMarker1.transform.localPosition = measurePoint1;
+            measureMarker1.SetActive(true);
+            measureMarker1.transform.localScale = Vector3.one * markerScale;
+        }
+        else
+        {
+            if (measureMarker1 != null) measureMarker1.SetActive(false);
+        }
+
+        if (hasMeasurePoint2)
+        {
+            measureMarker2.transform.localPosition = measurePoint2;
+            measureMarker2.SetActive(true);
+            measureMarker2.transform.localScale = Vector3.one * markerScale;
+        }
+        else
+        {
+            if (measureMarker2 != null) measureMarker2.SetActive(false);
+        }
+
+        if (hasMeasurePoint1 && hasMeasurePoint2)
+        {
+            measureLine.SetPosition(0, targetRenderer.transform.TransformPoint(measurePoint1));
+            measureLine.SetPosition(1, targetRenderer.transform.TransformPoint(measurePoint2));
+            measureLine.gameObject.SetActive(true);
+
+            float lineWidth = 0.00008f;
+            measureLine.startWidth = lineWidth;
+            measureLine.endWidth = lineWidth;
+        }
+        else
+        {
+            if (measureLine != null) measureLine.gameObject.SetActive(false);
+        }
+    }
+
+    public void ResetMeasurement()
+    {
+        hasMeasurePoint1 = false;
+        hasMeasurePoint2 = false;
+        UpdateMeasureVisuals();
+    }
+
+    void HandleMeasureTool()
+    {
+        if (editorUI != null && editorUI.IsMouseOverUI())
+        {
+            if (brushVisual != null && brushVisual.activeSelf) brushVisual.SetActive(false);
+            return;
+        }
+
+        if (!Input.GetMouseButtonDown(2))
+        {
+            if (brushVisual != null && brushVisual.activeSelf)
+            {
+                brushVisual.SetActive(false);
+            }
+            return;
+        }
+
+        Ray ray = Camera.main.ScreenPointToRay(Input.mousePosition);
+        Vector3 hitPoint;
+        bool hit = FindClosestPointOnRay(ray, out hitPoint);
+
+        if (hit)
+        {
+            if (targetRenderer != null)
+            {
+                // Convert clicked point to local space of renderer
+                Vector3 localHit = targetRenderer.transform.InverseTransformPoint(hitPoint);
+
+                if (!hasMeasurePoint1)
+                {
+                    measurePoint1 = localHit;
+                    hasMeasurePoint1 = true;
+                    UpdateMeasureVisuals();
+                    Debug.Log($"[PointCloudEditor] 計測点1を設定: {localHit}");
+                }
+                else if (!hasMeasurePoint2)
+                {
+                    measurePoint2 = localHit;
+                    hasMeasurePoint2 = true;
+                    UpdateMeasureVisuals();
+                    Debug.Log($"[PointCloudEditor] 計測点2を設定: {localHit}, 距離(unit): {Vector3.Distance(measurePoint1, measurePoint2):F5}");
+                }
+                else
+                {
+                    measurePoint1 = localHit;
+                    hasMeasurePoint1 = true;
+                    hasMeasurePoint2 = false;
+                    UpdateMeasureVisuals();
+                    Debug.Log($"[PointCloudEditor] 計測点1を再設定: {localHit}");
+                }
+            }
+        }
+        else
+        {
+            if (brushVisual != null && brushVisual.activeSelf)
+            {
+                brushVisual.SetActive(false);
+            }
+        }
     }
 }

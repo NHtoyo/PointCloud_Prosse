@@ -461,7 +461,7 @@ namespace PointCloudWorkbench
             // ドロップ処理
             if (ev.type == EventType.MouseUp)
             {
-                if (GUIUtility.hotControl != 0)
+                if (draggingBlockType != null && GUIUtility.hotControl != 0)
                 {
                     GUIUtility.hotControl = 0;
                 }
@@ -501,12 +501,12 @@ namespace PointCloudWorkbench
                         pl.RemoveAt(draggingSourceIndex);
                         if (selectedBlockIndex == draggingSourceIndex) selectedBlockIndex = -1;
                     }
+                    ev.Use();
                 }
 
                 draggingBlockType   = null;
                 draggingSourceIndex = -1;
                 isDragging = false;
-                ev.Use();
             }
         }
 

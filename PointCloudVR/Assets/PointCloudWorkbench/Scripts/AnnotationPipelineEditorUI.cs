@@ -347,12 +347,12 @@ namespace PointCloudWorkbench
             // D&D のドロップ処理 (可変幅ブロックに対応した位置走査型に変更)
             if (ev.type == EventType.MouseUp)
             {
-                if (GUIUtility.hotControl != 0)
+                if (draggingClassIndex > 0 && GUIUtility.hotControl != 0)
                 {
                     GUIUtility.hotControl = 0;
                 }
 
-                if (isDragging)
+                if (isDragging && draggingClassIndex > 0)
                 {
                     isDragging = false;
                     if (lane.Contains(ev.mousePosition) && draggingClassIndex > 0)
@@ -400,9 +400,9 @@ namespace PointCloudWorkbench
                             ReassignClassIds();
                         }
                     }
+                    ev.Use();
                 }
                 draggingClassIndex = -1;
-                ev.Use();
             }
         }
 
