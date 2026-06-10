@@ -41,10 +41,12 @@ public class PointCloudManager : MonoBehaviour
     private GUIStyle activeButtonStyle;
     private GUIStyle textStyle;
     private GUIStyle foldoutHeaderStyle;
+    private GUIStyle toggleStyle;
     private bool stylesInitialized = false;
 
     // LOD & Stats variables ported from PointCloudEditorUI
     private PointCloudEditor editorInstance;
+    private PointCloudEditorUI editorUIInstance;
     private AnnotationPipelineEditorUI annotationUI;
     private Vector2 rightScrollPos;
     private bool foldoutLOD = true;
@@ -460,8 +462,13 @@ public class PointCloudManager : MonoBehaviour
         foldoutHeaderStyle.alignment = TextAnchor.MiddleLeft;
         foldoutHeaderStyle.normal.textColor = Color.white;
         foldoutHeaderStyle.padding = new RectOffset(10, 10, 6, 6);
-        foldoutHeaderStyle.margin = new RectOffset(0, 0, 5, 5);
         foldoutHeaderStyle.normal.background = foldoutBg;
+
+        toggleStyle = new GUIStyle(GUI.skin.toggle);
+        toggleStyle.fontSize = 14;
+        toggleStyle.normal.textColor = new Color(0.9f, 0.9f, 0.9f);
+        toggleStyle.hover.textColor = Color.white;
+        toggleStyle.margin = new RectOffset(0, 0, 3, 3);
 
         stylesInitialized = true;
     }
@@ -493,6 +500,10 @@ public class PointCloudManager : MonoBehaviour
         if (annotationUI == null)
         {
             annotationUI = Object.FindAnyObjectByType<AnnotationPipelineEditorUI>();
+        }
+        if (editorUIInstance == null)
+        {
+            editorUIInstance = Object.FindAnyObjectByType<PointCloudEditorUI>();
         }
 
         // --- 1. Target Controls Selection ---
@@ -583,6 +594,40 @@ public class PointCloudManager : MonoBehaviour
             GUILayout.Label("C2C距離計算が未実行です。上のボタンを押してください。", textStyle);
         }
         GUILayout.Space(15);
+
+        if (editorUIInstance != null)
+        {
+            GUILayout.Box("", GUILayout.Height(1));
+            GUILayout.Space(5);
+
+            GUILayout.Label("🔌 ツールパネル表示トグル", textStyle);
+            GUILayout.BeginHorizontal();
+            editorUIInstance.showAnnotationUI = GUILayout.Toggle(editorUIInstance.showAnnotationUI, " アノテーションUI", toggleStyle);
+            editorUIInstance.showNoiseFilterUI = GUILayout.Toggle(editorUIInstance.showNoiseFilterUI, " モヤ処理UI", toggleStyle);
+            GUILayout.EndHorizontal();
+            
+            GUILayout.Space(15);
+            GUILayout.Box("", GUILayout.Height(1));
+            GUILayout.Space(10);
+
+            // Extension Buttons
+            GUILayout.Label("⚖ スケール同定 & ダウンサンプリング", textStyle);
+            GUILayout.Space(10);
+
+            if (GUILayout.Button("📏 スケール校正 (基準球設定)", activeButtonStyle, GUILayout.Height(45)))
+            {
+                editorUIInstance.showScaleCalibDialog = true;
+                editorUIInstance.showDownsampleDialog = false;
+            }
+            GUILayout.Space(10);
+
+            if (GUILayout.Button("📥 ダウンサンプリング処理実行", activeButtonStyle, GUILayout.Height(45)))
+            {
+                editorUIInstance.showDownsampleDialog = true;
+                editorUIInstance.showScaleCalibDialog = false;
+            }
+            GUILayout.Space(15);
+        }
 
         // --- 7. Ported: LOD & Culling settings (Foldout) ---
         if (editorInstance != null && editorInstance.targetRenderer != null)

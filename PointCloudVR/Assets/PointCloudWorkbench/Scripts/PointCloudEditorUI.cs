@@ -41,8 +41,8 @@ public class PointCloudEditorUI : MonoBehaviour
     private AnnotationPipelineEditorUI annotationPipelineEditorUI;
 
     // UI Toggle states
-    private bool showNoiseFilterUI = false;
-    private bool showAnnotationUI = true;
+    public bool showNoiseFilterUI = false;
+    public bool showAnnotationUI = true;
     private string newLayerName = "NewLayer";
 
     // Lasso drawing texture
@@ -53,9 +53,9 @@ public class PointCloudEditorUI : MonoBehaviour
     private Texture2D progressBgTex;
 
     // --- Scale Calibration / Downsampling Modals & Variables ---
-    private bool showScaleCalibDialog = false;
+    public bool showScaleCalibDialog = false;
     private Rect scaleCalibDialogRect = new Rect(0, 0, 420, 260);
-    private bool showDownsampleDialog = false;
+    public bool showDownsampleDialog = false;
     private Rect downsampleDialogRect = new Rect(0, 0, 480, 360);
 
     private string scaleRealDiameterStr = "60";
@@ -636,47 +636,6 @@ public class PointCloudEditorUI : MonoBehaviour
         GUILayout.EndScrollView();
         GUILayout.EndArea();
 
-        // --- Draw Right Panel (Extension Panel) ---
-        float rightPosX = Screen.width - 480f;
-        float rightPosY = 20f;
-        float rightWidth = 460f;
-        float rightHeight = 930f;
-
-        GUILayout.BeginArea(new Rect(rightPosX, rightPosY, rightWidth, rightHeight), windowStyle);
-
-        GUILayout.Label("🧰 拡張機能パネル", headerStyle);
-        GUILayout.Box("", GUILayout.Height(2));
-        GUILayout.Space(5);
-
-        // Toggles
-        GUILayout.Label("🔌 ツールパネル表示トグル", textStyle);
-        GUILayout.BeginHorizontal();
-        showAnnotationUI = GUILayout.Toggle(showAnnotationUI, " アノテーションUI", toggleStyle);
-        showNoiseFilterUI = GUILayout.Toggle(showNoiseFilterUI, " モヤ処理UI", toggleStyle);
-        GUILayout.EndHorizontal();
-        
-        GUILayout.Space(15);
-        GUILayout.Box("", GUILayout.Height(1));
-        GUILayout.Space(10);
-
-        // Extension Buttons
-        GUILayout.Label("⚖ スケール同定 & ダウンサンプリング", textStyle);
-        GUILayout.Space(10);
-
-        if (GUILayout.Button("📏 スケール校正 (基準球設定)", activeButtonStyle, GUILayout.Height(45)))
-        {
-            showScaleCalibDialog = true;
-            showDownsampleDialog = false;
-        }
-        GUILayout.Space(10);
-
-        if (GUILayout.Button("📥 ダウンサンプリング処理実行", activeButtonStyle, GUILayout.Height(45)))
-        {
-            showDownsampleDialog = true;
-            showScaleCalibDialog = false;
-        }
-
-        GUILayout.EndArea();
 
         // --- 12. Modal Input Dialogs for Scale Calibration / Downsampling ---
         if (showScaleCalibDialog)
