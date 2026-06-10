@@ -916,15 +916,19 @@ public class PointCloudEditorUI : MonoBehaviour
         GUILayout.Label("ダウンサンプリングのパラメータを設定してください。", textStyle);
         GUILayout.Space(10);
 
-        GUILayout.BeginHorizontal();
-        GUILayout.Label("入力フォルダ:", textStyle, GUILayout.Width(150));
-        downsampleInputDir = GUILayout.TextField(downsampleInputDir);
-        GUILayout.EndHorizontal();
+        string currentFileName = "無効";
+        if (editor != null && editor.targetRenderer != null)
+        {
+            var loader = editor.targetRenderer.GetComponent<PointCloudLoader>();
+            if (loader != null)
+            {
+                currentFileName = Path.GetFileName(loader.GetFilePath());
+            }
+        }
 
-        GUILayout.BeginHorizontal();
-        GUILayout.Label("出力フォルダ:", textStyle, GUILayout.Width(150));
-        downsampleOutputDir = GUILayout.TextField(downsampleOutputDir);
-        GUILayout.EndHorizontal();
+        GUILayout.Label($"対象ファイル: {currentFileName}", textStyle);
+        GUILayout.Label("出力先: 入力ファイル親フォルダ内の /downsample/ フォルダ", textStyle);
+        GUILayout.Space(10);
 
         GUILayout.BeginHorizontal();
         GUILayout.Label("ボクセルサイズ (mm):", textStyle, GUILayout.Width(150));
