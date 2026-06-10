@@ -33,6 +33,7 @@ public class PointCloudManager : MonoBehaviour
     private float avgDistance = 0f;
     private float maxDistance = 0f;
     private int comparedPointCount = 0;
+    private float currentScaleFactor = 1.0f;
 
     // UI Styles
     private GUIStyle windowStyle;
@@ -407,8 +408,65 @@ public class PointCloudManager : MonoBehaviour
             {
                 alignedCloud.transform.localPosition = Vector3.zero;
                 alignedCloud.transform.localRotation = Quaternion.identity;
-                alignedCloud.transform.localScale = Vector3.one;
+                alignedCloud.transform.localScale = new Vector3(currentScaleFactor, currentScaleFactor, currentScaleFactor);
             }
+        }
+    }
+
+    /// <summary>
+    /// スケール校正レポートファイルをロードし、点群オブジェクトのTransformスケールに自動適用します。
+    /// </summary>
+    public void ApplyScaleCalibration()
+    {
+        string jsonPath = System.IO.Path.Combine(Application.dataPath, "../config/scale_calibration_report.json");
+        float scaleMetersPerUnit = 1.0f; // デフォルトは 1 unit = 1m
+
+        if (System.IO.File.Exists(jsonPath))
+        {
+            try
+            {
+                string jsonText = System.IO.File.ReadAllText(jsonPath);
+                string key = "\"scale_mm_per_unit\":";
+                int idx = jsonText.IndexOf(key);
+                if (idx < 0)
+                {
+                    key = "\"mm_per_unit\":";
+                    idx = jsonText.IndexOf(key);
+                }
+
+                if (idx >= 0)
+                {
+                    int start = idx + key.Length;
+                    int end = jsonText.IndexOf('\n', start);
+                    if (end < 0) end = jsonText.Length;
+                    string valStr = jsonText.Substring(start, end - start).Replace(",", "").Trim();
+                    if (float.TryParse(valStr, System.Globalization.NumberStyles.Any, System.Globalization.CultureInfo.InvariantCulture, out float mmPerUnit))
+                    {
+                        scaleMetersPerUnit = mmPerUnit / 1000f; // mm から メートルに変換
+                        Debug.Log($"[ScaleManager] Loaded scale calibration: {scaleMetersPerUnit:F6} m/unit ({mmPerUnit:F2} mm/unit)");
+                    }
+                }
+            }
+            catch (System.Exception ex)
+            {
+                Debug.LogError($"[ScaleManager] Failed to load scale report: {ex.Message}");
+            }
+        }
+
+        currentScaleFactor = scaleMetersPerUnit;
+        Vector3 targetScale = new Vector3(scaleMetersPerUnit, scaleMetersPerUnit, scaleMetersPerUnit);
+
+        if (referenceCloud != null)
+        {
+            referenceCloud.transform.localScale = targetScale;
+            var controller = referenceCloud.GetComponent<PointCloudController>();
+            if (controller != null) controller.ResetInitialScale(targetScale);
+        }
+        if (alignedCloud != null)
+        {
+            alignedCloud.transform.localScale = targetScale;
+            var controller = alignedCloud.GetComponent<PointCloudController>();
+            if (controller != null) controller.ResetInitialScale(targetScale);
         }
     }
 

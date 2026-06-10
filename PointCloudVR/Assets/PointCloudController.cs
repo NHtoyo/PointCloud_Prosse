@@ -256,4 +256,10 @@ public class PointCloudController : MonoBehaviour
         transform.localPosition = Vector3.zero;
         transform.localRotation = Quaternion.identity;
     }
+
+    // Reset initial scale manually when calibration is loaded
+    public void ResetInitialScale(Vector3 scale)
+    {
+        initialScale = scale;
+    }
 }

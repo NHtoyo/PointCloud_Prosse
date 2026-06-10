@@ -139,6 +139,13 @@ public class PointCloudEditorUI : MonoBehaviour
             scaleFinishedFlag = false;
             PointCloudProgressManager.Instance.Complete();
             UnityEngine.Debug.Log("スケール校正処理が正常に完了しました。");
+            
+            // スケール校正完了後に、Transformスケールへ即座に反映する
+            PointCloudManager manager = Object.FindAnyObjectByType<PointCloudManager>();
+            if (manager != null)
+            {
+                manager.ApplyScaleCalibration();
+            }
         }
         if (scaleFailedFlag)
         {
@@ -1015,17 +1022,47 @@ public class PointCloudEditorUI : MonoBehaviour
             return;
         }
 
+        if (editor == null || editor.targetRenderer == null)
+        {
+            UnityEngine.Debug.LogError("対象のPointCloudRendererが見つかりません。");
+            return;
+        }
+
+        var loader = editor.targetRenderer.GetComponent<PointCloudLoader>();
+        if (loader == null || string.IsNullOrEmpty(loader.GetFilePath()))
+        {
+            UnityEngine.Debug.LogError("ロードされた点群ファイルが見つかりません。");
+            return;
+        }
+
+        string inputPath = loader.GetFilePath();
+        string directory = Path.GetDirectoryName(inputPath);
+        string fileNameWithoutExt = Path.GetFileNameWithoutExtension(inputPath);
+
+        // 自動的にアノテーション一時エクスポートファイルパスと出力フォルダを決定
+        string tempExportPath = Path.Combine(directory, $"{fileNameWithoutExt}_labeled.ply");
+        string outputDir = Path.Combine(directory, "downsample");
+
         var pm = PointCloudProgressManager.Instance;
-        pm.Start("ダウンサンプリング", "Pythonプロセスを準備中...");
+        pm.Start("ダウンサンプリング", "最新のアノテーション状態を一時保存中...");
 
         System.Threading.Tasks.Task.Run(async () =>
         {
             try
             {
                 var token = pm.CancellationToken;
+
+                // 1. 最新のアノテーション状態を _labeled.ply としてバイナリ形式で一時保存
+                UnityEngine.Debug.Log($"[Downsample Auto] Exporting latest annotations to: {tempExportPath}");
+                await editor.ExportLabeledPointsAsync(tempExportPath, true, token);
+
+                if (token.IsCancellationRequested) return;
+
+                // 2. エクスポートされた一時ファイルを用いてPythonダウンサンプリングを起動
+                pm.Update(0.1f, "Pythonプロセスを開始中...");
                 bool success = await PythonBridge.RunDownsamplingAsync(
-                    downsampleInputDir,
-                    downsampleOutputDir,
+                    tempExportPath,
+                    outputDir,
                     "config/scale_calibration_report.json",
                     downsampleMode,
                     parsedVoxelSize,

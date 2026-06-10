@@ -2165,6 +2165,7 @@ public class PointCloudEditor : MonoBehaviour
         if (points == null || points.Length == 0) return;
 
         bool selecting = brushSelectMode;
+        float scaleY = targetRenderer != null ? targetRenderer.transform.lossyScale.y : 1.0f;
 
         Parallel.For(0, points.Length, i =>
         {
@@ -2176,7 +2177,7 @@ public class PointCloudEditor : MonoBehaviour
 
             if (filterType == FilterType.Height)
             {
-                val = points[i].position.y;
+                val = points[i].position.y * scaleY;
                 pass = (val >= filterMin && val <= filterMax);
             }
             else if (filterType == FilterType.Distance)

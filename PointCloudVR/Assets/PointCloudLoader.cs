@@ -173,6 +173,12 @@ public class PointCloudLoader : MonoBehaviour
             if (targetRenderer != null)
             {
                 targetRenderer.SetPointCloudData(loadedPoints);
+                // Apply scale calibration automatically after loading
+                PointCloudManager manager = Object.FindAnyObjectByType<PointCloudManager>();
+                if (manager != null)
+                {
+                    manager.ApplyScaleCalibration();
+                }
             }
             else
             {
