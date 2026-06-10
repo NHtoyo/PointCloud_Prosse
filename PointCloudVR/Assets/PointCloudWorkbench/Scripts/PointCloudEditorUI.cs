@@ -909,6 +909,8 @@ public class PointCloudEditorUI : MonoBehaviour
             Vector2 start = new Vector2(points[0].x, Screen.height - points[0].y);
             DrawLine(mousePos, start, new Color(1f, 0.9f, 0f, 0.4f), 1.5f);
         }
+    }
+
     private void DrawScaleCalibWindow(int windowID)
     {
         GUILayout.Space(10);

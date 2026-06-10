@@ -451,7 +451,6 @@ namespace PointCloudWorkbench
             PointCloudProgressManager.Instance.Update(1.0f, "ダウンサンプリングが完了しました。");
             return true;
         }
-        }
 
         /// <summary>
         /// NoiseFilterParams オブジェクトから Python スクリプト実行用のコマンドライン引数を構築します。
