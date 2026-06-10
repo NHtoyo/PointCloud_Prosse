@@ -10,7 +10,7 @@ public class SceneDumper
     {
         EditorSceneManager.OpenScene("Assets/VRTestScene.unity");
         
-        string logPath = "E:/VR/scene_dump.txt";
+        string logPath = Path.GetFullPath(Path.Combine(Application.dataPath, "../../scene_dump.txt"));
         using (StreamWriter writer = new StreamWriter(logPath))
         {
             writer.WriteLine("--- Scene Dump ---");

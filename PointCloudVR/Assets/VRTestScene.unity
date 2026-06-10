@@ -534,7 +534,7 @@ MonoBehaviour:
   targetRenderer: {fileID: 589584589}
   fileName: sample.ply
   useExternalPath: 1
-  externalFolderPath: E:\VR\PointCloudData
+  externalFolderPath: 
   maxPointsToLoad: 200000
 --- !u!114 &589584589
 MonoBehaviour:

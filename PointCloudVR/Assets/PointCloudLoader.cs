@@ -13,9 +13,9 @@ public class PointCloudLoader : MonoBehaviour
     [Tooltip("Path to the point cloud file. Can be absolute or relative to StreamingAssets.")]
     public string fileName = "point_cloud - Cloud.segmented.remaining.segmented.ply";
     
-    [Tooltip("If checked, reads from E:\\VR\\PointCloudData\\<fileName> instead of StreamingAssets.")]
+    [Tooltip("If checked, reads from externalFolderPath instead of StreamingAssets. If empty or invalid, defaults to project_root/../PointCloudData.")]
     public bool useExternalPath = true;
-    public string externalFolderPath = @"E:\VR\PointCloudData";
+    public string externalFolderPath = "";
     public string CurrentFilePath { get; private set; } = "";
 
     [Header("Import Controls")]
@@ -37,6 +37,27 @@ public class PointCloudLoader : MonoBehaviour
         {
             maxPointsToLoad = 20000000;
             Debug.Log($"[PointCloudLoader] Detected legacy/low maxPointsToLoad ({maxPointsToLoad}). Upgraded it dynamically to 20,000,000.");
+        }
+
+        // 外部フォルダパスをPC移動時にも動くように相対パス対応する
+        if (useExternalPath)
+        {
+            if (string.IsNullOrEmpty(externalFolderPath))
+            {
+                externalFolderPath = Path.GetFullPath(Path.Combine(Application.dataPath, "../../PointCloudData"));
+                Debug.Log($"[PointCloudLoader] Path is empty. Auto-resolved external path to relative: {externalFolderPath}");
+            }
+            else
+            {
+                // ドライブが存在しない絶対パス（例: Eドライブが無いPCでの E:\VR\PointCloudData）である場合、自動的に相対パスにフォールバックする
+                string drive = Path.GetPathRoot(externalFolderPath);
+                if (!string.IsNullOrEmpty(drive) && drive.Contains(":") && !Directory.Exists(drive))
+                {
+                    string fallback = Path.GetFullPath(Path.Combine(Application.dataPath, "../../PointCloudData"));
+                    Debug.LogWarning($"[PointCloudLoader] Drive '{drive}' not found. Auto-fallback external path from '{externalFolderPath}' to '{fallback}'");
+                    externalFolderPath = fallback;
+                }
+            }
         }
     }
 
