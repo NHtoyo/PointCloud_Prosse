@@ -42,3 +42,11 @@ PointCloudVR/python_backend/output/
 **/__pycache__/
 **/*.pyc
 **/tests/test_data_*.ply
+
+# Local configuration and calibration
+PointCloudVR/config/
+
+# Output and temporary point clouds
+**/downsample/
+**/*_labeled.ply
+**/*_cleaned.ply
