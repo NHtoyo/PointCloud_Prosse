@@ -52,6 +52,49 @@ public class PointCloudEditorUI : MonoBehaviour
     private Texture2D modalBackdropTex;
     private Texture2D progressBgTex;
 
+    // --- Scale Calibration / Downsampling Modals & Variables ---
+    private bool showScaleCalibDialog = false;
+    private Rect scaleCalibDialogRect = new Rect(0, 0, 420, 260);
+    private bool showDownsampleDialog = false;
+    private Rect downsampleDialogRect = new Rect(0, 0, 480, 360);
+
+    private string scaleRealDiameterStr = "60";
+    private string scaleMeasurementsStr = "";
+    private string downsampleVoxelSizeStr = "5.0";
+    private int downsampleMode = 1;
+    private string downsampleInputDir = "../PointCloudData";
+    private string downsampleOutputDir = "../PointCloudData/downsample";
+
+    // Async execution flags
+    private volatile bool scaleFinishedFlag = false;
+    private volatile bool scaleFailedFlag = false;
+    private volatile string scaleErrorMessage = "";
+
+    private volatile bool downsampleFinishedFlag = false;
+    private volatile bool downsampleFailedFlag = false;
+    private volatile string downsampleErrorMessage = "";
+
+    private void LoadSettings()
+    {
+        scaleRealDiameterStr = PlayerPrefs.GetString("ScaleCalib_RealDiameterStr", "60");
+        scaleMeasurementsStr = PlayerPrefs.GetString("ScaleCalib_Measurements", "");
+        downsampleMode = PlayerPrefs.GetInt("Downsample_Mode", 1);
+        downsampleVoxelSizeStr = PlayerPrefs.GetString("Downsample_VoxelSizeStr", "5.0");
+        downsampleInputDir = PlayerPrefs.GetString("Downsample_InputDir", "../PointCloudData");
+        downsampleOutputDir = PlayerPrefs.GetString("Downsample_OutputDir", "../PointCloudData/downsample");
+    }
+
+    private void SaveSettings()
+    {
+        PlayerPrefs.SetString("ScaleCalib_RealDiameterStr", scaleRealDiameterStr);
+        PlayerPrefs.SetString("ScaleCalib_Measurements", scaleMeasurementsStr);
+        PlayerPrefs.SetInt("Downsample_Mode", downsampleMode);
+        PlayerPrefs.SetString("Downsample_VoxelSizeStr", downsampleVoxelSizeStr);
+        PlayerPrefs.SetString("Downsample_InputDir", downsampleInputDir);
+        PlayerPrefs.SetString("Downsample_OutputDir", downsampleOutputDir);
+        PlayerPrefs.Save();
+    }
+
     void Start()
     {
         editor = GetComponent<PointCloudEditor>();
@@ -70,6 +113,7 @@ public class PointCloudEditorUI : MonoBehaviour
         {
             annotationPipelineEditorUI = gameObject.AddComponent<AnnotationPipelineEditorUI>();
         }
+        LoadSettings();
         RefreshFileList();
     }
 
@@ -87,6 +131,31 @@ public class PointCloudEditorUI : MonoBehaviour
         {
             RefreshFileList();
             fileCheckTimer = 2.0f;
+        }
+
+        // スケール校正とダウンサンプリングの非同期結果チェック
+        if (scaleFinishedFlag)
+        {
+            scaleFinishedFlag = false;
+            PointCloudProgressManager.Instance.Complete();
+            UnityEngine.Debug.Log("スケール校正処理が正常に完了しました。");
+        }
+        if (scaleFailedFlag)
+        {
+            scaleFailedFlag = false;
+            PointCloudProgressManager.Instance.ShowError("スケール校正エラー", scaleErrorMessage);
+        }
+
+        if (downsampleFinishedFlag)
+        {
+            downsampleFinishedFlag = false;
+            PointCloudProgressManager.Instance.Complete();
+            UnityEngine.Debug.Log("ダウンサンプリング処理が正常に完了しました。");
+        }
+        if (downsampleFailedFlag)
+        {
+            downsampleFailedFlag = false;
+            PointCloudProgressManager.Instance.ShowError("ダウンサンプリングエラー", downsampleErrorMessage);
         }
     }
 
@@ -179,8 +248,8 @@ public class PointCloudEditorUI : MonoBehaviour
 
     public bool IsMouseOverUI()
     {
-        // Block mouse interactions if modal progress dialog is running
-        if (PointCloudProgressManager.Instance.IsRunning) return true;
+        // Block mouse interactions if modal progress dialog is running or parameters dialogs are open
+        if (PointCloudProgressManager.Instance.IsRunning || showScaleCalibDialog || showDownsampleDialog || showExportDialog) return true;
 
         float mouseX = Input.mousePosition.x;
         float mouseY = Input.mousePosition.y;
@@ -214,14 +283,8 @@ public class PointCloudEditorUI : MonoBehaviour
         GUILayout.Box("", GUILayout.Height(2));
         GUILayout.Space(5);
 
-        GUILayout.BeginHorizontal();
-        showAnnotationUI = GUILayout.Toggle(showAnnotationUI, " アノテーションUI", toggleStyle);
-        showNoiseFilterUI = GUILayout.Toggle(showNoiseFilterUI, " モヤ処理UI", toggleStyle);
-        GUILayout.EndHorizontal();
-        GUILayout.Space(5);
-
         // Scrollview to fit everything cleanly
-        mainScrollPos = GUILayout.BeginScrollView(mainScrollPos, GUILayout.Width(width - 15), GUILayout.Height(height - 70));
+        mainScrollPos = GUILayout.BeginScrollView(mainScrollPos, GUILayout.Width(width - 15), GUILayout.Height(height - 40));
 
         // --- 1. Tool Selection ---
         GUILayout.Label("🔧 操作ツール選択 (基本ツール)", textStyle);
@@ -573,6 +636,65 @@ public class PointCloudEditorUI : MonoBehaviour
         GUILayout.EndScrollView();
         GUILayout.EndArea();
 
+        // --- Draw Right Panel (Extension Panel) ---
+        float rightPosX = Screen.width - 480f;
+        float rightPosY = 20f;
+        float rightWidth = 460f;
+        float rightHeight = 930f;
+
+        GUILayout.BeginArea(new Rect(rightPosX, rightPosY, rightWidth, rightHeight), windowStyle);
+
+        GUILayout.Label("🧰 拡張機能パネル", headerStyle);
+        GUILayout.Box("", GUILayout.Height(2));
+        GUILayout.Space(5);
+
+        // Toggles
+        GUILayout.Label("🔌 ツールパネル表示トグル", textStyle);
+        GUILayout.BeginHorizontal();
+        showAnnotationUI = GUILayout.Toggle(showAnnotationUI, " アノテーションUI", toggleStyle);
+        showNoiseFilterUI = GUILayout.Toggle(showNoiseFilterUI, " モヤ処理UI", toggleStyle);
+        GUILayout.EndHorizontal();
+        
+        GUILayout.Space(15);
+        GUILayout.Box("", GUILayout.Height(1));
+        GUILayout.Space(10);
+
+        // Extension Buttons
+        GUILayout.Label("⚖ スケール同定 & ダウンサンプリング", textStyle);
+        GUILayout.Space(10);
+
+        if (GUILayout.Button("📏 スケール校正 (基準球設定)", activeButtonStyle, GUILayout.Height(45)))
+        {
+            showScaleCalibDialog = true;
+            showDownsampleDialog = false;
+        }
+        GUILayout.Space(10);
+
+        if (GUILayout.Button("📥 ダウンサンプリング処理実行", activeButtonStyle, GUILayout.Height(45)))
+        {
+            showDownsampleDialog = true;
+            showScaleCalibDialog = false;
+        }
+
+        GUILayout.EndArea();
+
+        // --- 12. Modal Input Dialogs for Scale Calibration / Downsampling ---
+        if (showScaleCalibDialog)
+        {
+            scaleCalibDialogRect.x = (Screen.width - scaleCalibDialogRect.width) / 2f;
+            scaleCalibDialogRect.y = (Screen.height - scaleCalibDialogRect.height) / 2f;
+            scaleCalibDialogRect = GUI.Window(998, scaleCalibDialogRect, DrawScaleCalibWindow, "📏 スケール校正パラメータ設定", windowStyle);
+            GUI.BringWindowToFront(998);
+        }
+
+        if (showDownsampleDialog)
+        {
+            downsampleDialogRect.x = (Screen.width - downsampleDialogRect.width) / 2f;
+            downsampleDialogRect.y = (Screen.height - downsampleDialogRect.height) / 2f;
+            downsampleDialogRect = GUI.Window(997, downsampleDialogRect, DrawDownsampleWindow, "📥 ダウンサンプリングパラメータ設定", windowStyle);
+            GUI.BringWindowToFront(997);
+        }
+
         // Draw 2D Marquee Box on screen if active
         if (editor.activeTool == PointCloudEditor.EditTool.Marquee && editor.IsDrawingMarquee)
         {
@@ -787,6 +909,180 @@ public class PointCloudEditorUI : MonoBehaviour
             Vector2 start = new Vector2(points[0].x, Screen.height - points[0].y);
             DrawLine(mousePos, start, new Color(1f, 0.9f, 0f, 0.4f), 1.5f);
         }
+    private void DrawScaleCalibWindow(int windowID)
+    {
+        GUILayout.Space(10);
+        GUILayout.Label("基準球の実寸および計測値を入力してください。", textStyle);
+        GUILayout.Space(10);
+
+        GUILayout.BeginHorizontal();
+        GUILayout.Label("基準球の実寸 (mm):", textStyle, GUILayout.Width(180));
+        scaleRealDiameterStr = GUILayout.TextField(scaleRealDiameterStr);
+        GUILayout.EndHorizontal();
+
+        GUILayout.Space(5);
+        GUILayout.Label("NeRFでの計測値 (unit) (カンマ区切りで複数入力可):", textStyle);
+        scaleMeasurementsStr = GUILayout.TextField(scaleMeasurementsStr);
+        GUILayout.Label("例: 0.052, 0.051, 0.053", textStyle);
+
+        GUILayout.Space(20);
+
+        GUILayout.BeginHorizontal();
+        if (GUILayout.Button("実行", activeButtonStyle, GUILayout.Height(35)))
+        {
+            if (string.IsNullOrEmpty(scaleMeasurementsStr.Trim()))
+            {
+                UnityEngine.Debug.LogError("計測値が空です。");
+            }
+            else
+            {
+                showScaleCalibDialog = false;
+                SaveSettings();
+                ExecuteScaleCalibration();
+            }
+        }
+        GUILayout.Space(10);
+        if (GUILayout.Button("キャンセル", buttonStyle, GUILayout.Height(35)))
+        {
+            showScaleCalibDialog = false;
+        }
+        GUILayout.EndHorizontal();
+    }
+
+    private void DrawDownsampleWindow(int windowID)
+    {
+        GUILayout.Space(10);
+        GUILayout.Label("ダウンサンプリングのパラメータを設定してください。", textStyle);
+        GUILayout.Space(10);
+
+        GUILayout.BeginHorizontal();
+        GUILayout.Label("入力フォルダ:", textStyle, GUILayout.Width(150));
+        downsampleInputDir = GUILayout.TextField(downsampleInputDir);
+        GUILayout.EndHorizontal();
+
+        GUILayout.BeginHorizontal();
+        GUILayout.Label("出力フォルダ:", textStyle, GUILayout.Width(150));
+        downsampleOutputDir = GUILayout.TextField(downsampleOutputDir);
+        GUILayout.EndHorizontal();
+
+        GUILayout.BeginHorizontal();
+        GUILayout.Label("ボクセルサイズ (mm):", textStyle, GUILayout.Width(150));
+        downsampleVoxelSizeStr = GUILayout.TextField(downsampleVoxelSizeStr);
+        GUILayout.EndHorizontal();
+
+        GUILayout.Space(5);
+        GUILayout.Label("処理モードを選択してください:", textStyle);
+        GUILayout.BeginHorizontal();
+        if (GUILayout.Button("1: 全体結合のみ", downsampleMode == 1 ? activeButtonStyle : buttonStyle)) downsampleMode = 1;
+        if (GUILayout.Button("2: 部位・個別のみ", downsampleMode == 2 ? activeButtonStyle : buttonStyle)) downsampleMode = 2;
+        if (GUILayout.Button("3: 両方実行", downsampleMode == 3 ? activeButtonStyle : buttonStyle)) downsampleMode = 3;
+        GUILayout.EndHorizontal();
+
+        GUILayout.Space(20);
+
+        GUILayout.BeginHorizontal();
+        if (GUILayout.Button("実行", activeButtonStyle, GUILayout.Height(35)))
+        {
+            showDownsampleDialog = false;
+            SaveSettings();
+            ExecuteDownsampling();
+        }
+        GUILayout.Space(10);
+        if (GUILayout.Button("キャンセル", buttonStyle, GUILayout.Height(35)))
+        {
+            showDownsampleDialog = false;
+        }
+        GUILayout.EndHorizontal();
+    }
+
+    private void ExecuteScaleCalibration()
+    {
+        if (!float.TryParse(scaleRealDiameterStr, System.Globalization.NumberStyles.Any, System.Globalization.CultureInfo.InvariantCulture, out float parsedDiameter))
+        {
+            UnityEngine.Debug.LogError("基準球の実寸が有効な数値ではありません。");
+            return;
+        }
+
+        if (string.IsNullOrEmpty(scaleMeasurementsStr.Trim()))
+        {
+            UnityEngine.Debug.LogError("NeRFでの計測値が入力されていません。");
+            return;
+        }
+
+        var pm = PointCloudProgressManager.Instance;
+        pm.Start("スケール校正", "Pythonプロセスを準備中...");
+
+        System.Threading.Tasks.Task.Run(async () =>
+        {
+            try
+            {
+                var token = pm.CancellationToken;
+                bool success = await PythonBridge.RunScaleCalibrationAsync(
+                    parsedDiameter,
+                    scaleMeasurementsStr,
+                    "config/scale_calibration_report.json",
+                    token
+                );
+
+                if (!token.IsCancellationRequested && success)
+                {
+                    scaleFinishedFlag = true;
+                }
+            }
+            catch (System.OperationCanceledException)
+            {
+                UnityEngine.Debug.LogWarning("[PointCloudEditorUI] スケール校正処理がユーザーによってキャンセルされました。");
+            }
+            catch (System.Exception ex)
+            {
+                UnityEngine.Debug.LogError($"[PointCloudEditorUI] スケール校正処理エラー: {ex.Message}");
+                scaleErrorMessage = ex.Message;
+                scaleFailedFlag = true;
+            }
+        });
+    }
+
+    private void ExecuteDownsampling()
+    {
+        if (!float.TryParse(downsampleVoxelSizeStr, System.Globalization.NumberStyles.Any, System.Globalization.CultureInfo.InvariantCulture, out float parsedVoxelSize))
+        {
+            UnityEngine.Debug.LogError("ボクセルサイズが有効な数値ではありません。");
+            return;
+        }
+
+        var pm = PointCloudProgressManager.Instance;
+        pm.Start("ダウンサンプリング", "Pythonプロセスを準備中...");
+
+        System.Threading.Tasks.Task.Run(async () =>
+        {
+            try
+            {
+                var token = pm.CancellationToken;
+                bool success = await PythonBridge.RunDownsamplingAsync(
+                    downsampleInputDir,
+                    downsampleOutputDir,
+                    "config/scale_calibration_report.json",
+                    downsampleMode,
+                    parsedVoxelSize,
+                    token
+                );
+
+                if (!token.IsCancellationRequested && success)
+                {
+                    downsampleFinishedFlag = true;
+                }
+            }
+            catch (System.OperationCanceledException)
+            {
+                UnityEngine.Debug.LogWarning("[PointCloudEditorUI] ダウンサンプリング処理がユーザーによってキャンセルされました。");
+            }
+            catch (System.Exception ex)
+            {
+                UnityEngine.Debug.LogError($"[PointCloudEditorUI] ダウンサンプリング処理エラー: {ex.Message}");
+                downsampleErrorMessage = ex.Message;
+                downsampleFailedFlag = true;
+            }
+        });
     }
 
     void OnDestroy()

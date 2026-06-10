@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Diagnostics;
 using System.IO;
 using System.Text;
@@ -42,18 +42,28 @@ namespace PointCloudWorkbench
         }
 
         /// <summary>
-        /// 螳溯｡後☆繧� Python 繧ｹ繧ｯ繝ｪ繝励ヨ縺ｮ繝輔Ν繝代せ繧貞叙蠕励＠縺ｾ縺吶�
+        /// 螳溯｡後☆繧 Python 繧ｹ繧ｯ繝ｪ繝励ヨ縺ｮ繝輔Ν繝代せ繧貞叙蠕励＠縺ｾ縺吶€
         /// </summary>
         private static string GetScriptPath()
         {
             return Path.GetFullPath(Path.Combine(Application.dataPath, "../python_backend/run_noise_filter.py"));
         }
 
+        private static string GetScaleCalibScriptPath()
+        {
+            return Path.GetFullPath(Path.Combine(Application.dataPath, "../python_backend/1_scale_calibration.py"));
+        }
+
+        private static string GetDownsampleScriptPath()
+        {
+            return Path.GetFullPath(Path.Combine(Application.dataPath, "../python_backend/2_downsample.py"));
+        }
+
         /// <summary>
-        /// 繝舌ャ繧ｯ繧ｰ繝ｩ繧ｦ繝ｳ繝峨�繝ｭ繧ｻ繧ｹ縺ｧ繝弱う繧ｺ髯､蜴ｻ繧ｹ繧ｯ繝ｪ繝励ヨ繧帝撼蜷梧悄螳溯｡後＠縲∝ｮ御ｺ�ｾ後↓邨先棡繧ｪ繝悶ず繧ｧ繧ｯ繝医ｒ霑斐＠縺ｾ縺吶�
+        /// 繝舌ャ繧ｯ繧ｰ繝ｩ繧ｦ繝ｳ繝峨繝ｭ繧ｻ繧ｹ縺ｧ繝弱う繧ｺ髯､蜴ｻ繧ｹ繧ｯ繝ｪ繝励ヨ繧帝撼蜷梧悄螳溯｡後＠縲∝ｮ御ｺｾ後↓邨先棡繧ｪ繝悶ず繧ｧ繧ｯ繝医ｒ霑斐＠縺ｾ縺吶€
         /// </summary>
         /// <param name="inputPlyPath">蜈･蜉娜LY轤ｹ鄒､縺ｮ繝代せ</param>
-        /// <param name="outputDir">繝舌う繝翫Μ繝輔ぃ繧､繝ｫ縺ｮ蜃ｺ蜉帛�繝�ぅ繝ｬ繧ｯ繝医Μ</param>
+        /// <param name="outputDir">繝舌う繝翫Μ繝輔ぃ繧､繝ｫ縺ｮ蜃ｺ蜉帛繝ぅ繝ｬ繧ｯ繝医Μ</param>
         /// <param name="filterParams">邨ｱ蜷医ヮ繧､繧ｺ繝輔ぅ繝ｫ繧ｿ繝代Λ繝｡繝ｼ繧ｿ</param>
         /// <param name="cancellationToken">繧ｭ繝｣繝ｳ繧ｻ繝ｫ逶｣隕悶ヨ繝ｼ繧ｯ繝ｳ</param>
         public static async Task<NoiseFilterResult> RunDenoiserAsync(
@@ -212,6 +222,235 @@ namespace PointCloudWorkbench
             // 終了後にバイナリファイルを読み込み
             PointCloudProgressManager.Instance.Update(0.9f, "バイナリ結果データをロード中...");
             return LoadFilterResult(outputDir);
+        }
+
+        /// <summary>
+        /// スケール校正スクリプトを非同期実行します。
+        /// </summary>
+        public static async Task<bool> RunScaleCalibrationAsync(
+            float realDiameter,
+            string measurements,
+            string outputJsonPath = "config/scale_calibration_report.json",
+            CancellationToken cancellationToken = default)
+        {
+            string pythonPath = GetPythonPath();
+            string scriptPath = GetScaleCalibScriptPath();
+
+            if (!File.Exists(scriptPath))
+            {
+                throw new FileNotFoundException($"スケール校正スクリプトが見つかりません: {scriptPath}");
+            }
+
+            // 引数の構築
+            string arguments = $"-u \"{scriptPath}\" --real_diameter {realDiameter.ToString(System.Globalization.CultureInfo.InvariantCulture)} --measurements \"{measurements}\" --output \"{outputJsonPath}\"";
+
+            ProcessStartInfo psi = new ProcessStartInfo
+            {
+                FileName = pythonPath,
+                Arguments = arguments,
+                UseShellExecute = false,
+                RedirectStandardOutput = true,
+                RedirectStandardError = true,
+                CreateNoWindow = true,
+                StandardOutputEncoding = Encoding.UTF8,
+                StandardErrorEncoding = Encoding.UTF8
+            };
+
+            UnityEngine.Debug.Log($"[PythonBridge] スケール校正実行コマンド: {pythonPath} {psi.Arguments}");
+            PointCloudProgressManager.Instance.Update(0.1f, "スケール校正処理を開始中...");
+
+            using (Process process = new Process())
+            {
+                process.StartInfo = psi;
+                StringBuilder outputLog = new StringBuilder();
+                StringBuilder errorLog = new StringBuilder();
+
+                long lastActivityTicks = System.DateTime.UtcNow.Ticks;
+                const int timeoutSeconds = 60; // 校正は短いので60秒
+
+                process.OutputDataReceived += (sender, e) =>
+                {
+                    if (e.Data != null)
+                    {
+                        System.Threading.Interlocked.Exchange(ref lastActivityTicks, System.DateTime.UtcNow.Ticks);
+                        outputLog.AppendLine(e.Data);
+                        UnityEngine.Debug.Log($"[Scale Calib Out] {e.Data}");
+                    }
+                };
+
+                process.ErrorDataReceived += (sender, e) =>
+                {
+                    if (e.Data != null)
+                    {
+                        System.Threading.Interlocked.Exchange(ref lastActivityTicks, System.DateTime.UtcNow.Ticks);
+                        errorLog.AppendLine(e.Data);
+                        UnityEngine.Debug.LogError($"[Scale Calib Err] {e.Data}");
+                    }
+                };
+
+                if (!process.Start())
+                {
+                    throw new Exception("スケール校正プロセスの開始に失敗しました。");
+                }
+
+                process.BeginOutputReadLine();
+                process.BeginErrorReadLine();
+
+                while (!process.HasExited)
+                {
+                    if (cancellationToken.IsCancellationRequested)
+                    {
+                        try { process.Kill(); } catch { }
+                        throw new OperationCanceledException(cancellationToken);
+                    }
+
+                    long lastTicks = System.Threading.Interlocked.Read(ref lastActivityTicks);
+                    double idleSeconds = (System.DateTime.UtcNow.Ticks - lastTicks) / (double)System.TimeSpan.TicksPerSecond;
+                    if (idleSeconds > timeoutSeconds)
+                    {
+                        try { process.Kill(); } catch { }
+                        throw new TimeoutException("スケール校正処理がタイムアウトしました。");
+                    }
+
+                    await Task.Delay(100);
+                }
+
+                if (process.ExitCode != 0)
+                {
+                    throw new Exception($"スケール校正がエラーで終了しました (ExitCode: {process.ExitCode})\n{errorLog.ToString()}");
+                }
+            }
+
+            PointCloudProgressManager.Instance.Update(1.0f, "スケール校正が完了しました。");
+            return true;
+        }
+
+        /// <summary>
+        /// ダウンサンプリングスクリプトを非同期実行します。
+        /// </summary>
+        public static async Task<bool> RunDownsamplingAsync(
+            string inputDir,
+            string outputDir,
+            string scaleJson = "config/scale_calibration_report.json",
+            int mode = 1,
+            float voxelSize = 5.0f,
+            CancellationToken cancellationToken = default)
+        {
+            string pythonPath = GetPythonPath();
+            string scriptPath = GetDownsampleScriptPath();
+
+            if (!File.Exists(scriptPath))
+            {
+                throw new FileNotFoundException($"ダウンサンプリングスクリプトが見つかりません: {scriptPath}");
+            }
+
+            // 引数の構築
+            string arguments = $"-u \"{scriptPath}\" --input \"{inputDir}\" --output \"{outputDir}\" --scale_json \"{scaleJson}\" --mode {mode} --voxel_size {voxelSize.ToString(System.Globalization.CultureInfo.InvariantCulture)}";
+
+            ProcessStartInfo psi = new ProcessStartInfo
+            {
+                FileName = pythonPath,
+                Arguments = arguments,
+                UseShellExecute = false,
+                RedirectStandardOutput = true,
+                RedirectStandardError = true,
+                CreateNoWindow = true,
+                StandardOutputEncoding = Encoding.UTF8,
+                StandardErrorEncoding = Encoding.UTF8
+            };
+
+            UnityEngine.Debug.Log($"[PythonBridge] ダウンサンプリング実行コマンド: {pythonPath} {psi.Arguments}");
+            PointCloudProgressManager.Instance.Update(0.05f, "ダウンサンプリング処理を開始中...");
+
+            using (Process process = new Process())
+            {
+                process.StartInfo = psi;
+                StringBuilder outputLog = new StringBuilder();
+                StringBuilder errorLog = new StringBuilder();
+
+                long lastActivityTicks = System.DateTime.UtcNow.Ticks;
+                const int timeoutSeconds = 300; // 5分
+
+                process.OutputDataReceived += (sender, e) =>
+                {
+                    if (e.Data != null)
+                    {
+                        System.Threading.Interlocked.Exchange(ref lastActivityTicks, System.DateTime.UtcNow.Ticks);
+                        outputLog.AppendLine(e.Data);
+                        UnityEngine.Debug.Log($"[Downsample Out] {e.Data}");
+
+                        if (e.Data.StartsWith("[Progress]"))
+                        {
+                            string partsStr = e.Data.Substring(10).Trim();
+                            int spaceIndex = partsStr.IndexOf(' ');
+                            if (spaceIndex > 0)
+                            {
+                                string numStr = partsStr.Substring(0, spaceIndex);
+                                string msgStr = partsStr.Substring(spaceIndex + 1);
+                                if (float.TryParse(numStr, System.Globalization.NumberStyles.Any, System.Globalization.CultureInfo.InvariantCulture, out float pct))
+                                {
+                                    float mappedProgress = pct / 100f;
+                                    PointCloudProgressManager.Instance.Update(mappedProgress, msgStr);
+                                }
+                            }
+                            else
+                            {
+                                if (float.TryParse(partsStr, System.Globalization.NumberStyles.Any, System.Globalization.CultureInfo.InvariantCulture, out float pct))
+                                {
+                                    float mappedProgress = pct / 100f;
+                                    PointCloudProgressManager.Instance.Update(mappedProgress, "実行中...");
+                                }
+                            }
+                        }
+                    }
+                };
+
+                process.ErrorDataReceived += (sender, e) =>
+                {
+                    if (e.Data != null)
+                    {
+                        System.Threading.Interlocked.Exchange(ref lastActivityTicks, System.DateTime.UtcNow.Ticks);
+                        errorLog.AppendLine(e.Data);
+                        UnityEngine.Debug.LogError($"[Downsample Err] {e.Data}");
+                    }
+                };
+
+                if (!process.Start())
+                {
+                    throw new Exception("ダウンサンプリングプロセスの開始に失敗しました。");
+                }
+
+                process.BeginOutputReadLine();
+                process.BeginErrorReadLine();
+
+                while (!process.HasExited)
+                {
+                    if (cancellationToken.IsCancellationRequested)
+                    {
+                        try { process.Kill(); } catch { }
+                        throw new OperationCanceledException(cancellationToken);
+                    }
+
+                    long lastTicks = System.Threading.Interlocked.Read(ref lastActivityTicks);
+                    double idleSeconds = (System.DateTime.UtcNow.Ticks - lastTicks) / (double)System.TimeSpan.TicksPerSecond;
+                    if (idleSeconds > timeoutSeconds)
+                    {
+                        try { process.Kill(); } catch { }
+                        throw new TimeoutException("ダウンサンプリング処理がタイムアウトしました。");
+                    }
+
+                    await Task.Delay(100);
+                }
+
+                if (process.ExitCode != 0)
+                {
+                    throw new Exception($"ダウンサンプリングがエラーで終了しました (ExitCode: {process.ExitCode})\n{errorLog.ToString()}");
+                }
+            }
+
+            PointCloudProgressManager.Instance.Update(1.0f, "ダウンサンプリングが完了しました。");
+            return true;
+        }
         }
 
         /// <summary>

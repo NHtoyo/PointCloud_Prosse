@@ -29,6 +29,8 @@ Unity上において数千万点規模の大規模な点群データ（PLY形式
 | **PointCloudData.cs** | `Assets/PointCloudWorkbench/Scripts/PointCloudData.cs` | 点群に含まれる各点の構造体 `PointData` などの共通 of データ定義。 |
 | **run_noise_filter.py** | `python_backend/run_noise_filter.py` | CLIエントリポイント。パラメータを受け取り、バッチ処理全体の制御と結果出力を担当。 |
 | **noise_filters.py** | `python_backend/noise_filters.py` | SOR / ROR / 密度 / DBSCAN フィルタの実装。DBSCAN of 自動ダウンサンプリングと同期フォールバックを制御。 |
+| **1_scale_calibration.py** | `python_backend/1_scale_calibration.py` | UIで入力された実寸および計測値から1 unitあたりの実寸法（mm/unit）スケールを算出して報告JSONを出力するキャリブレーションスクリプト。 |
+| **2_downsample.py** | `python_backend/2_downsample.py` | 算出されたスケールを用いて、ボクセルダウンサンプリング（全体結合、部位別、個別ファイル別）を実行し、比較用レポートを生成するスクリプト。 |
 | **pointcloud_io.py** | `python_backend/pointcloud_io.py` | Open3D を用いた PLY ファイル of ロード・セーブ、および Python 内部用 NPZ データ of ロード・セーブ。 |
 | **result_writer.py** | `python_backend/result_writer.py` | 処理結果をリトルエンディアン of `.bin` ファイル、`metadata.json`、`removal_report.json` に出力。 |
 | **PythonBridge.cs** | `Assets/PointCloudWorkbench/Scripts/PythonBridge.cs` | Pythonプロセスを非同期で詳細パラメータ引数を渡して起動・監視し、リトルエンディアンバイナリを高速デシリアライズするブリッジ。 |
@@ -482,6 +484,26 @@ Unity上において数千万点規模の大規模な点群データ（PLY形式
    - パス解決時、該当フォルダが存在しない場合は自動的に `Directory.CreateDirectory` を用いてその名前のフォルダを生成する機能と組み合わせ、クローン後の初回再生時に自動的に必要なフォルダが構築される完全自動化（ゼロコンフィグ）を実現。
 3. **デバッグ・ユーティリティのパス依存の排除 (`SceneDumper.cs`)**
    - シーンダンプ機能のログ出力先を `"E:/VR/scene_dump.txt"` から、プロジェクトの1つ上の階層にある相対パス `../../scene_dump.txt` に変更し、開発補助ツールのドライブ依存もすべて排除。
+
+## 2026-06-10 スケール校正とダウンサンプリングのUnity UI統合（Excel不要化）
+
+### 変更内容
+1. **Pythonスクリプトのリファクタリングと引数対応 (`1_scale_calibration.py`, `2_downsample.py`)**
+   - 従来Excel（pandas）を必要としていた `1_scale_calibration.py` をUI直接入力に対応させ、引数（`--real_diameter`, `--measurements`, `--output`）を受け取るCLI構成にリファクタリング。
+   - `2_downsample.py` を対話的 `input()` からCLI引数（`--input`, `--output`, `--scale_json`, `--mode`, `--voxel_size`）でのパラメータ受取へ移行。`pandas` 依存を排除し標準の `csv` モジュールでレポートを生成するように最適化。
+   - 進捗情報を `[Progress] {pct} {message}` の標準フォーマットで標準出力し、Unity側へリアルタイムに伝達するように改修。
+   - 両ファイルを `e:\VR\PointCloudVR\python_backend\` へ移動・整理し、Unityプロジェクト直下の古いファイルを削除。
+2. **C#ブリッジの実装 (`PythonBridge.cs`)**
+   - スケール校正およびダウンサンプリングの各Pythonスクリプトを非同期実行する `RunScaleCalibrationAsync` と `RunDownsamplingAsync` メソッドを新設。
+   - プロセス出力を常時読み取り、`[Progress]` マーカーを検知して `PointCloudProgressManager` を通じて画面中央に進捗率を反映する連携処理を実装。
+3. **右側「拡張機能パネル」の新設およびUIの整理 (`PointCloudEditorUI.cs`)**
+   - 画面右側に新しい `🧰 拡張機能パネル (Unity機能パネル)` を描画する領域（X座標: Screen.width - 480から10）を追加。
+   - 左パネルにあった「アノテーションUI」「モヤ処理UI」の表示切替トグルを右パネルへ移動し、UIレイアウトを効率化。
+   - 「スケール校正」および「ダウンサンプリング」の実行ボタンを追加。
+4. **パラメータ入力モーダルダイアログと状態の永続化 (`PointCloudEditorUI.cs`)**
+   - スケール校正およびダウンサンプリング用のパラメータ設定モーダルウィンドウ（`GUI.Window`）を実装。
+   - 基準球の実寸の初期値を「60(mm)」とし、一度入力された実寸およびその他の設定値（計測値、処理モード、フォルダパス、ボクセルサイズ）を `PlayerPrefs` を通じて自動で永続化（保存・復元）する仕組みを統合。
+   - モーダル表示中は3Dシーン側への誤操作を防ぐためのマウスクリック入力ブロッキング処理を実装。
 
 
 
