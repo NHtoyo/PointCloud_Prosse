@@ -12,9 +12,10 @@ namespace PointCloudWorkbench
         private PointCloudEditorUI editorUI;
 
         private const float BAR_X = 490f;
-        private const float TOP_H = 130f; // コンパクトな高さ
+        private const float TOP_W = 560f;
+        private const float TOP_H = 205f; // 大きめの計測UI
 
-        private GUIStyle panelStyle, titleStyle, hintStyle, labelStyle;
+        private GUIStyle panelStyle, titleStyle, hintStyle, labelStyle, lengthStyle;
         private GUIStyle blockStyle, activeBlockStyle, paletteBlockStyle;
         private bool stylesInitialized = false;
 
@@ -22,6 +23,17 @@ namespace PointCloudWorkbench
         {
             editor = GetComponent<PointCloudEditor>();
             editorUI = GetComponent<PointCloudEditorUI>();
+        }
+
+        void Update()
+        {
+            if (editor == null || editorUI == null) return;
+            if (!editorUI.showMeasurementUI) return;
+
+            if (editor.activeTool != PointCloudEditor.EditTool.Measure)
+            {
+                editor.activeTool = PointCloudEditor.EditTool.Measure;
+            }
         }
 
         private void InitStyles()
@@ -34,16 +46,19 @@ namespace PointCloudWorkbench
             panelStyle.normal.background = Tex(new Color(0.09f, 0.11f, 0.15f, 0.97f));
             panelStyle.border = new RectOffset(1, 1, 1, 1);
 
-            titleStyle = new GUIStyle(GUI.skin.label) { fontSize = 17, fontStyle = FontStyle.Bold };
+            titleStyle = new GUIStyle(GUI.skin.label) { fontSize = 22, fontStyle = FontStyle.Bold };
             titleStyle.normal.textColor = new Color(0.22f, 0.80f, 1f);
 
-            hintStyle = new GUIStyle(GUI.skin.label) { fontSize = 11, fontStyle = FontStyle.Italic };
+            hintStyle = new GUIStyle(GUI.skin.label) { fontSize = 16, fontStyle = FontStyle.Bold };
             hintStyle.normal.textColor = new Color(0.55f, 0.55f, 0.62f);
 
-            labelStyle = new GUIStyle(GUI.skin.label) { fontSize = 13 };
+            labelStyle = new GUIStyle(GUI.skin.label) { fontSize = 16, fontStyle = FontStyle.Bold };
             labelStyle.normal.textColor = new Color(0.88f, 0.88f, 0.92f);
 
-            blockStyle = new GUIStyle(GUI.skin.button) { fontSize = 14, fontStyle = FontStyle.Bold };
+            lengthStyle = new GUIStyle(GUI.skin.label) { fontSize = 21, fontStyle = FontStyle.Bold };
+            lengthStyle.normal.textColor = Color.white;
+
+            blockStyle = new GUIStyle(GUI.skin.button) { fontSize = 17, fontStyle = FontStyle.Bold };
             blockStyle.normal.textColor = Color.white;
             blockStyle.normal.background = Tex(new Color(0.24f, 0.28f, 0.36f));
             blockStyle.wordWrap = false;
@@ -51,7 +66,7 @@ namespace PointCloudWorkbench
             activeBlockStyle = new GUIStyle(blockStyle);
             activeBlockStyle.normal.background = Tex(new Color(0.1f, 0.55f, 0.28f)); // Green highlight
 
-            paletteBlockStyle = new GUIStyle(blockStyle) { fontSize = 12 };
+            paletteBlockStyle = new GUIStyle(blockStyle) { fontSize = 16 };
             paletteBlockStyle.normal.background = Tex(new Color(0.17f, 0.20f, 0.27f));
 
             stylesInitialized = true;
@@ -62,7 +77,7 @@ namespace PointCloudWorkbench
             if (editor == null || editorUI == null) return;
             InitStyles();
 
-            float barW = 450f;
+            float barW = TOP_W;
             float barH = TOP_H;
 
             Rect bar = new Rect(BAR_X, currentY, barW, barH);
@@ -79,47 +94,52 @@ namespace PointCloudWorkbench
             float y = r.y;
             float w = r.width;
 
-            GUI.Label(new Rect(x, y, w, 22f), "📏 2点間距離計測", titleStyle);
-            y += 24f;
-
-            // 計測モード切り替えボタン
-            bool isMeasuring = editor.activeTool == PointCloudEditor.EditTool.Measure;
-            string toggleTxt = isMeasuring ? "計測中... (中クリックで2点)" : "計測ツールをON";
-            if (GUI.Button(new Rect(x, y, w, 28f), toggleTxt, isMeasuring ? activeBlockStyle : blockStyle))
-            {
-                if (isMeasuring)
-                {
-                    editor.activeTool = PointCloudEditor.EditTool.None;
-                    Debug.Log("[DistanceMeasurementUI] 計測ツールをOFFにしました。");
-                }
-                else
-                {
-                    editor.activeTool = PointCloudEditor.EditTool.Measure;
-                    Debug.Log("[DistanceMeasurementUI] 計測ツールをONにしました。点群上を中クリックして2点を指定してください。");
-                }
-            }
+            GUI.Label(new Rect(x, y, w, 28f), "📏 距離計測", titleStyle);
             y += 32f;
 
-            // 計測距離の表示（unitおよび物理距離併記）
-            float localDist = 0f;
+            float modeW = (w - 8f) / 3f;
+            DrawModeButton(new Rect(x, y, modeW, 32f), "2点", PointCloudEditor.MeasurementMode.TwoPoint);
+            DrawModeButton(new Rect(x + modeW + 4f, y, modeW, 32f), "折れ線", PointCloudEditor.MeasurementMode.Polyline);
+            DrawModeButton(new Rect(x + (modeW + 4f) * 2f, y, modeW, 32f), "曲線", PointCloudEditor.MeasurementMode.SmoothCurve);
+            y += 38f;
+
+            // 計測距離の表示（unitおよびmm併記）
+            float localDist = editor.GetMeasurementLength();
             string distStr = "---";
-            if (editor.hasMeasurePoint1 && editor.hasMeasurePoint2)
+            if (editor.MeasurementPointCount >= 2)
             {
-                localDist = Vector3.Distance(editor.measurePoint1, editor.measurePoint2);
                 float scaleX = editor.targetRenderer != null ? editor.targetRenderer.transform.localScale.x : 1.0f;
                 float worldDistM = localDist * scaleX;
                 float worldDistMm = worldDistM * 1000f;
 
-                distStr = $"{localDist:F5} unit ({worldDistMm:F1} mm / {worldDistM:F4} m)";
+                distStr = $"{localDist:F5} unit  ({worldDistMm:F1} mm)";
             }
-            GUI.Label(new Rect(x, y, w - 85f, 22f), $"計測距離: {distStr}", labelStyle);
+            GUI.Label(new Rect(x, y, w, 30f), $"線の長さ: {distStr}", lengthStyle);
+            y += 34f;
 
-            if (editor.hasMeasurePoint1 || editor.hasMeasurePoint2)
+            GUI.Label(new Rect(x, y, w, 24f), $"点数: {editor.MeasurementPointCount}    中クリックで点を追加", hintStyle);
+            y += 30f;
+
+            if (editor.MeasurementPointCount > 0)
             {
-                if (GUI.Button(new Rect(x + w - 80f, y, 80f, 22f), "リセット", paletteBlockStyle))
+                float buttonW = (w - 6f) / 2f;
+                if (GUI.Button(new Rect(x, y, buttonW, 32f), "直近点を削除", paletteBlockStyle))
+                {
+                    editor.RemoveLastMeasurementPoint();
+                }
+                if (GUI.Button(new Rect(x + buttonW + 6f, y, buttonW, 32f), "リセット", paletteBlockStyle))
                 {
                     editor.ResetMeasurement();
                 }
+            }
+        }
+
+        private void DrawModeButton(Rect rect, string label, PointCloudEditor.MeasurementMode mode)
+        {
+            bool active = editor.measurementMode == mode;
+            if (GUI.Button(rect, label, active ? activeBlockStyle : blockStyle))
+            {
+                editor.SetMeasurementMode(mode);
             }
         }
     }

@@ -172,39 +172,14 @@ public class PointCloudEditorUI : MonoBehaviour
                 var loader = editor.targetRenderer.GetComponent<PointCloudLoader>();
                 if (loader != null)
                 {
-                    string inputPath = loader.GetFilePath();
-                    string directory = System.IO.Path.GetDirectoryName(inputPath);
-                    
-                    // すでに downsample フォルダの中を指している場合は、親の親をベースフォルダにする
-                    string folderName = System.IO.Path.GetFileName(directory);
-                    if (folderName.Equals("downsample", System.StringComparison.OrdinalIgnoreCase))
-                    {
-                        directory = System.IO.Path.GetDirectoryName(directory);
-                    }
-
-                    string fileNameWithoutExt = System.IO.Path.GetFileNameWithoutExtension(inputPath);
-                    
-                    // _labeled や _downsampled が付いている場合は除去してベースの名前を取得
-                    string cleanBaseName = fileNameWithoutExt;
-                    if (cleanBaseName.EndsWith("_downsampled"))
-                    {
-                        cleanBaseName = cleanBaseName.Substring(0, cleanBaseName.Length - "_downsampled".Length);
-                    }
-                    if (cleanBaseName.EndsWith("_labeled"))
-                    {
-                        cleanBaseName = cleanBaseName.Substring(0, cleanBaseName.Length - "_labeled".Length);
-                    }
-                    
-                    // Pythonが出力した全体ファイル名: {cleanBaseName}_labeled_downsampled.ply
-                    string downsampledPath = System.IO.Path.Combine(directory, $"downsample/{cleanBaseName}_labeled_downsampled.ply");
+                    DownsamplePaths paths = PointCloudDownsampleService.BuildPaths(loader.GetFilePath());
+                    string downsampledPath = paths.CombinedOutputPath;
 
                     if (System.IO.File.Exists(downsampledPath))
                     {
                         UnityEngine.Debug.Log($"[Downsample Auto-Load] Loading downsampled PLY: {downsampledPath}");
                         
-                        // downsample/ を含む相対パスを loader.fileName に設定し、
-                        // loader.GetFilePath() で "E:\VR\PointCloudData\downsample\..." が正しく取得できるようにする
-                        loader.fileName = $"downsample/{System.IO.Path.GetFileName(downsampledPath)}";
+                        loader.fileName = PointCloudDownsampleService.GetLoaderRelativePath(downsampledPath);
                         loader.LoadPointCloud(downsampledPath);
                         
                         // カメラを再センタリング
@@ -1014,10 +989,10 @@ public class PointCloudEditorUI : MonoBehaviour
         scaleMeasurementsStr = GUILayout.TextField(scaleMeasurementsStr);
         GUILayout.Label("例: 0.052, 0.051, 0.053", textStyle);
 
-        if (editor != null && editor.hasMeasurePoint1 && editor.hasMeasurePoint2)
+        if (editor != null && editor.MeasurementPointCount >= 2)
         {
-            float localDist = Vector3.Distance(editor.measurePoint1, editor.measurePoint2);
-            if (GUILayout.Button($"[現在の計測距離をコピー ({localDist:F5})]", buttonStyle))
+            float localDist = editor.GetMeasurementLength();
+            if (GUILayout.Button($"[現在の線の長さをコピー ({localDist:F5})]", buttonStyle))
             {
                 scaleMeasurementsStr = localDist.ToString("F5", System.Globalization.CultureInfo.InvariantCulture);
             }
@@ -1111,32 +1086,7 @@ public class PointCloudEditorUI : MonoBehaviour
             return;
         }
 
-        string inputPath = loader.GetFilePath();
-        string directory = Path.GetDirectoryName(inputPath);
-        
-        // もしすでに downsample フォルダの中を指している場合は、親の親をベースフォルダにする
-        string folderName = Path.GetFileName(directory);
-        if (folderName.Equals("downsample", System.StringComparison.OrdinalIgnoreCase))
-        {
-            directory = Path.GetDirectoryName(directory);
-        }
-
-        string fileNameWithoutExt = Path.GetFileNameWithoutExtension(inputPath);
-        
-        // _labeled や _downsampled が付いている場合は除去してベースの名前を取得
-        string cleanBaseName = fileNameWithoutExt;
-        if (cleanBaseName.EndsWith("_downsampled"))
-        {
-            cleanBaseName = cleanBaseName.Substring(0, cleanBaseName.Length - "_downsampled".Length);
-        }
-        if (cleanBaseName.EndsWith("_labeled"))
-        {
-            cleanBaseName = cleanBaseName.Substring(0, cleanBaseName.Length - "_labeled".Length);
-        }
-
-        // 自動的にアノテーション一時エクスポートファイルパスと出力フォルダを決定
-        string tempExportPath = Path.Combine(directory, $"{cleanBaseName}_labeled.ply");
-        string outputDir = Path.Combine(directory, "downsample");
+        DownsamplePaths paths = PointCloudDownsampleService.BuildPaths(loader.GetFilePath());
 
         var pm = PointCloudProgressManager.Instance;
         pm.Start("ダウンサンプリング", "最新のアノテーション状態を一時保存中...");
@@ -1148,16 +1098,16 @@ public class PointCloudEditorUI : MonoBehaviour
                 var token = pm.CancellationToken;
 
                 // 1. 最新のアノテーション状態を _labeled.ply としてバイナリ形式で一時保存
-                UnityEngine.Debug.Log($"[Downsample Auto] Exporting latest annotations to: {tempExportPath}");
-                await editor.ExportLabeledPointsAsync(tempExportPath, true, token);
+                UnityEngine.Debug.Log($"[Downsample Auto] Exporting latest annotations to: {paths.TemporaryLabeledPath}");
+                await editor.ExportLabeledPointsAsync(paths.TemporaryLabeledPath, true, token);
 
                 if (token.IsCancellationRequested) return;
 
                 // 2. エクスポートされた一時ファイルを用いてPythonダウンサンプリングを起動
                 pm.Update(0.1f, "Pythonプロセスを開始中...");
                 bool success = await PythonBridge.RunDownsamplingAsync(
-                    tempExportPath,
-                    outputDir,
+                    paths.TemporaryLabeledPath,
+                    paths.OutputDirectory,
                     "config/scale_calibration_report.json",
                     downsampleMode,
                     parsedVoxelSize,

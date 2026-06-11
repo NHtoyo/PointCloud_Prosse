@@ -25,7 +25,10 @@ Unity上において数千万点規模の大規模な点群データ（PLY形式
 | **PointCloudLoader.cs** | `Assets/PointCloudLoader.cs` | PLYファイルなどの点群データを非同期でロードしRendererにセットアップする。読み込み上限は2000万点。 |
 | **PointCloudEditor.cs** | `Assets/PointCloudWorkbench/Scripts/PointCloudEditor.cs` | 点群のアノテーション・編集用コアエンジン。ブラシ、矩形、なげなわ、接続探索、RANSAC等の選択や、ノイズ物理除去PLYエクスポートを担当。計測値の3D描画・サイズ制御も管理。 |
 | **PointCloudEditorUI.cs** | `Assets/PointCloudWorkbench/Scripts/PointCloudEditorUI.cs` | アノテーションツールのUI表示（OnGUI）、進捗モーダル表示、およびスケール校正・ダウンサンプリング設定用のポップアップダイアログ（GUI.Window）の描画を担当。 |
-| **DistanceMeasurementUI.cs** | `Assets/PointCloudWorkbench/Scripts/DistanceMeasurementUI.cs` | アノテーションUIの下に連結される、2点間距離計測（ON/OFF、物理単位併記の距離表示、リセット）専用のスタックUI。 |
+| **DistanceMeasurementUI.cs** | `Assets/PointCloudWorkbench/Scripts/DistanceMeasurementUI.cs` | アノテーションUIの下に連結される、距離計測（2点・折れ線・曲線の切り替え、物理単位併記の距離表示）専用のスタックUI。 |
+| **MeasurementPath.cs** | `Assets/PointCloudWorkbench/Scripts/MeasurementPath.cs` | 多点にまたがる距離計測のパス（2点、折れ線、Catmull-Rom曲線）の保持と長さ計算を行う。 |
+| **PointCloudScaleService.cs** | `Assets/PointCloudWorkbench/Scripts/PointCloudScaleService.cs` | 実寸法スケール(mm/unit)のJSONからの読み込み、および点群オブジェクトへのスケール適用を担当するサービスクラス。 |
+| **PointCloudDownsampleService.cs** | `Assets/PointCloudWorkbench/Scripts/PointCloudDownsampleService.cs` | ダウンサンプリング実行時の各種入出力ファイルパス解決を担当するサービスクラス。 |
 | **OverlayColorShader.shader** | `Assets/PointCloudWorkbench/Shaders/OverlayColorShader.shader` | 計測線やマーカー球を点群の点に隠させず、常に最前面に描画するためのカスタムZTest Alwaysアンリットシェーダー。 |
 | **PointCloudController.cs** | `Assets/PointCloudController.cs` | VR環境（XRI Grab）およびPCデバッグ用に、点群オブジェクト全体の移動・回転・スケーリングといったトランスフォーム制御を担う。常に「左ドラッグ＝回転、右ドラッグ＝パン」で固定。 |
 | **PointCloudManager.cs** | `Assets/PointCloudManager.cs` | 基準（Reference）と対象（Aligned）点群の管理、簡易距離比較、表示モード切り替え、および右側「CC Unity機能パネル」UI全体の描画を担当。 |
@@ -49,10 +52,10 @@ Unity上において数千万点規模の大規模な点群データ（PLY形式
    - PC上でのナビゲーション操作は、常に **「左ドラッグ ＝ カメラ回転（オービット）」**、**「右ドラッグ ＝ カメラ平行移動（パン）」**、**「マウスホイール回転 ＝ ズーム」** で操作可能です。
    - オブジェクト自体のトランスフォーム操作は、修飾キーなしのドラッグ（**左ドラッグ ＝ オブジェクト回転**、**右ドラッグ ＝ オブジェクト平行移動**）で行います。
    - アノテーションツール選択時（選択画面）は、カメラおよびオブジェクトの操作系統はそのまま維持され、選択適用のみ **「マウスホイール押し込み（中ボタン）」** をトリガーとして行います。
-   - 2点間距離計測モード（ON時）は、カメラ移動やオブジェクト操作と干渉しないよう、**「マウスホイール押し込み（中ボタン）」** をトリガーとして1点目・2点目を指定します。中ボタンを押した瞬間のみ最近傍点探索を実行する最適化により、計測中のカメラ操作も軽量に動作します。
+   - 距離計測モード（ON時）は、カメラ移動やオブジェクト操作と干渉しないよう、**「マウスホイール押し込み（中ボタン）」** をトリガーとして計測点を指定します（2点/折れ線/曲線に対応）。中ボタンを押した瞬間のみ最近傍点探索を実行する最適化により、計測中のカメラ操作も軽量に動作します。
 
 ## 現在分かっている注意点
-- **操作系統の一貫性**: 通常時・アノテーションツール選択時・計測モード時を問わず、ナビゲーション操作系統は常に「左ドラッグ＝カメラ回転、右ドラッグ＝パン、スクロール＝ズーム」で完全に固定されています。アノテーション適用（ブラシで塗る、なげなわ等）および2点間距離計測の点指定はすべて **「中クリック（ホイール押し込み）」** で行います。オブジェクト移動に修飾キー（Ctrl等）は不要です。
+- **操作系統の一貫性**: 通常時・アノテーションツール選択時・計測モード時を問わず、ナビゲーション操作系統は常に「左ドラッグ＝カメラ回転、右ドラッグ＝パン、スクロール＝ズーム」で完全に固定されています。アノテーション適用（ブラシで塗る、なげなわ等）および距離計測の点指定はすべて **「中クリック（ホイール押し込み）」** で行います。オブジェクト移動に修飾キー（Ctrl等）は不要です。
 - **2Dロール回転と右手系補正**: 仮想トラックボールの球外ドラッグでZ軸周りの2Dロールが実行されます。Unity（左手系）とCC（右手系）のZ軸解釈の違いを吸収するため、`rotCameraCS.z = -rotCameraCS.z;` で補正しています。
 - **高負荷タスクの非同期・ゼロアロケーション**: 接続探索（Spatial Hashing + BFS）やRANSAC平面・円柱検出などの高負荷な編集処理は、非同期（`Task.Run`）で処理され、実行中は進捗バーとキャンセルボタンを表示するモーダルウィンドウで覆われます。GCアロケーションをほぼゼロに抑える最適化が入っています。
 - **Gitコミットの記述規則（厳守）**: コミットメッセージは原則としてすべて日本語で記述し、かつ機能変更そのもののみを簡潔に書くこと。Gitのログ履歴を綺麗に保つため、コミットメッセージ内に「HANDOVER_DOCの更新」や「ドキュメントの追記」といった開発プロセス内・メモ書きレベルの記述は絶対に含めないこと。（ドキュメントの更新はコードの修正コミットと同時に行い、メッセージには一切言及しないこと）
@@ -79,7 +82,16 @@ Unity上において数千万点規模の大規模な点群データ（PLY形式
 
 ## 実装履歴・変更遍歴（カテゴリ別要約）
 
-### 1. 2点間距離計測の3D描画バグ修正とUIの完全分離・入力競合解消（2026-06-10）【最新】
+### 1. 距離計測機能の多点・曲線対応およびコードの責務分離 (2026-06-11)【最新】
+- **距離計測機能の拡張 (折れ線・曲線)**:
+  - `MeasurementPath.cs` を新規追加し、従来の2点間計測だけでなく、任意の複数点を用いた「折れ線 (Polyline)」や「曲線 (Catmull-Rom スプライン)」での長さ計測に対応。
+  - `PointCloudEditor.cs` を改修し、計測マーカーおよび線の動的生成・更新を `MeasurementPath` と連動するよう拡張。
+  - `DistanceMeasurementUI.cs` に計測モード（2点 / 折れ線 / 曲線）の切り替えボタン、および「直近点を削除」ボタンを追加。
+- **サービスクラスへの責務分離 (リファクタリング)**:
+  - `PointCloudScaleService.cs` を新規追加し、`PointCloudManager.cs` にハードコードされていたスケールレポート（JSON）の読み込みと適用ロジックを分離。
+  - `PointCloudDownsampleService.cs` を新規追加し、`PointCloudEditorUI.cs` にあったダウンサンプリング時のパス生成処理を分離。これらにより既存のUIおよびマネージャクラスの責務を整理・軽量化。
+
+### 2. 2点間距離計測の3D描画バグ修正とUIの完全分離・入力競合解消（2026-06-10）
 - **イベント横取りバグの解消によるボタンクリックの正常化**:
   - `AnnotationPipelineEditorUI.cs` および `FilterPipelineEditorUI.cs` のドラッグ＆ドロップ（D&D）処理における `MouseUp` イベントの不適切な消費（ドラッグ状態でなくても画面全体の MouseUp イベントを `Event.current.Use()` で消去していた）を修正。これにより、二点間距離計測UIの「計測ツールをON」ボタン等が正常にクリックに反応するよう挙動を修正。
 - **最前面描画（ZTest Always）によるCC互換表示の実現**:

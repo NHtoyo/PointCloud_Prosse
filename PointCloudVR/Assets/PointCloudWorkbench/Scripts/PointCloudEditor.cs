@@ -39,14 +39,17 @@ public class PointCloudEditor : MonoBehaviour
     public float filterMin = 0f;
     public float filterMax = 1f;
 
+    public enum MeasurementMode { TwoPoint, Polyline, SmoothCurve }
+
     [Header("Measurement Settings")]
+    public MeasurementMode measurementMode = MeasurementMode.TwoPoint;
     public bool hasMeasurePoint1 = false;
     public bool hasMeasurePoint2 = false;
     public Vector3 measurePoint1;
     public Vector3 measurePoint2;
+    public readonly MeasurementPath measurementPath = new MeasurementPath();
 
-    private GameObject measureMarker1;
-    private GameObject measureMarker2;
+    private readonly List<GameObject> measureMarkers = new List<GameObject>();
     private LineRenderer measureLine;
 
     [Header("Visual Elements")]
@@ -206,8 +209,13 @@ public class PointCloudEditor : MonoBehaviour
         bool shouldShowMeasure = (activeTool == EditTool.Measure);
         if (!shouldShowMeasure)
         {
-            if (measureMarker1 != null && measureMarker1.activeSelf) measureMarker1.SetActive(false);
-            if (measureMarker2 != null && measureMarker2.activeSelf) measureMarker2.SetActive(false);
+            for (int i = 0; i < measureMarkers.Count; i++)
+            {
+                if (measureMarkers[i] != null && measureMarkers[i].activeSelf)
+                {
+                    measureMarkers[i].SetActive(false);
+                }
+            }
             if (measureLine != null && measureLine.gameObject.activeSelf) measureLine.gameObject.SetActive(false);
         }
         else
@@ -2241,8 +2249,10 @@ public class PointCloudEditor : MonoBehaviour
     {
         if (brushVisual != null) Destroy(brushVisual);
         if (brushMaterial != null) Destroy(brushMaterial);
-        if (measureMarker1 != null) Destroy(measureMarker1);
-        if (measureMarker2 != null) Destroy(measureMarker2);
+        for (int i = 0; i < measureMarkers.Count; i++)
+        {
+            if (measureMarkers[i] != null) Destroy(measureMarkers[i]);
+        }
         if (measureLine != null) Destroy(measureLine.gameObject);
     }
 
@@ -2253,33 +2263,11 @@ public class PointCloudEditor : MonoBehaviour
         var overlayShader = Shader.Find("PointCloudWorkbench/OverlayColor");
         if (overlayShader == null) overlayShader = Shader.Find("Sprites/Default");
 
-        if (measureMarker1 == null)
-        {
-            measureMarker1 = GameObject.CreatePrimitive(PrimitiveType.Sphere);
-            Destroy(measureMarker1.GetComponent<SphereCollider>());
-            measureMarker1.name = "Measure_Marker_1";
-            measureMarker1.transform.SetParent(targetRenderer.transform, false);
-            var mat = new Material(overlayShader);
-            mat.color = Color.red;
-            measureMarker1.GetComponent<MeshRenderer>().sharedMaterial = mat;
-            measureMarker1.SetActive(false);
-        }
-        if (measureMarker2 == null)
-        {
-            measureMarker2 = GameObject.CreatePrimitive(PrimitiveType.Sphere);
-            Destroy(measureMarker2.GetComponent<SphereCollider>());
-            measureMarker2.name = "Measure_Marker_2";
-            measureMarker2.transform.SetParent(targetRenderer.transform, false);
-            var mat = new Material(overlayShader);
-            mat.color = Color.blue;
-            measureMarker2.GetComponent<MeshRenderer>().sharedMaterial = mat;
-            measureMarker2.SetActive(false);
-        }
         if (measureLine == null)
         {
             GameObject lineObj = new GameObject("Measure_Line");
             measureLine = lineObj.AddComponent<LineRenderer>();
-            measureLine.positionCount = 2;
+            measureLine.positionCount = 0;
             measureLine.useWorldSpace = true;
             measureLine.numCapVertices = 0;
             measureLine.numCornerVertices = 0;
@@ -2290,40 +2278,71 @@ public class PointCloudEditor : MonoBehaviour
         }
     }
 
+    GameObject CreateMeasureMarker(int index)
+    {
+        var overlayShader = Shader.Find("PointCloudWorkbench/OverlayColor");
+        if (overlayShader == null) overlayShader = Shader.Find("Sprites/Default");
+
+        GameObject marker = GameObject.CreatePrimitive(PrimitiveType.Sphere);
+        Destroy(marker.GetComponent<SphereCollider>());
+        marker.name = $"Measure_Marker_{index + 1}";
+        marker.transform.SetParent(targetRenderer.transform, false);
+        var mat = new Material(overlayShader);
+        mat.color = index == 0 ? Color.red : new Color(0.15f, 0.45f, 1f);
+        marker.GetComponent<MeshRenderer>().sharedMaterial = mat;
+        marker.SetActive(false);
+        return marker;
+    }
+
+    void EnsureMeasureMarkerCount(int count)
+    {
+        while (measureMarkers.Count < count)
+        {
+            measureMarkers.Add(CreateMeasureMarker(measureMarkers.Count));
+        }
+    }
+
+    void SyncLegacyMeasureFields()
+    {
+        hasMeasurePoint1 = measurementPath.Points.Count >= 1;
+        hasMeasurePoint2 = measurementPath.Points.Count >= 2;
+        measurePoint1 = hasMeasurePoint1 ? measurementPath.Points[0] : Vector3.zero;
+        measurePoint2 = hasMeasurePoint2 ? measurementPath.Points[1] : Vector3.zero;
+    }
+
     public void UpdateMeasureVisuals()
     {
         if (targetRenderer == null) return;
         CreateMeasureVisuals();
+        SyncLegacyMeasureFields();
 
         float scaleX = targetRenderer.transform.lossyScale.x;
         float markerScale = 0.00025f / Mathf.Max(scaleX, 0.0001f);
+        EnsureMeasureMarkerCount(measurementPath.Points.Count);
 
-        if (hasMeasurePoint1)
+        for (int i = 0; i < measureMarkers.Count; i++)
         {
-            measureMarker1.transform.localPosition = measurePoint1;
-            measureMarker1.SetActive(true);
-            measureMarker1.transform.localScale = Vector3.one * markerScale;
-        }
-        else
-        {
-            if (measureMarker1 != null) measureMarker1.SetActive(false);
-        }
-
-        if (hasMeasurePoint2)
-        {
-            measureMarker2.transform.localPosition = measurePoint2;
-            measureMarker2.SetActive(true);
-            measureMarker2.transform.localScale = Vector3.one * markerScale;
-        }
-        else
-        {
-            if (measureMarker2 != null) measureMarker2.SetActive(false);
+            GameObject marker = measureMarkers[i];
+            if (i < measurementPath.Points.Count)
+            {
+                marker.transform.localPosition = measurementPath.Points[i];
+                marker.transform.localScale = Vector3.one * markerScale;
+                marker.SetActive(true);
+            }
+            else
+            {
+                marker.SetActive(false);
+            }
         }
 
-        if (hasMeasurePoint1 && hasMeasurePoint2)
+        if (measurementPath.Points.Count >= 2)
         {
-            measureLine.SetPosition(0, targetRenderer.transform.TransformPoint(measurePoint1));
-            measureLine.SetPosition(1, targetRenderer.transform.TransformPoint(measurePoint2));
+            List<Vector3> linePoints = measurementPath.BuildWorldLinePoints(targetRenderer.transform);
+            measureLine.positionCount = linePoints.Count;
+            for (int i = 0; i < linePoints.Count; i++)
+            {
+                measureLine.SetPosition(i, linePoints[i]);
+            }
             measureLine.gameObject.SetActive(true);
 
             float lineWidth = 0.00008f;
@@ -2338,9 +2357,31 @@ public class PointCloudEditor : MonoBehaviour
 
     public void ResetMeasurement()
     {
-        hasMeasurePoint1 = false;
-        hasMeasurePoint2 = false;
+        measurementPath.Clear();
+        SyncLegacyMeasureFields();
         UpdateMeasureVisuals();
+    }
+
+    public void SetMeasurementMode(MeasurementMode mode)
+    {
+        measurementMode = mode;
+        measurementPath.SetMode(mode);
+        SyncLegacyMeasureFields();
+        UpdateMeasureVisuals();
+    }
+
+    public void RemoveLastMeasurementPoint()
+    {
+        measurementPath.RemoveLastPoint();
+        SyncLegacyMeasureFields();
+        UpdateMeasureVisuals();
+    }
+
+    public int MeasurementPointCount => measurementPath.Points.Count;
+
+    public float GetMeasurementLength()
+    {
+        return measurementPath.GetLength();
     }
 
     void HandleMeasureTool()
@@ -2371,28 +2412,10 @@ public class PointCloudEditor : MonoBehaviour
                 // Convert clicked point to local space of renderer
                 Vector3 localHit = targetRenderer.transform.InverseTransformPoint(hitPoint);
 
-                if (!hasMeasurePoint1)
-                {
-                    measurePoint1 = localHit;
-                    hasMeasurePoint1 = true;
-                    UpdateMeasureVisuals();
-                    Debug.Log($"[PointCloudEditor] 計測点1を設定: {localHit}");
-                }
-                else if (!hasMeasurePoint2)
-                {
-                    measurePoint2 = localHit;
-                    hasMeasurePoint2 = true;
-                    UpdateMeasureVisuals();
-                    Debug.Log($"[PointCloudEditor] 計測点2を設定: {localHit}, 距離(unit): {Vector3.Distance(measurePoint1, measurePoint2):F5}");
-                }
-                else
-                {
-                    measurePoint1 = localHit;
-                    hasMeasurePoint1 = true;
-                    hasMeasurePoint2 = false;
-                    UpdateMeasureVisuals();
-                    Debug.Log($"[PointCloudEditor] 計測点1を再設定: {localHit}");
-                }
+                measurementPath.AddPoint(localHit);
+                SyncLegacyMeasureFields();
+                UpdateMeasureVisuals();
+                Debug.Log($"[PointCloudEditor] 計測点{measurementPath.Points.Count}を設定: {localHit}, 線長(unit): {GetMeasurementLength():F5}");
             }
         }
         else
