@@ -105,7 +105,19 @@ public class PointCloudEditor : MonoBehaviour
     private int[] connCellQueue = null;
     private bool[] connCellVisited = null;
 
+    [Header("Pick Settings")]
+    public bool pickDensityEnabled = true;
+    public int pickDensityMinCount = 3;
 
+    private readonly List<int> neighborIndicesCache = new List<int>();
+    private readonly List<PickCandidate> pickCandidates = new List<PickCandidate>();
+
+    private struct PickCandidate
+    {
+        public int index;
+        public Vector3 position;
+        public float proj;
+    }
 
     // Properties for UI access
     public bool IsDrawingMarquee => isDrawingMarquee;
@@ -326,6 +338,7 @@ public class PointCloudEditor : MonoBehaviour
         hitWorldPoint = Vector3.zero;
         PointData[] points = targetRenderer.GetPointData();
         if (points == null || points.Length == 0) return false;
+        Vector3[] positions = targetRenderer.GetPositions();
 
         Matrix4x4 worldToLocal = targetRenderer.transform.worldToLocalMatrix;
         Vector3 localOrigin = worldToLocal.MultiplyPoint(worldRay.origin);
@@ -351,31 +364,76 @@ public class PointCloudEditor : MonoBehaviour
             }
         }
 
-        // Search for the nearest point to camera within picking cone (CC-compatible)
-        float minProj = float.MaxValue;
-        bool found = false;
-        Vector3 bestLocalPoint = Vector3.zero;
-
-        // Check if Octree is available and ready
-        var octree = targetRenderer.Octree;
-        bool useOctree = octree != null && targetRenderer.IsOctreeReady;
-
-        if (useOctree)
+        if (!pickDensityEnabled)
         {
-            // Traverse Octree recursively to find candidate points close to Ray
-            TraverseRay(octree.root, localRay, localConeAngle, localCylinderRadius, ref minProj, ref bestLocalPoint, ref found, points);
+            // Search for the nearest point to camera within picking cone (CC-compatible)
+            float minProj = float.MaxValue;
+            bool found = false;
+            Vector3 bestLocalPoint = Vector3.zero;
+
+            // Check if Octree is available and ready
+            var octree = targetRenderer.Octree;
+            bool useOctree = octree != null && targetRenderer.IsOctreeReady;
+
+            if (useOctree)
+            {
+                // Traverse Octree recursively to find candidate points close to Ray
+                TraverseRay(octree.root, localRay, localConeAngle, localCylinderRadius, ref minProj, ref bestLocalPoint, ref found, points);
+            }
+            else
+            {
+                // Fallback to legacy linear search if Octree is still building
+                for (int i = 0; i < points.Length; i++)
+                {
+                    if ((points[i].label & 0x20000) != 0) continue; // skip deleted
+
+                    Vector3 p = points[i].position;
+                    Vector3 v = p - localRay.origin;
+                    float proj = Vector3.Dot(v, localRay.direction);
+                    if (proj < 0 || proj >= minProj) continue;
+
+                    float currentRadius = localCylinderRadius + proj * localConeAngle;
+                    float threshSq = currentRadius * currentRadius;
+
+                    Vector3 closestPointOnRay = localRay.origin + localRay.direction * proj;
+                    float distSq = (p - closestPointOnRay).sqrMagnitude;
+                    if (distSq < threshSq)
+                    {
+                        minProj = proj;
+                        bestLocalPoint = p;
+                        found = true;
+                    }
+                }
+            }
+
+            if (found)
+            {
+                hitWorldPoint = targetRenderer.transform.TransformPoint(bestLocalPoint);
+                return true;
+            }
+            return false;
+        }
+
+        // Density-based point picking
+        pickCandidates.Clear();
+
+        var octree2 = targetRenderer.Octree;
+        bool useOctree2 = octree2 != null && targetRenderer.IsOctreeReady;
+
+        if (useOctree2)
+        {
+            TraverseRayCandidates(octree2.root, localRay, localConeAngle, localCylinderRadius, points);
         }
         else
         {
-            // Fallback to legacy linear search if Octree is still building
             for (int i = 0; i < points.Length; i++)
             {
-                if ((points[i].label & 0x20000) != 0) continue; // skip deleted
+                if ((points[i].label & 0x20000) != 0) continue;
 
                 Vector3 p = points[i].position;
                 Vector3 v = p - localRay.origin;
                 float proj = Vector3.Dot(v, localRay.direction);
-                if (proj < 0 || proj >= minProj) continue;
+                if (proj < 0) continue;
 
                 float currentRadius = localCylinderRadius + proj * localConeAngle;
                 float threshSq = currentRadius * currentRadius;
@@ -384,19 +442,33 @@ public class PointCloudEditor : MonoBehaviour
                 float distSq = (p - closestPointOnRay).sqrMagnitude;
                 if (distSq < threshSq)
                 {
-                    minProj = proj;
-                    bestLocalPoint = p;
-                    found = true;
+                    AddPickCandidate(i, p, proj);
                 }
             }
         }
 
-        if (found)
+        if (pickCandidates.Count == 0) return false;
+
+        // Sort candidates by distance from camera (proj)
+        pickCandidates.Sort((a, b) => a.proj.CompareTo(b.proj));
+
+        // Auto-calculated radius from scale: 0.005f (0.5cm) world-space radius mapped to local-space
+        float pickRadiusLocal = 0.005f / targetRenderer.transform.lossyScale.x;
+
+        for (int i = 0; i < pickCandidates.Count; i++)
         {
-            hitWorldPoint = targetRenderer.transform.TransformPoint(bestLocalPoint);
-            return true;
+            var cand = pickCandidates[i];
+            int neighbors = CountNeighborsInRadius(cand.index, cand.position, pickRadiusLocal, points, positions);
+            if (neighbors >= pickDensityMinCount)
+            {
+                hitWorldPoint = targetRenderer.transform.TransformPoint(cand.position);
+                return true;
+            }
         }
-        return false;
+
+        // Fallback: if all candidate points fail the density filter, pick the frontmost one
+        hitWorldPoint = targetRenderer.transform.TransformPoint(pickCandidates[0].position);
+        return true;
     }
 
     private void TraverseRay(PointCloudOctree.Node node, Ray localRay, float localConeAngle, float localCylinderRadius, ref float minProj, ref Vector3 bestLocalPoint, ref bool found, PointData[] points)
@@ -472,6 +544,137 @@ public class PointCloudEditor : MonoBehaviour
         Vector3 closestPoint = ray.origin + ray.direction * distanceProj;
         float distSq = (center - closestPoint).sqrMagnitude;
         return distSq <= radius * radius;
+    }
+
+    private void TraverseRayCandidates(PointCloudOctree.Node node, Ray localRay, float localConeAngle, float localCylinderRadius, PointData[] points)
+    {
+        if (node == null) return;
+
+        float distanceProjAtCenter = Vector3.Dot(node.center - localRay.origin, localRay.direction);
+        float currentRadiusAtNode = localCylinderRadius + Mathf.Max(0f, distanceProjAtCenter) * localConeAngle;
+        float expandedRadius = node.radius + currentRadiusAtNode;
+
+        float distanceProj;
+        if (!RaySphereIntersect(localRay, node.center, expandedRadius, out distanceProj))
+        {
+            return;
+        }
+
+        // Pruning: if the closest possible point of the sphere is further than the max proj of the candidate list when full
+        float minPossibleProj = distanceProj - expandedRadius;
+        if (pickCandidates.Count >= 100 && minPossibleProj >= GetMaxCandidateProj())
+        {
+            return;
+        }
+
+        foreach (int idx in node.pointIndices)
+        {
+            if ((points[idx].label & 0x20000) != 0) continue;
+
+            Vector3 p = points[idx].position;
+            Vector3 v = p - localRay.origin;
+            float proj = Vector3.Dot(v, localRay.direction);
+            if (proj < 0) continue;
+
+            if (pickCandidates.Count >= 100 && proj >= GetMaxCandidateProj()) continue;
+
+            float currentRadius = localCylinderRadius + proj * localConeAngle;
+            float threshSq = currentRadius * currentRadius;
+
+            Vector3 closestPointOnRay = localRay.origin + localRay.direction * proj;
+            float distSq = (p - closestPointOnRay).sqrMagnitude;
+            if (distSq < threshSq)
+            {
+                AddPickCandidate(idx, p, proj);
+            }
+        }
+
+        if (!node.isLeaf)
+        {
+            for (int i = 0; i < 8; i++)
+            {
+                if (node.children[i] != null)
+                {
+                    TraverseRayCandidates(node.children[i], localRay, localConeAngle, localCylinderRadius, points);
+                }
+            }
+        }
+    }
+
+    private void AddPickCandidate(int index, Vector3 position, float proj)
+    {
+        PickCandidate cand = new PickCandidate { index = index, position = position, proj = proj };
+        if (pickCandidates.Count < 100)
+        {
+            pickCandidates.Add(cand);
+        }
+        else
+        {
+            int maxIdx = 0;
+            float maxProj = pickCandidates[0].proj;
+            for (int i = 1; i < pickCandidates.Count; i++)
+            {
+                if (pickCandidates[i].proj > maxProj)
+                {
+                    maxProj = pickCandidates[i].proj;
+                    maxIdx = i;
+                }
+            }
+            if (proj < maxProj)
+            {
+                pickCandidates[maxIdx] = cand;
+            }
+        }
+    }
+
+    private float GetMaxCandidateProj()
+    {
+        if (pickCandidates.Count == 0) return float.MaxValue;
+        float maxProj = pickCandidates[0].proj;
+        for (int i = 1; i < pickCandidates.Count; i++)
+        {
+            if (pickCandidates[i].proj > maxProj)
+            {
+                maxProj = pickCandidates[i].proj;
+            }
+        }
+        return maxProj;
+    }
+
+    private int CountNeighborsInRadius(int centerIdx, Vector3 localPos, float radius, PointData[] points, Vector3[] positions)
+    {
+        int count = 0;
+        var octree = targetRenderer.Octree;
+        bool useOctree = octree != null && targetRenderer.IsOctreeReady && positions != null;
+
+        if (useOctree)
+        {
+            neighborIndicesCache.Clear();
+            octree.FindPointsWithinRadius(octree.root, localPos, radius, neighborIndicesCache, positions);
+            for (int i = 0; i < neighborIndicesCache.Count; i++)
+            {
+                int idx = neighborIndicesCache[i];
+                if (idx == centerIdx) continue;
+                if ((points[idx].label & 0x20000) != 0) continue;
+                count++;
+            }
+        }
+        else
+        {
+            float rSq = radius * radius;
+            for (int i = 0; i < points.Length; i++)
+            {
+                if (i == centerIdx) continue;
+                if ((points[i].label & 0x20000) != 0) continue;
+
+                float distSq = (points[i].position - localPos).sqrMagnitude;
+                if (distSq <= rSq)
+                {
+                    count++;
+                }
+            }
+        }
+        return count;
     }
 
     // Apply brush selection (Multi-threaded Parallel.For with Octree acceleration)
@@ -1363,6 +1566,7 @@ public class PointCloudEditor : MonoBehaviour
         hitWorldPoint = Vector3.zero;
         PointData[] points = targetRenderer.GetPointData();
         if (points == null || points.Length == 0) return false;
+        Vector3[] positions = targetRenderer.GetPositions();
 
         Matrix4x4 worldToLocal = targetRenderer.transform.worldToLocalMatrix;
         Vector3 localOrigin = worldToLocal.MultiplyPoint(worldRay.origin);
@@ -1388,17 +1592,63 @@ public class PointCloudEditor : MonoBehaviour
             }
         }
 
-        // Search for the nearest point to camera within picking cone (CC-compatible)
-        float minProj = float.MaxValue;
-        bool found = false;
-        int bestIndex = -1;
-
-        var octree = targetRenderer.Octree;
-        bool useOctree = octree != null && targetRenderer.IsOctreeReady;
-
-        if (useOctree)
+        if (!pickDensityEnabled)
         {
-            TraverseRayIndex(octree.root, localRay, localConeAngle, localCylinderRadius, ref minProj, ref bestIndex, ref found, points);
+            // Search for the nearest point to camera within picking cone (CC-compatible)
+            float minProj = float.MaxValue;
+            bool found = false;
+            int bestIndex = -1;
+
+            var octree = targetRenderer.Octree;
+            bool useOctree = octree != null && targetRenderer.IsOctreeReady;
+
+            if (useOctree)
+            {
+                TraverseRayIndex(octree.root, localRay, localConeAngle, localCylinderRadius, ref minProj, ref bestIndex, ref found, points);
+            }
+            else
+            {
+                for (int i = 0; i < points.Length; i++)
+                {
+                    if ((points[i].label & 0x20000) != 0) continue;
+
+                    Vector3 p = points[i].position;
+                    Vector3 v = p - localRay.origin;
+                    float proj = Vector3.Dot(v, localRay.direction);
+                    if (proj < 0 || proj >= minProj) continue;
+
+                    float currentRadius = localCylinderRadius + proj * localConeAngle;
+                    float threshSq = currentRadius * currentRadius;
+
+                    Vector3 closestPointOnRay = localRay.origin + localRay.direction * proj;
+                    float distSq = (p - closestPointOnRay).sqrMagnitude;
+                    if (distSq < threshSq)
+                    {
+                        minProj = proj;
+                        bestIndex = i;
+                        found = true;
+                    }
+                }
+            }
+
+            if (found)
+            {
+                hitIndex = bestIndex;
+                hitWorldPoint = targetRenderer.transform.TransformPoint(points[bestIndex].position);
+                return true;
+            }
+            return false;
+        }
+
+        // Density-based point picking
+        pickCandidates.Clear();
+
+        var octree2 = targetRenderer.Octree;
+        bool useOctree2 = octree2 != null && targetRenderer.IsOctreeReady;
+
+        if (useOctree2)
+        {
+            TraverseRayCandidates(octree2.root, localRay, localConeAngle, localCylinderRadius, points);
         }
         else
         {
@@ -1409,7 +1659,7 @@ public class PointCloudEditor : MonoBehaviour
                 Vector3 p = points[i].position;
                 Vector3 v = p - localRay.origin;
                 float proj = Vector3.Dot(v, localRay.direction);
-                if (proj < 0 || proj >= minProj) continue;
+                if (proj < 0) continue;
 
                 float currentRadius = localCylinderRadius + proj * localConeAngle;
                 float threshSq = currentRadius * currentRadius;
@@ -1418,20 +1668,34 @@ public class PointCloudEditor : MonoBehaviour
                 float distSq = (p - closestPointOnRay).sqrMagnitude;
                 if (distSq < threshSq)
                 {
-                    minProj = proj;
-                    bestIndex = i;
-                    found = true;
+                    AddPickCandidate(i, p, proj);
                 }
             }
         }
 
-        if (found)
+        if (pickCandidates.Count == 0) return false;
+
+        // Sort candidates by distance from camera (proj)
+        pickCandidates.Sort((a, b) => a.proj.CompareTo(b.proj));
+
+        float pickRadiusLocal = 0.005f / targetRenderer.transform.lossyScale.x;
+
+        for (int i = 0; i < pickCandidates.Count; i++)
         {
-            hitIndex = bestIndex;
-            hitWorldPoint = targetRenderer.transform.TransformPoint(points[bestIndex].position);
-            return true;
+            var cand = pickCandidates[i];
+            int neighbors = CountNeighborsInRadius(cand.index, cand.position, pickRadiusLocal, points, positions);
+            if (neighbors >= pickDensityMinCount)
+            {
+                hitIndex = cand.index;
+                hitWorldPoint = targetRenderer.transform.TransformPoint(cand.position);
+                return true;
+            }
         }
-        return false;
+
+        // Fallback: pick the frontmost one
+        hitIndex = pickCandidates[0].index;
+        hitWorldPoint = targetRenderer.transform.TransformPoint(pickCandidates[0].position);
+        return true;
     }
 
     private void TraverseRayIndex(PointCloudOctree.Node node, Ray localRay, float localConeAngle, float localCylinderRadius, ref float minProj, ref int bestIndex, ref bool found, PointData[] points)

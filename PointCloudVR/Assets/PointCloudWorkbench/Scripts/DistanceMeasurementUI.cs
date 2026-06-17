@@ -13,10 +13,9 @@ namespace PointCloudWorkbench
 
         private const float BAR_X = 490f;
         private const float TOP_W = 560f;
-        private const float TOP_H = 205f; // 大きめの計測UI
 
         private GUIStyle panelStyle, titleStyle, hintStyle, labelStyle, lengthStyle;
-        private GUIStyle blockStyle, activeBlockStyle, paletteBlockStyle;
+        private GUIStyle blockStyle, activeBlockStyle, paletteBlockStyle, separatorStyle;
         private bool stylesInitialized = false;
 
         void Start()
@@ -69,7 +68,30 @@ namespace PointCloudWorkbench
             paletteBlockStyle = new GUIStyle(blockStyle) { fontSize = 16 };
             paletteBlockStyle.normal.background = Tex(new Color(0.17f, 0.20f, 0.27f));
 
+            separatorStyle = new GUIStyle();
+            separatorStyle.normal.background = Tex(new Color(0.24f, 0.28f, 0.36f));
+
             stylesInitialized = true;
+        }
+
+        private float GetPanelHeight()
+        {
+            float h = 175f; // Title (32) + Mode Buttons (38) + Length Label (34) + Hint (30) + Margins (41)
+            if (editor != null && editor.MeasurementPointCount > 0)
+            {
+                h += 38f; // Delete Last Point / Reset buttons
+            }
+
+            h += 12f; // Separator & spacing
+            h += 28f; // Section Title
+            h += 28f; // Toggle
+
+            if (editor != null && editor.pickDensityEnabled)
+            {
+                h += 28f; // Neighbor count slider
+            }
+
+            return h;
         }
 
         public void DrawGUI(ref float currentY)
@@ -78,7 +100,7 @@ namespace PointCloudWorkbench
             InitStyles();
 
             float barW = TOP_W;
-            float barH = TOP_H;
+            float barH = GetPanelHeight();
 
             Rect bar = new Rect(BAR_X, currentY, barW, barH);
             GUI.Box(bar, "", panelStyle);
@@ -131,6 +153,28 @@ namespace PointCloudWorkbench
                 {
                     editor.ResetMeasurement();
                 }
+                y += 38f;
+            }
+
+            // Separator
+            y += 4f;
+            GUI.Label(new Rect(x, y, w, 2f), "", separatorStyle);
+            y += 10f;
+
+            // Pick Settings UI
+            GUI.Label(new Rect(x, y, w, 24f), "🎯 ピッキング設定", labelStyle);
+            y += 28f;
+
+            editor.pickDensityEnabled = GUI.Toggle(new Rect(x, y, w, 24f), editor.pickDensityEnabled, " 構造点優先ピッキング（孤立点スキップ）", labelStyle);
+            y += 28f;
+
+            if (editor.pickDensityEnabled)
+            {
+                GUI.Label(new Rect(x, y, 160f, 24f), $"最低近傍点数: {editor.pickDensityMinCount}", labelStyle);
+                float sliderX = x + 160f;
+                float sliderW = w - 160f;
+                float newCount = GUI.HorizontalSlider(new Rect(sliderX, y + 4f, sliderW, 20f), (float)editor.pickDensityMinCount, 1f, 10f);
+                editor.pickDensityMinCount = Mathf.RoundToInt(newCount);
             }
         }
 
@@ -144,3 +188,4 @@ namespace PointCloudWorkbench
         }
     }
 }
+
