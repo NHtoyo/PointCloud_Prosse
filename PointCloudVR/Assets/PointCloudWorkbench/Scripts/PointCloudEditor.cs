@@ -335,8 +335,8 @@ public class PointCloudEditor : MonoBehaviour
         float pickingThreshold = 0.15f; 
         float localThreshold = pickingThreshold / targetRenderer.transform.lossyScale.x;
 
-        // Search for the point closest to the ray (minimum perpendicular distance)
-        float minRayDistSq = float.MaxValue;
+        // Search for the nearest point to camera within picking cylinder (CC-compatible)
+        float minProj = float.MaxValue;
         bool found = false;
         Vector3 bestLocalPoint = Vector3.zero;
 
@@ -347,11 +347,12 @@ public class PointCloudEditor : MonoBehaviour
         if (useOctree)
         {
             // Traverse Octree recursively to find candidate points close to Ray
-            TraverseRay(octree.root, localRay, localThreshold, ref minRayDistSq, ref bestLocalPoint, ref found, points);
+            TraverseRay(octree.root, localRay, localThreshold, ref minProj, ref bestLocalPoint, ref found, points);
         }
         else
         {
             // Fallback to legacy linear search if Octree is still building
+            float threshSq = localThreshold * localThreshold;
             for (int i = 0; i < points.Length; i++)
             {
                 if ((points[i].label & 0x20000) != 0) continue; // skip deleted
@@ -359,13 +360,13 @@ public class PointCloudEditor : MonoBehaviour
                 Vector3 p = points[i].position;
                 Vector3 v = p - localRay.origin;
                 float proj = Vector3.Dot(v, localRay.direction);
-                if (proj < 0) continue;
+                if (proj < 0 || proj >= minProj) continue;
 
                 Vector3 closestPointOnRay = localRay.origin + localRay.direction * proj;
                 float distSq = (p - closestPointOnRay).sqrMagnitude;
-                if (distSq < localThreshold * localThreshold && distSq < minRayDistSq)
+                if (distSq < threshSq)
                 {
-                    minRayDistSq = distSq;
+                    minProj = proj;
                     bestLocalPoint = p;
                     found = true;
                 }
@@ -380,18 +381,27 @@ public class PointCloudEditor : MonoBehaviour
         return false;
     }
 
-    private void TraverseRay(PointCloudOctree.Node node, Ray localRay, float localThreshold, ref float minRayDistSq, ref Vector3 bestLocalPoint, ref bool found, PointData[] points)
+    private void TraverseRay(PointCloudOctree.Node node, Ray localRay, float localThreshold, ref float minProj, ref Vector3 bestLocalPoint, ref bool found, PointData[] points)
     {
         if (node == null) return;
 
         // Ray vs Sphere check (expanded by localThreshold to avoid edge clipping)
         float distanceProj;
-        if (!RaySphereIntersect(localRay, node.center, node.radius + localThreshold, out distanceProj))
+        float expandedRadius = node.radius + localThreshold;
+        if (!RaySphereIntersect(localRay, node.center, expandedRadius, out distanceProj))
+        {
+            return;
+        }
+
+        // Pruning: if the closest possible point of the sphere along the ray is further than minProj, skip
+        float minPossibleProj = distanceProj - expandedRadius;
+        if (minPossibleProj >= minProj)
         {
             return;
         }
 
         // Search points in this node
+        float threshSq = localThreshold * localThreshold;
         foreach (int idx in node.pointIndices)
         {
             if ((points[idx].label & 0x20000) != 0) continue;
@@ -399,13 +409,13 @@ public class PointCloudEditor : MonoBehaviour
             Vector3 p = points[idx].position;
             Vector3 v = p - localRay.origin;
             float proj = Vector3.Dot(v, localRay.direction);
-            if (proj < 0) continue;
+            if (proj < 0 || proj >= minProj) continue;
 
             Vector3 closestPointOnRay = localRay.origin + localRay.direction * proj;
             float distSq = (p - closestPointOnRay).sqrMagnitude;
-            if (distSq < localThreshold * localThreshold && distSq < minRayDistSq)
+            if (distSq < threshSq)
             {
-                minRayDistSq = distSq;
+                minProj = proj;
                 bestLocalPoint = p;
                 found = true;
             }
@@ -418,7 +428,7 @@ public class PointCloudEditor : MonoBehaviour
             {
                 if (node.children[i] != null)
                 {
-                    TraverseRay(node.children[i], localRay, localThreshold, ref minRayDistSq, ref bestLocalPoint, ref found, points);
+                    TraverseRay(node.children[i], localRay, localThreshold, ref minProj, ref bestLocalPoint, ref found, points);
                 }
             }
         }
@@ -1339,8 +1349,8 @@ public class PointCloudEditor : MonoBehaviour
         float pickingThreshold = 0.15f; 
         float localThreshold = pickingThreshold / targetRenderer.transform.lossyScale.x;
 
-        // Search for the point closest to the ray (minimum perpendicular distance)
-        float minRayDistSq = float.MaxValue;
+        // Search for the nearest point to camera within picking cylinder (CC-compatible)
+        float minProj = float.MaxValue;
         bool found = false;
         int bestIndex = -1;
 
@@ -1349,10 +1359,11 @@ public class PointCloudEditor : MonoBehaviour
 
         if (useOctree)
         {
-            TraverseRayIndex(octree.root, localRay, localThreshold, ref minRayDistSq, ref bestIndex, ref found, points);
+            TraverseRayIndex(octree.root, localRay, localThreshold, ref minProj, ref bestIndex, ref found, points);
         }
         else
         {
+            float threshSq = localThreshold * localThreshold;
             for (int i = 0; i < points.Length; i++)
             {
                 if ((points[i].label & 0x20000) != 0) continue;
@@ -1360,13 +1371,13 @@ public class PointCloudEditor : MonoBehaviour
                 Vector3 p = points[i].position;
                 Vector3 v = p - localRay.origin;
                 float proj = Vector3.Dot(v, localRay.direction);
-                if (proj < 0) continue;
+                if (proj < 0 || proj >= minProj) continue;
 
                 Vector3 closestPointOnRay = localRay.origin + localRay.direction * proj;
                 float distSq = (p - closestPointOnRay).sqrMagnitude;
-                if (distSq < localThreshold * localThreshold && distSq < minRayDistSq)
+                if (distSq < threshSq)
                 {
-                    minRayDistSq = distSq;
+                    minProj = proj;
                     bestIndex = i;
                     found = true;
                 }
@@ -1382,16 +1393,25 @@ public class PointCloudEditor : MonoBehaviour
         return false;
     }
 
-    private void TraverseRayIndex(PointCloudOctree.Node node, Ray localRay, float localThreshold, ref float minRayDistSq, ref int bestIndex, ref bool found, PointData[] points)
+    private void TraverseRayIndex(PointCloudOctree.Node node, Ray localRay, float localThreshold, ref float minProj, ref int bestIndex, ref bool found, PointData[] points)
     {
         if (node == null) return;
 
         float distanceProj;
-        if (!RaySphereIntersect(localRay, node.center, node.radius + localThreshold, out distanceProj))
+        float expandedRadius = node.radius + localThreshold;
+        if (!RaySphereIntersect(localRay, node.center, expandedRadius, out distanceProj))
         {
             return;
         }
 
+        // Pruning: if the closest possible point of the sphere along the ray is further than minProj, skip
+        float minPossibleProj = distanceProj - expandedRadius;
+        if (minPossibleProj >= minProj)
+        {
+            return;
+        }
+
+        float threshSq = localThreshold * localThreshold;
         foreach (int idx in node.pointIndices)
         {
             if ((points[idx].label & 0x20000) != 0) continue;
@@ -1399,13 +1419,13 @@ public class PointCloudEditor : MonoBehaviour
             Vector3 p = points[idx].position;
             Vector3 v = p - localRay.origin;
             float proj = Vector3.Dot(v, localRay.direction);
-            if (proj < 0) continue;
+            if (proj < 0 || proj >= minProj) continue;
 
             Vector3 closestPointOnRay = localRay.origin + localRay.direction * proj;
             float distSq = (p - closestPointOnRay).sqrMagnitude;
-            if (distSq < localThreshold * localThreshold && distSq < minRayDistSq)
+            if (distSq < threshSq)
             {
-                minRayDistSq = distSq;
+                minProj = proj;
                 bestIndex = idx;
                 found = true;
             }
@@ -1417,7 +1437,7 @@ public class PointCloudEditor : MonoBehaviour
             {
                 if (node.children[i] != null)
                 {
-                    TraverseRayIndex(node.children[i], localRay, localThreshold, ref minRayDistSq, ref bestIndex, ref found, points);
+                    TraverseRayIndex(node.children[i], localRay, localThreshold, ref minProj, ref bestIndex, ref found, points);
                 }
             }
         }
