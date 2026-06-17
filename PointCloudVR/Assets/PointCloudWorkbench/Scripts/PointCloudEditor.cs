@@ -2310,15 +2310,34 @@ public class PointCloudEditor : MonoBehaviour
         measurePoint2 = hasMeasurePoint2 ? measurementPath.Points[1] : Vector3.zero;
     }
 
+    // スクリーン上で常に一定サイズに見えるワールドサイズを計算するヘルパー
+    // screenSizePx: 目標ピクセル数相当のサイズ
+    float CalcConstantScreenSizeWorld(Vector3 worldPos, float screenSizePx)
+    {
+        Camera cam = Camera.main;
+        if (cam == null) return 0.01f;
+        float dist = Vector3.Distance(cam.transform.position, worldPos);
+        if (cam.orthographic)
+        {
+            return cam.orthographicSize * 2f * screenSizePx / Screen.height;
+        }
+        float halfFovRad = cam.fieldOfView * 0.5f * Mathf.Deg2Rad;
+        float worldPerPixel = 2f * dist * Mathf.Tan(halfFovRad) / Screen.height;
+        return worldPerPixel * screenSizePx;
+    }
+
     public void UpdateMeasureVisuals()
     {
         if (targetRenderer == null) return;
         CreateMeasureVisuals();
         SyncLegacyMeasureFields();
 
-        float scaleX = targetRenderer.transform.lossyScale.x;
-        float markerScale = 0.00025f / Mathf.Max(scaleX, 0.0001f);
         EnsureMeasureMarkerCount(measurementPath.Points.Count);
+
+        // マーカーのワールド座標リストを先に求め、カメラ距離ベースでサイズを決める
+        // 目標: スクリーン上で常に約8px相当の球に見えるサイズ
+        const float markerScreenPx = 8f;
+        const float lineScreenPx   = 1.5f;
 
         for (int i = 0; i < measureMarkers.Count; i++)
         {
@@ -2326,7 +2345,11 @@ public class PointCloudEditor : MonoBehaviour
             if (i < measurementPath.Points.Count)
             {
                 marker.transform.localPosition = measurementPath.Points[i];
-                marker.transform.localScale = Vector3.one * markerScale;
+                Vector3 worldPos = marker.transform.position;
+                float worldSize = CalcConstantScreenSizeWorld(worldPos, markerScreenPx);
+                // localScaleは親(targetRenderer)のlossyScaleの逆数で補正
+                float lossyScale = Mathf.Max(targetRenderer.transform.lossyScale.x, 0.0001f);
+                marker.transform.localScale = Vector3.one * (worldSize / lossyScale);
                 marker.SetActive(true);
             }
             else
@@ -2345,9 +2368,11 @@ public class PointCloudEditor : MonoBehaviour
             }
             measureLine.gameObject.SetActive(true);
 
-            float lineWidth = 0.00008f;
+            // 線の太さもカメラ距離ベースで一定スクリーンサイズに
+            Vector3 midWorld = linePoints[linePoints.Count / 2];
+            float lineWidth = CalcConstantScreenSizeWorld(midWorld, lineScreenPx);
             measureLine.startWidth = lineWidth;
-            measureLine.endWidth = lineWidth;
+            measureLine.endWidth   = lineWidth;
         }
         else
         {
