@@ -82,8 +82,8 @@ namespace PointCloudWorkbench
             if (noiseFilterUI?.Params?.customPipeline == null) return;
             var pl = noiseFilterUI.Params.customPipeline;
 
-            // テキスト入力フィールドにフォーカスがある場合はキー入力を無視する（IMEやBackspaceの競合を回避）
-            if (GUIUtility.keyboardControl != 0) return;
+            // プリセット名入力中のみキー入力を無視する（IMEやBackspaceの競合を回避）
+            if (GUI.GetNameOfFocusedControl() == "PresetNameField") return;
 
             if (selectedBlockIndex >= 0 && selectedBlockIndex < pl.Count)
             {
@@ -180,7 +180,10 @@ namespace PointCloudWorkbench
             var ev = Event.current;
             if (ev.type == EventType.MouseDown && !bar.Contains(ev.mousePosition) && !isPresetPopupOpen)
             {
-                selectedBlockIndex = -1;
+                if (!IsMouseBlockedByContextMenu())
+                {
+                    selectedBlockIndex = -1;
+                }
             }
 
             // 描画した高さ分 currentY を進める (マージン 10f 追加)
@@ -266,6 +269,7 @@ namespace PointCloudWorkbench
         // =========================================================
         private void DrawPalette(Rect bar)
         {
+            if (IsMouseBlockedByContextMenu()) return;
             float px   = bar.x + 5f;
             float py   = bar.y + 4f;
             float bW   = PAL_W - 8f;
@@ -308,6 +312,7 @@ namespace PointCloudWorkbench
         // =========================================================
         private void DrawLane(Rect bar)
         {
+            if (IsMouseBlockedByContextMenu()) return;
             const float p      = 5f;
             const float titleH = 22f;
             const float btnW   = 85f;
@@ -526,6 +531,7 @@ namespace PointCloudWorkbench
         // =========================================================
         private void DrawParamPanel(Rect r)
         {
+            if (IsMouseBlockedByContextMenu()) return;
             var pl = noiseFilterUI?.Params?.customPipeline;
 
             if (pl == null || selectedBlockIndex < 0 || selectedBlockIndex >= pl.Count)
@@ -680,9 +686,26 @@ namespace PointCloudWorkbench
         // =========================================================
         // ユーティリティ
         // =========================================================
+        private bool IsMouseBlockedByContextMenu()
+        {
+            if (!showContextMenu) return false;
+            var ev = Event.current;
+            if (ev == null) return false;
+
+            if (ev.type == EventType.MouseDown ||
+                ev.type == EventType.MouseUp ||
+                ev.type == EventType.MouseDrag ||
+                ev.type == EventType.ScrollWheel)
+            {
+                Rect mr = new Rect(contextMenuPos.x, contextMenuPos.y, 88f, 72f);
+                return mr.Contains(ev.mousePosition);
+            }
+            return false;
+        }
+
         private void EnsurePipeline()
         {
-            if (noiseFilterUI.Params.customPipeline == null || noiseFilterUI.Params.customPipeline.Count == 0)
+            if (noiseFilterUI.Params.customPipeline == null)
                 noiseFilterUI.Params.customPipeline = noiseFilterUI.Params.GetPipeline();
         }
 

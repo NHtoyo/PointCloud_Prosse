@@ -617,9 +617,20 @@ public class PointCloudManager : MonoBehaviour
 
             GUILayout.Label("🔌 ツールパネル表示トグル", textStyle);
             GUILayout.BeginHorizontal();
+            bool prevAnn = editorUIInstance.showAnnotationUI;
+            bool prevNoise = editorUIInstance.showNoiseFilterUI;
+            bool prevMeas = editorUIInstance.showMeasurementUI;
+
             editorUIInstance.showAnnotationUI = GUILayout.Toggle(editorUIInstance.showAnnotationUI, " アノテーションUI", toggleStyle);
             editorUIInstance.showNoiseFilterUI = GUILayout.Toggle(editorUIInstance.showNoiseFilterUI, " モヤ処理UI", toggleStyle);
             editorUIInstance.showMeasurementUI = GUILayout.Toggle(editorUIInstance.showMeasurementUI, " 二点間距離計測UI", toggleStyle);
+
+            if (editorUIInstance.showAnnotationUI != prevAnn || 
+                editorUIInstance.showNoiseFilterUI != prevNoise || 
+                editorUIInstance.showMeasurementUI != prevMeas)
+            {
+                editorUIInstance.SaveSettings();
+            }
             GUILayout.EndHorizontal();
             
             GUILayout.Space(15);

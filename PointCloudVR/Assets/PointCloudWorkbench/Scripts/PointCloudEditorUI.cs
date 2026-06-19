@@ -84,6 +84,10 @@ public class PointCloudEditorUI : MonoBehaviour
         downsampleVoxelSizeStr = PlayerPrefs.GetString("Downsample_VoxelSizeStr", "5.0");
         downsampleInputDir = PlayerPrefs.GetString("Downsample_InputDir", "../PointCloudData");
         downsampleOutputDir = PlayerPrefs.GetString("Downsample_OutputDir", "../PointCloudData/downsample");
+
+        showNoiseFilterUI = PlayerPrefs.GetInt("Show_NoiseFilterUI", 0) == 1;
+        showAnnotationUI = PlayerPrefs.GetInt("Show_AnnotationUI", 1) == 1;
+        showMeasurementUI = PlayerPrefs.GetInt("Show_MeasurementUI", 1) == 1;
     }
 
     public void SaveSettings()
@@ -94,6 +98,10 @@ public class PointCloudEditorUI : MonoBehaviour
         PlayerPrefs.SetString("Downsample_VoxelSizeStr", downsampleVoxelSizeStr);
         PlayerPrefs.SetString("Downsample_InputDir", downsampleInputDir);
         PlayerPrefs.SetString("Downsample_OutputDir", downsampleOutputDir);
+
+        PlayerPrefs.SetInt("Show_NoiseFilterUI", showNoiseFilterUI ? 1 : 0);
+        PlayerPrefs.SetInt("Show_AnnotationUI", showAnnotationUI ? 1 : 0);
+        PlayerPrefs.SetInt("Show_MeasurementUI", showMeasurementUI ? 1 : 0);
         PlayerPrefs.Save();
     }
 
