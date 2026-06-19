@@ -445,20 +445,6 @@ public class PointCloudEditorUI : MonoBehaviour
                 editor.brushSelectMode = false;
             }
             GUILayout.EndHorizontal();
-            
-            // 選択点数の表示を追加
-            if (editor.SelectedPointCount > 0)
-            {
-                GUIStyle countStyle = new GUIStyle(textStyle);
-                countStyle.normal.textColor = new Color(0.1f, 0.8f, 0.4f); // 緑ハイライト
-                countStyle.fontStyle = FontStyle.Bold;
-                GUILayout.Label($"現在の選択点数: {editor.SelectedPointCount:N0} 点", countStyle);
-            }
-            else
-            {
-                GUILayout.Label($"現在の選択点数: {editor.SelectedPointCount:N0} 点", textStyle);
-            }
-
             GUILayout.Space(8);
         }
 
@@ -578,6 +564,20 @@ public class PointCloudEditorUI : MonoBehaviour
         if (foldoutOperations)
         {
             GUILayout.Space(3);
+            
+            // 選択点数の表示をここに常時表示
+            if (editor.SelectedPointCount > 0)
+            {
+                GUIStyle countStyle = new GUIStyle(textStyle);
+                countStyle.normal.textColor = new Color(0.1f, 0.8f, 0.4f); // 緑ハイライト
+                countStyle.fontStyle = FontStyle.Bold;
+                GUILayout.Label($"現在の選択点数: {editor.SelectedPointCount:N0} 点", countStyle);
+            }
+            else
+            {
+                GUILayout.Label($"現在の選択点数: {editor.SelectedPointCount:N0} 点", textStyle);
+            }
+            GUILayout.Space(5);
             GUILayout.BeginHorizontal();
             if (GUILayout.Button("選択クリア", buttonStyle)) editor.ClearSelection();
             if (GUILayout.Button("選択反転", buttonStyle)) editor.InvertSelection();
