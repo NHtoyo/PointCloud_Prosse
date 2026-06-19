@@ -34,6 +34,7 @@ public class PointCloudEditorUI : MonoBehaviour
 
     // Export Dialog Status
     private bool showExportDialog = false;
+    private bool exportOnlySelected = false;
     private Rect exportDialogRect = new Rect(0, 0, 320, 160);
 
     private NoiseFilterUI noiseFilterUI;
@@ -444,6 +445,20 @@ public class PointCloudEditorUI : MonoBehaviour
                 editor.brushSelectMode = false;
             }
             GUILayout.EndHorizontal();
+            
+            // 選択点数の表示を追加
+            if (editor.SelectedPointCount > 0)
+            {
+                GUIStyle countStyle = new GUIStyle(textStyle);
+                countStyle.normal.textColor = new Color(0.1f, 0.8f, 0.4f); // 緑ハイライト
+                countStyle.fontStyle = FontStyle.Bold;
+                GUILayout.Label($"現在の選択点数: {editor.SelectedPointCount:N0} 点", countStyle);
+            }
+            else
+            {
+                GUILayout.Label($"現在の選択点数: {editor.SelectedPointCount:N0} 点", textStyle);
+            }
+
             GUILayout.Space(8);
         }
 
@@ -684,6 +699,13 @@ public class PointCloudEditorUI : MonoBehaviour
         GUILayout.Space(8);
         if (GUILayout.Button("💾 PLYをエクスポート", activeButtonStyle))
         {
+            exportOnlySelected = false;
+            showExportDialog = true;
+        }
+        GUILayout.Space(5);
+        if (GUILayout.Button("💾 選択点のみエクスポート", activeButtonStyle))
+        {
+            exportOnlySelected = true;
             showExportDialog = true;
         }
         GUILayout.Space(5);
@@ -758,7 +780,8 @@ public class PointCloudEditorUI : MonoBehaviour
         {
             exportDialogRect.x = (Screen.width - exportDialogRect.width) / 2f;
             exportDialogRect.y = (Screen.height - exportDialogRect.height) / 2f;
-            exportDialogRect = GUI.Window(999, exportDialogRect, DrawExportDialogWindow, "💾 PLYエクスポート設定", windowStyle);
+            string title = exportOnlySelected ? "💾 選択点PLYエクスポート設定" : "💾 PLYエクスポート設定";
+            exportDialogRect = GUI.Window(999, exportDialogRect, DrawExportDialogWindow, title, windowStyle);
             GUI.BringWindowToFront(999);
         }
     }
@@ -773,13 +796,27 @@ public class PointCloudEditorUI : MonoBehaviour
         if (GUILayout.Button("ASCII (テキスト)", buttonStyle, GUILayout.Height(35)))
         {
             showExportDialog = false;
-            editor.ExportLabeledPoints(false);
+            if (exportOnlySelected)
+            {
+                editor.ExportSelectedPoints(false);
+            }
+            else
+            {
+                editor.ExportLabeledPoints(false);
+            }
         }
         GUILayout.Space(10);
         if (GUILayout.Button("Binary (バイナリ)", buttonStyle, GUILayout.Height(35)))
         {
             showExportDialog = false;
-            editor.ExportLabeledPoints(true);
+            if (exportOnlySelected)
+            {
+                editor.ExportSelectedPoints(true);
+            }
+            else
+            {
+                editor.ExportLabeledPoints(true);
+            }
         }
         GUILayout.EndHorizontal();
         

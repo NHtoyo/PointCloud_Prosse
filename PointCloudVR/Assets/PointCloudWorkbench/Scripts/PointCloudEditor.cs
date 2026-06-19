@@ -69,11 +69,13 @@ public class PointCloudEditor : MonoBehaviour
     private int[] labelCounts = new int[7]; // Legacy placeholder
     private Dictionary<int, int> labelCountsMap = new Dictionary<int, int>();
     private int noiseDeletedCount = 0;
+    private int selectedPointCount = 0;
     private bool statsDirty = true;
     private AnnotationPipelineEditorUI annotationUI;
 
     public Dictionary<int, int> GetLabelCountsMap() => labelCountsMap;
     public int GetNoiseDeletedCount() => noiseDeletedCount;
+    public int SelectedPointCount => selectedPointCount;
 
     // Annotation History (Deep copy labels)
     private Stack<int[]> annotationUndoStack = new Stack<int[]>();
@@ -1092,6 +1094,7 @@ public class PointCloudEditor : MonoBehaviour
 
         labelCountsMap.Clear();
         noiseDeletedCount = 0;
+        selectedPointCount = 0;
 
         // Initialize active classes to ensure 0 counts are shown
         if (annotationUI != null && annotationUI.GetActivePreset() != null)
@@ -1125,6 +1128,12 @@ public class PointCloudEditor : MonoBehaviour
                 {
                     labelCountsMap[classId] = 1;
                 }
+            }
+
+            // 選択状態の点をカウント
+            if ((labelVal & 0x10000) != 0)
+            {
+                selectedPointCount++;
             }
         }
 
@@ -1402,6 +1411,177 @@ public class PointCloudEditor : MonoBehaviour
             catch (System.Exception ex)
             {
                 Debug.LogError($"[PointCloudEditor] Cleaned export failed: {ex.Message}");
+            }
+            finally
+            {
+                finishedExportFlag = true;
+            }
+        });
+    }
+
+    // 選択されている点群（labelに0x10000ビットが立っている点）のみを物理的に抽出したPLYファイルを非同期エクスポート
+    public async Task ExportSelectedPointsAsync(string exportPath, bool asBinary = false, CancellationToken token = default)
+    {
+        PointData[] points = targetRenderer.GetPointData();
+        if (points == null || points.Length == 0)
+        {
+            throw new System.Exception("No points to export!");
+        }
+
+        await Task.Run(() =>
+        {
+            int selectedCount = 0;
+            
+            // Count selected points
+            for (int i = 0; i < points.Length; i++)
+            {
+                if (token.IsCancellationRequested) return;
+                bool isSelected = (points[i].label & 0x10000) != 0;
+                // 削除済み、またはノイズ非表示の点は除外する（選択されていても）
+                bool isDeleted = (points[i].label & 0x20000) != 0;
+                bool isNoiseHidden = (points[i].label & 0x80000) != 0;
+                
+                if (isSelected && !isDeleted && !isNoiseHidden) selectedCount++;
+            }
+
+            if (selectedCount == 0)
+            {
+                throw new System.Exception("エクスポート対象の選択された点が存在しません。");
+            }
+
+            if (asBinary)
+            {
+                using (FileStream fs = new FileStream(exportPath, FileMode.Create, FileAccess.Write))
+                using (BinaryWriter binWriter = new BinaryWriter(fs))
+                {
+                    // PLY Header (ASCII characters)
+                    string header = "ply\n" +
+                                    "format binary_little_endian 1.0\n" +
+                                    $"element vertex {selectedCount}\n" +
+                                    "property float x\n" +
+                                    "property float y\n" +
+                                    "property float z\n" +
+                                    "property uchar red\n" +
+                                    "property uchar green\n" +
+                                    "property uchar blue\n" +
+                                    "property int label\n" +
+                                    "end_header\n";
+                    
+                    byte[] headerBytes = System.Text.Encoding.ASCII.GetBytes(header);
+                    binWriter.Write(headerBytes);
+
+                    int written = 0;
+                    int progressInterval = Mathf.Max(1000, selectedCount / 100);
+
+                    for (int i = 0; i < points.Length; i++)
+                    {
+                        if (token.IsCancellationRequested)
+                        {
+                            binWriter.Close();
+                            if (File.Exists(exportPath)) File.Delete(exportPath);
+                            return;
+                        }
+
+                        int labelVal = points[i].label;
+                        bool isSelected = (labelVal & 0x10000) != 0;
+                        bool isDeleted = (labelVal & 0x20000) != 0;
+                        bool isNoiseHidden = (labelVal & 0x80000) != 0;
+                        if (!isSelected || isDeleted || isNoiseHidden) continue; // skip unselected or noise
+
+                        Vector3 pos = points[i].position;
+                        Color32 col = PointData.UnpackColor(points[i].originalColor);
+                        int classId = labelVal & 0xFF;
+
+                        binWriter.Write(pos.x);
+                        binWriter.Write(pos.y);
+                        binWriter.Write(pos.z);
+                        binWriter.Write(col.r);
+                        binWriter.Write(col.g);
+                        binWriter.Write(col.b);
+                        binWriter.Write(classId);
+
+                        written++;
+                        if (written % progressInterval == 0)
+                        {
+                            PointCloudProgressManager.Instance.Update((float)written / selectedCount, $"選択データを書き出し中... ({written:N0} / {selectedCount:N0} 点)");
+                        }
+                    }
+                }
+            }
+            else
+            {
+                using (StreamWriter writer = new StreamWriter(exportPath))
+                {
+                    // PLY ASCII Header
+                    writer.WriteLine("ply");
+                    writer.WriteLine("format ascii 1.0");
+                    writer.WriteLine($"element vertex {selectedCount}");
+                    writer.WriteLine("property float x");
+                    writer.WriteLine("property float y");
+                    writer.WriteLine("property float z");
+                    writer.WriteLine("property uchar red");
+                    writer.WriteLine("property uchar green");
+                    writer.WriteLine("property uchar blue");
+                    writer.WriteLine("property int label");
+                    writer.WriteLine("end_header");
+
+                    int written = 0;
+                    int progressInterval = Mathf.Max(1000, selectedCount / 100);
+
+                    for (int i = 0; i < points.Length; i++)
+                    {
+                        if (token.IsCancellationRequested)
+                        {
+                            writer.Close();
+                            if (File.Exists(exportPath)) File.Delete(exportPath);
+                            return;
+                        }
+
+                        int labelVal = points[i].label;
+                        bool isSelected = (labelVal & 0x10000) != 0;
+                        bool isDeleted = (labelVal & 0x20000) != 0;
+                        bool isNoiseHidden = (labelVal & 0x80000) != 0;
+                        if (!isSelected || isDeleted || isNoiseHidden) continue; // skip
+
+                        Vector3 pos = points[i].position;
+                        Color32 col = PointData.UnpackColor(points[i].originalColor);
+                        int classId = labelVal & 0xFF;
+
+                        writer.WriteLine($"{pos.x.ToString(CultureInfo.InvariantCulture)} {pos.y.ToString(CultureInfo.InvariantCulture)} {pos.z.ToString(CultureInfo.InvariantCulture)} {col.r} {col.g} {col.b} {classId}");
+                        
+                        written++;
+                        if (written % progressInterval == 0)
+                        {
+                            PointCloudProgressManager.Instance.Update((float)written / selectedCount, $"選択データを書き出し中... ({written:N0} / {selectedCount:N0} 点)");
+                        }
+                    }
+                }
+            }
+        }, token);
+    }
+
+    public void ExportSelectedPoints(bool asBinary = false)
+    {
+        string inputPath = targetRenderer.GetComponent<PointCloudLoader>().GetFilePath();
+        string directory = Path.GetDirectoryName(inputPath);
+        string fileNameWithoutExt = Path.GetFileNameWithoutExtension(inputPath);
+        string exportPath = Path.Combine(directory, $"{fileNameWithoutExt}_selected.ply");
+
+        var pm = PointCloudProgressManager.Instance;
+        pm.Start("選択点PLYファイル書き出し", "書き出しデータ準備中...");
+
+        Debug.Log($"[PointCloudEditor] Starting background selected export to: {exportPath} (Binary: {asBinary})");
+
+        Task.Run(async () =>
+        {
+            try
+            {
+                await ExportSelectedPointsAsync(exportPath, asBinary, pm.CancellationToken);
+                Debug.Log($"[PointCloudEditor] Successfully exported selected PLY to: {exportPath}");
+            }
+            catch (System.Exception ex)
+            {
+                Debug.LogError($"[PointCloudEditor] Export failed: {ex.Message}");
             }
             finally
             {
