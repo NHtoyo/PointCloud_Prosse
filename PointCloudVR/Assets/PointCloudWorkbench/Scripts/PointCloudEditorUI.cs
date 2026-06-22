@@ -375,7 +375,7 @@ public class PointCloudEditorUI : MonoBehaviour
         if (editor.activeTool == PointCloudEditor.EditTool.Brush)
         {
             GUILayout.Label($"🖌 ブラシ半径: {editor.brushRadius:F2} m", textStyle);
-            editor.brushRadius = GUILayout.HorizontalSlider(editor.brushRadius, 0.02f, 2.0f);
+            editor.brushRadius = GUILayout.HorizontalSlider(editor.brushRadius, 0.02f, 0.2f);
             GUILayout.Label("ヒント: [Alt] + ホイールでブラシ半径を変更できます。", textStyle);
             GUILayout.Space(5);
         }

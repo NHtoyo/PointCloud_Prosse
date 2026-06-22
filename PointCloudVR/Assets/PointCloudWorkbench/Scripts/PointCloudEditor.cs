@@ -290,7 +290,7 @@ public class PointCloudEditor : MonoBehaviour
                 float scroll = Input.GetAxis("Mouse ScrollWheel");
                 if (Mathf.Abs(scroll) > 0.01f)
                 {
-                    brushRadius = Mathf.Max(0.01f, brushRadius + scroll * 0.2f);
+                    brushRadius = Mathf.Clamp(brushRadius + scroll * 0.02f, 0.02f, 0.2f);
                 }
             }
 
