@@ -73,6 +73,7 @@ def setup_argparser():
     
     # JSON構成ファイルの指定（優先）
     parser.add_argument("--config_json", default=None, help="パイプラインの順序とパラメータを記述したJSON構成ファイルのパス")
+    parser.add_argument("--deleted_mask", default=None, help="削除済みフラグ配列(deleted_mask.bin)のパス")
     
     parser.add_argument("--filters", nargs="*", choices=["sor", "ror", "dbscan", "density", "cc_noise", "white_haze", "none"], default=None,
                         help="有効にするフィルタのリスト (noneを指定した場合はすべて無効)")
@@ -204,8 +205,23 @@ def run_downsample_mode(points, colors, params, enabled_filters, pipeline, args,
     analysis_count = len(points_ds)
     print(f"ダウンサンプリング完了. 点数: {analysis_count:,} (比率: {analysis_count/original_count:.2%})")
     
+    deleted_mask = None
+    if args.deleted_mask and os.path.exists(args.deleted_mask):
+        print(f"削除済みフラグマスクをロードします: {args.deleted_mask}")
+        # downsampleモード時はオリジナル点のマスクなので、ダウンサンプル点群に対して再度NearestNeighborなどでマッピングする必要がある
+        # しかしダウンサンプル後にフィルタをかける場合、とりあえず今回はダウンサンプル前のマスクをそのまま渡すとサイズエラーになる。
+        # 簡易的にKDTreeで一番近い点のフラグを引き継ぐか、無視するか。
+        # DBSCANのダウンサンプルでは mode == "downsample" は UIから叩かれる場合はないが念の為対応する
+        original_mask = np.fromfile(args.deleted_mask, dtype=np.uint8) == 1
+        if len(original_mask) == original_count:
+            # 簡易マッピング
+            from scipy.spatial import cKDTree
+            tree = cKDTree(points)
+            _, idx = tree.query(points_ds, k=1)
+            deleted_mask = original_mask[idx]
+
     # パイプライン実行
-    results = pipeline.run(points_ds, colors_ds)
+    results = pipeline.run(points_ds, colors_ds, deleted_mask=deleted_mask)
     
     # プレビュー表示用PLY保存
     preview_ply_path = os.path.join(args.output_dir, "preview.ply")
@@ -221,7 +237,16 @@ def run_downsample_mode(points, colors, params, enabled_filters, pipeline, args,
 
 def run_full_mode(points, colors, params, enabled_filters, pipeline, args, original_count):
     print("Full モードで処理を開始します...")
-    results = pipeline.run(points, colors)
+    
+    deleted_mask = None
+    if args.deleted_mask and os.path.exists(args.deleted_mask):
+        print(f"削除済みフラグマスクをロードします: {args.deleted_mask}")
+        deleted_mask = np.fromfile(args.deleted_mask, dtype=np.uint8) == 1
+        if len(deleted_mask) != original_count:
+            print("[Warning] deleted_maskのサイズが点群と一致しません。無視します。")
+            deleted_mask = None
+
+    results = pipeline.run(points, colors, deleted_mask=deleted_mask)
     analysis_count = original_count
     
     if results['dbscan_mode'] == 'downsample':

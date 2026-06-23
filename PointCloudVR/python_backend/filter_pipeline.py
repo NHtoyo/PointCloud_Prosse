@@ -25,7 +25,7 @@ class FilterPipeline:
         self.steps.append(step)
         return self
 
-    def run(self, points: np.ndarray, colors: np.ndarray = None) -> dict:
+    def run(self, points: np.ndarray, colors: np.ndarray = None, deleted_mask: np.ndarray = None) -> dict:
         """
         パイプラインのステップを順に実行し、各フィルタの結果をマージして返します。
         各フィルタは active_points (前段で除外されなかった点群) に対して実行され、
@@ -34,7 +34,10 @@ class FilterPipeline:
         n_points = len(points)
         
         # 全ステップ実行後の出力用配列を準備
-        active_mask = np.ones(n_points, dtype=bool) # 次のフィルタに入力する点
+        if deleted_mask is not None:
+            active_mask = ~deleted_mask
+        else:
+            active_mask = np.ones(n_points, dtype=bool) # 次のフィルタに入力する点
 
         remove_mask_wh = np.zeros(n_points, dtype=bool)
         remove_mask_sor = np.zeros(n_points, dtype=bool)

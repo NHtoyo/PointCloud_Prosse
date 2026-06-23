@@ -308,6 +308,8 @@ namespace PointCloudWorkbench
             var pm = PointCloudProgressManager.Instance;
             pm.Start("空中モヤ・浮遊点ノイズ除去", "Pythonプロセスを準備中...");
 
+            PointData[] points = editor.targetRenderer.GetPointData();
+
             // 非同期でPythonバッチ処理を起動
             Task.Run(async () =>
             {
@@ -318,6 +320,7 @@ namespace PointCloudWorkbench
                         inputPath,
                         outputDir,
                         Params,
+                        points,
                         token
                     );
 

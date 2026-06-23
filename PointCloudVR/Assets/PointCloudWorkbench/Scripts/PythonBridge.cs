@@ -70,6 +70,7 @@ namespace PointCloudWorkbench
             string inputPlyPath, 
             string outputDir, 
             NoiseFilterParams filterParams,
+            PointData[] points,
             CancellationToken cancellationToken = default)
         {
             string pythonPath = GetPythonPath();
@@ -83,8 +84,24 @@ namespace PointCloudWorkbench
             // 出力ディレクトリの作成
             Directory.CreateDirectory(outputDir);
 
+            // 削除済みフラグのマスクを書き出す
+            string deletedMaskPath = Path.Combine(outputDir, "deleted_mask.bin");
+            if (points != null && points.Length > 0)
+            {
+                byte[] deletedMask = new byte[points.Length];
+                for (int i = 0; i < points.Length; i++)
+                {
+                    deletedMask[i] = (points[i].label & 0x20000) != 0 ? (byte)1 : (byte)0;
+                }
+                // 非同期で書き込み
+                using (var fs = new FileStream(deletedMaskPath, FileMode.Create, FileAccess.Write, FileShare.None, 4096, true))
+                {
+                    await fs.WriteAsync(deletedMask, 0, deletedMask.Length, cancellationToken);
+                }
+            }
+
             // 引数の構築
-            string arguments = BuildArguments(scriptPath, inputPlyPath, outputDir, filterParams);
+            string arguments = BuildArguments(scriptPath, inputPlyPath, outputDir, filterParams, deletedMaskPath);
 
             ProcessStartInfo psi = new ProcessStartInfo
             {
@@ -456,7 +473,7 @@ namespace PointCloudWorkbench
         /// NoiseFilterParams オブジェクトから Python スクリプト実行用のコマンドライン引数を構築します。
         /// 同時に、順序と個別パラメータを含んだ JSON 構成ファイルを保存し、引数で渡します。
         /// </summary>
-        private static string BuildArguments(string scriptPath, string inputPlyPath, string outputDir, NoiseFilterParams p)
+        private static string BuildArguments(string scriptPath, string inputPlyPath, string outputDir, NoiseFilterParams p, string deletedMaskPath = null)
         {
             // パイプライン構成JSONの構築
             var pipelineSteps = p.GetPipeline();
@@ -544,6 +561,11 @@ namespace PointCloudWorkbench
             argsBuilder.Append($" --input \"{inputPlyPath}\"");
             argsBuilder.Append($" --output_dir \"{outputDir}\"");
             argsBuilder.Append($" --config_json \"{configJsonPath}\"");
+
+            if (!string.IsNullOrEmpty(deletedMaskPath) && File.Exists(deletedMaskPath))
+            {
+                argsBuilder.Append($" --deleted_mask \"{deletedMaskPath}\"");
+            }
 
             return argsBuilder.ToString();
         }
