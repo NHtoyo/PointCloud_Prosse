@@ -213,12 +213,19 @@ def run_downsample_mode(points, colors, params, enabled_filters, pipeline, args,
         # 簡易的にKDTreeで一番近い点のフラグを引き継ぐか、無視するか。
         # DBSCANのダウンサンプルでは mode == "downsample" は UIから叩かれる場合はないが念の為対応する
         original_mask = np.fromfile(args.deleted_mask, dtype=np.uint8) == 1
-        if len(original_mask) == original_count:
-            # 簡易マッピング
-            from scipy.spatial import cKDTree
-            tree = cKDTree(points)
-            _, idx = tree.query(points_ds, k=1)
-            deleted_mask = original_mask[idx]
+        if len(original_mask) != original_count:
+            print(f"[Warning] deleted_maskのサイズ ({len(original_mask):,}) が点群 ({original_count:,}) と一致しません。足りない分を削除済みとしてパディングします。")
+            if len(original_mask) < original_count:
+                pad_size = original_count - len(original_mask)
+                original_mask = np.pad(original_mask, (0, pad_size), constant_values=True)
+            else:
+                original_mask = original_mask[:original_count]
+
+        # 簡易マッピング
+        from scipy.spatial import cKDTree
+        tree = cKDTree(points)
+        _, idx = tree.query(points_ds, k=1)
+        deleted_mask = original_mask[idx]
 
     # パイプライン実行
     results = pipeline.run(points_ds, colors_ds, deleted_mask=deleted_mask)
@@ -243,8 +250,12 @@ def run_full_mode(points, colors, params, enabled_filters, pipeline, args, origi
         print(f"削除済みフラグマスクをロードします: {args.deleted_mask}")
         deleted_mask = np.fromfile(args.deleted_mask, dtype=np.uint8) == 1
         if len(deleted_mask) != original_count:
-            print("[Warning] deleted_maskのサイズが点群と一致しません。無視します。")
-            deleted_mask = None
+            print(f"[Warning] deleted_maskのサイズ ({len(deleted_mask):,}) が点群 ({original_count:,}) と一致しません。足りない分を削除済みとしてパディングします。")
+            if len(deleted_mask) < original_count:
+                pad_size = original_count - len(deleted_mask)
+                deleted_mask = np.pad(deleted_mask, (0, pad_size), constant_values=True)
+            else:
+                deleted_mask = deleted_mask[:original_count]
 
     results = pipeline.run(points, colors, deleted_mask=deleted_mask)
     analysis_count = original_count
