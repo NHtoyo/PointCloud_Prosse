@@ -328,14 +328,19 @@ public class PointCloudRenderer : MonoBehaviour
         }
     }
 
+    private int octreeBuildVersion = 0;
+
     private void StartOctreeBuild(Vector3[] positions)
     {
+        int currentVersion;
         lock (octreeLock)
         {
             isOctreeReady = false;
             isOctreeBuilding = true;
             hasPendingOctree = false;
             pendingOctree = null;
+            octreeBuildVersion++;
+            currentVersion = octreeBuildVersion;
         }
 
         // Recreate flat index buffer for fallback rendering during build
@@ -353,13 +358,23 @@ public class PointCloudRenderer : MonoBehaviour
 
                 lock (octreeLock)
                 {
-                    pendingOctree = newOctree;
-                    hasPendingOctree = true;
+                    if (currentVersion == octreeBuildVersion)
+                    {
+                        pendingOctree = newOctree;
+                        hasPendingOctree = true;
+                    }
                 }
             }
             catch (System.Exception ex)
             {
                 Debug.LogError($"[PointCloudRenderer] Failed to build Octree in background: {ex.Message}");
+                lock (octreeLock)
+                {
+                    if (currentVersion == octreeBuildVersion)
+                    {
+                        isOctreeBuilding = false;
+                    }
+                }
             }
         });
     }
