@@ -1,6 +1,7 @@
 using System;
 using System.Diagnostics;
 using System.IO;
+using System.Net.Http;
 using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
@@ -85,11 +86,45 @@ namespace PointCloudWorkbench
                 hasPython = await CheckCommandExistsAsync("py", "--version", cancellationToken);
                 if (!hasPython)
                 {
-                    throw new Exception("システムに Python (3.10以上推奨) がインストールされていません。\n" +
-                                        "公式サイト(python.org)からPythonをインストールし、インストール時の画面で\n" +
-                                        "「Add python.exe to PATH (環境変数PATHに追加)」にチェックを入れてからPCを再起動してください。");
+                    // Python が見つからない → 自動でダウンロード・インストール
+                    if (pm != null) pm.Update(0.02f, "Pythonが見つかりません。自動インストール中... (数分かかります)");
+
+                    string installerUrl = "https://www.python.org/ftp/python/3.11.9/python-3.11.9-amd64.exe";
+                    string installerPath = Path.Combine(Path.GetTempPath(), "python_installer.exe");
+
+                    // ダウンロード
+                    using (var client = new System.Net.Http.HttpClient())
+                    {
+                        var data = await client.GetByteArrayAsync(installerUrl);
+                        File.WriteAllBytes(installerPath, data);
+                    }
+
+                    // サイレントインストール（全ユーザー対象・PATH自動追加）
+                    bool installSuccess = await RunCommandAsync(
+                        installerPath,
+                        "/quiet InstallAllUsers=1 PrependPath=1 Include_test=0",
+                        Path.GetTempPath(),
+                        cancellationToken);
+
+                    try { File.Delete(installerPath); } catch { }
+
+                    if (!installSuccess)
+                    {
+                        throw new Exception("Pythonの自動インストールに失敗しました。\n" +
+                                            "https://www.python.org/ から手動でインストールしてください。");
+                    }
+
+                    // インストール後に再確認
+                    hasPython = await CheckCommandExistsAsync("python", "--version", cancellationToken);
+                    if (!hasPython)
+                    {
+                        // PATH反映のためにUnityの再起動が必要な場合がある
+                        throw new Exception("Pythonのインストールは完了しましたが、PATHへの反映にUnityの再起動が必要です。\n" +
+                                            "Unityを一度閉じて再度開いてください。");
+                    }
                 }
                 pythonCommand = "py";
+
             }
 
             // 2. .venv 仮想環境を作成
