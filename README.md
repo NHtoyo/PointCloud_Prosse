@@ -16,20 +16,19 @@ Unity上で数千万点規模の大規模な点群データ（PLY形式等）を
    git clone https://github.com/NHtoyo/PointCloud_Prosse.git
    ```
 
-### Step 2: Pythonのインストール（重要）
-裏で動いているノイズ除去のAI・数理計算システムのためにPythonが必要です。
-1. [Python公式サイト](https://www.python.org/downloads/) から **Python 3.10 以上** のインストーラー（Windows installer (64-bit)）をダウンロードします。
-2. インストーラーを起動します。
-3. **【超重要】** 最初の画面の一番下にある **「Add Python.exe to PATH」というチェックボックスに必ずチェックを入れてください**。これがないとUnityからPythonを呼び出せません。
-4. 「Install Now」をクリックしてインストールを完了します。
-
-### Step 3: Python環境の自動セットアップ
+### Step 2: Python環境の自動セットアップ（Python未インストールでもOK）
 1. Step 1 でダウンロードしたフォルダ（`PointCloud_Prosse`）を開きます。
-2. その中にある **`setup_python_env.bat`** というファイルをダブルクリックして実行します。
-3. 黒い画面（コマンドプロンプト）が立ち上がり、自動的に「仮想環境の構築」と「関連ライブラリ（Open3Dなど）のインストール」が行われます。
-4. `Environment Setup Completed Successfully!` と表示されたら、キーを押して画面を閉じます。
+2. その中にある **`setup_python_env.bat`** をダブルクリックして実行します。
+3. 黒い画面（コマンドプロンプト）が立ち上がり、以下を**すべて自動で**行います：
+   - Python 3.11 が入っていなければ **自動でダウンロード・インストール**
+   - Python 仮想環境（`.venv`）の作成
+   - 必要ライブラリ（Open3D等）のインストール
+4. `Environment Setup Completed Successfully!` と表示されたら完了です。キーを押して閉じてください。
 
-### Step 4: 点群データ（PLYファイル）のコピー
+   > ℹ️ インターネット接続が必要です。インストールには数分かかる場合があります。
+
+### Step 3: 点群データ（PLYファイル）のコピー
+
 点群データはファイルサイズが大きすぎるため、Gitにはアップロードされていません。
 1. 元のPC、またはUSBメモリなどから、読み込ませたい `.ply` データ（または `PointCloudData` フォルダごと）を、新しいPCにコピーしてください（プロジェクトフォルダ内でも外でも構いません）。
 
