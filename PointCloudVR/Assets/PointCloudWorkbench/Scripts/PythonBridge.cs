@@ -60,6 +60,150 @@ namespace PointCloudWorkbench
         }
 
         /// <summary>
+        /// Pythonの実行環境（.venvと必要なライブラリ）が準備できているか確認し、
+        /// なければ自動的にバックグラウンドで構築（python -m venv .venv &amp; pip install）します。
+        /// </summary>
+        public static async Task EnsureEnvironmentReadyAsync(CancellationToken cancellationToken)
+        {
+            string venvPythonPath = Path.Combine(Application.dataPath, "../python_backend/.venv/Scripts/python.exe");
+            if (File.Exists(venvPythonPath))
+            {
+                // .venv の python.exe があれば環境構築済みとみなす
+                return;
+            }
+
+            var pm = PointCloudProgressManager.Instance;
+            if (pm != null) pm.Update(0.01f, "Python環境を検証中...");
+
+            // 1. システムに Python がインストールされているか確認
+            bool hasPython = await CheckCommandExistsAsync("python", "--version", cancellationToken);
+            string pythonCommand = "python";
+
+            if (!hasPython)
+            {
+                // Windows では python ではなく py (Python Launcher) が動く場合もある
+                hasPython = await CheckCommandExistsAsync("py", "--version", cancellationToken);
+                if (!hasPython)
+                {
+                    throw new Exception("システムに Python (3.10以上推奨) がインストールされていません。\n" +
+                                        "公式サイト(python.org)からPythonをインストールし、インストール時の画面で\n" +
+                                        "「Add python.exe to PATH (環境変数PATHに追加)」にチェックを入れてからPCを再起動してください。");
+                }
+                pythonCommand = "py";
+            }
+
+            // 2. .venv 仮想環境を作成
+            if (pm != null) pm.Update(0.05f, "Python仮想環境(.venv)を作成中... (約30秒〜1分)");
+            string pythonBackendDir = Path.GetFullPath(Path.Combine(Application.dataPath, "../python_backend"));
+
+            if (!Directory.Exists(pythonBackendDir))
+            {
+                Directory.CreateDirectory(pythonBackendDir);
+            }
+
+            bool venvSuccess = await RunCommandAsync(pythonCommand, "-m venv .venv", pythonBackendDir, cancellationToken);
+            if (!venvSuccess)
+            {
+                throw new Exception("Python仮想環境 (.venv) の作成に失敗しました。\n" +
+                                    "手動で python_backend フォルダで 'python -m venv .venv' を実行できるか確認してください。");
+            }
+
+            if (!File.Exists(venvPythonPath))
+            {
+                throw new Exception("仮想環境は作成されましたが、python.exe が見つかりませんでした。作成パスが異なる可能性があります。");
+            }
+
+            // 3. ライブラリのインストール
+            if (pm != null) pm.Update(0.3f, "依存ライブラリをインストール中... (約1分〜2分)\n(Open3D, numpy, scipy等)");
+            string pipPath = Path.Combine(pythonBackendDir, ".venv/Scripts/pip.exe");
+            if (!File.Exists(pipPath))
+            {
+                pipPath = Path.Combine(pythonBackendDir, ".venv/Scripts/pip");
+            }
+
+            string reqPath = Path.Combine(pythonBackendDir, "requirements.txt");
+            bool pipSuccess;
+            if (!File.Exists(reqPath))
+            {
+                pipSuccess = await RunCommandAsync(pipPath, "install open3d numpy scipy fastapi uvicorn pydantic", pythonBackendDir, cancellationToken);
+            }
+            else
+            {
+                pipSuccess = await RunCommandAsync(pipPath, "install -r requirements.txt", pythonBackendDir, cancellationToken);
+            }
+
+            if (!pipSuccess)
+            {
+                throw new Exception("pipによるライブラリのインストールに失敗しました。インターネット接続を確認してください。");
+            }
+
+            if (pm != null) pm.Update(0.99f, "Python環境の自動セットアップが完了しました！");
+            await Task.Delay(1000);
+        }
+
+        private static async Task<bool> CheckCommandExistsAsync(string command, string arguments, CancellationToken cancellationToken)
+        {
+            try
+            {
+                ProcessStartInfo psi = new ProcessStartInfo
+                {
+                    FileName = command,
+                    Arguments = arguments,
+                    UseShellExecute = false,
+                    CreateNoWindow = true,
+                    RedirectStandardOutput = true,
+                    RedirectStandardError = true
+                };
+                using (Process p = Process.Start(psi))
+                {
+                    if (p == null) return false;
+                    await Task.Run(() => p.WaitForExit(), cancellationToken);
+                    return p.ExitCode == 0;
+                }
+            }
+            catch
+            {
+                return false;
+            }
+        }
+
+        private static async Task<bool> RunCommandAsync(string command, string arguments, string workingDir, CancellationToken cancellationToken)
+        {
+            try
+            {
+                ProcessStartInfo psi = new ProcessStartInfo
+                {
+                    FileName = command,
+                    Arguments = arguments,
+                    WorkingDirectory = workingDir,
+                    UseShellExecute = false,
+                    CreateNoWindow = true,
+                    RedirectStandardOutput = true,
+                    RedirectStandardError = true
+                };
+                using (Process p = Process.Start(psi))
+                {
+                    if (p == null) return false;
+
+                    p.OutputDataReceived += (s, e) => { if (e.Data != null) UnityEngine.Debug.Log($"[Env Setup] {e.Data}"); };
+                    p.ErrorDataReceived += (s, e) => { if (e.Data != null) UnityEngine.Debug.LogWarning($"[Env Setup Warn] {e.Data}"); };
+
+                    p.BeginOutputReadLine();
+                    p.BeginErrorReadLine();
+
+                    await Task.Run(() => p.WaitForExit(), cancellationToken);
+                    return p.ExitCode == 0;
+                }
+            }
+            catch (Exception ex)
+            {
+                UnityEngine.Debug.LogError($"[Env Setup Exception] {ex.Message}");
+                return false;
+            }
+        }
+
+
+        /// <summary>
         /// 繝舌ャ繧ｯ繧ｰ繝ｩ繧ｦ繝ｳ繝峨繝ｭ繧ｻ繧ｹ縺ｧ繝弱う繧ｺ髯､蜴ｻ繧ｹ繧ｯ繝ｪ繝励ヨ繧帝撼蜷梧悄螳溯｡後＠縲∝ｮ御ｺｾ後↓邨先棡繧ｪ繝悶ず繧ｧ繧ｯ繝医ｒ霑斐＠縺ｾ縺吶€
         /// </summary>
         /// <param name="inputPlyPath">蜈･蜉娜LY轤ｹ鄒､縺ｮ繝代せ</param>
