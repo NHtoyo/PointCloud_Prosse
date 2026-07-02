@@ -1120,9 +1120,15 @@ public class PointCloudEditorUI : MonoBehaviour
 
     private void ExecuteDownsampling()
     {
+        if (!System.IO.File.Exists("config/scale_calibration_report.json"))
+        {
+            UnityEngine.Debug.LogError("スケール校正ファイルが見つかりません。先に「スケール校正を実行」ボタンから、実寸合わせを行ってください。");
+            return;
+        }
+
         if (!float.TryParse(downsampleVoxelSizeStr, System.Globalization.NumberStyles.Any, System.Globalization.CultureInfo.InvariantCulture, out float parsedVoxelSize))
         {
-            UnityEngine.Debug.LogError("ボクセルサイズが有効な数値ではありません。");
+            UnityEngine.Debug.LogError("ダウンサンプリング間隔が有効な数値ではありません。");
             return;
         }
 
