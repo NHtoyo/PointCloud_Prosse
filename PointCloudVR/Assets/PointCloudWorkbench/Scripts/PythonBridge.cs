@@ -73,6 +73,8 @@ namespace PointCloudWorkbench
             PointData[] points,
             CancellationToken cancellationToken = default)
         {
+            await EnsureEnvironmentReadyAsync(cancellationToken);
+
             string pythonPath = GetPythonPath();
             string scriptPath = GetScriptPath();
 
@@ -250,6 +252,8 @@ namespace PointCloudWorkbench
             string outputJsonPath = "config/scale_calibration_report.json",
             CancellationToken cancellationToken = default)
         {
+            await EnsureEnvironmentReadyAsync(cancellationToken);
+
             string pythonPath = GetPythonPath();
             string scriptPath = GetScaleCalibScriptPath();
 
