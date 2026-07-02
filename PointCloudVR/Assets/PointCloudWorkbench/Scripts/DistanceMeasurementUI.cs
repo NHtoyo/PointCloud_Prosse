@@ -11,8 +11,9 @@ namespace PointCloudWorkbench
         private PointCloudEditor editor;
         private PointCloudEditorUI editorUI;
 
-        private const float BAR_X = 490f;
-        private const float TOP_W = 560f;
+        private float BAR_X => Mathf.Min(460f, Screen.width * 0.25f) + 30f;
+        private float RIGHT_W => Mathf.Min(460f, Screen.width * 0.25f) + 20f;
+        private float TOP_W => Screen.width - BAR_X - RIGHT_W - 30f;
 
         private GUIStyle panelStyle, titleStyle, hintStyle, labelStyle, lengthStyle;
         private GUIStyle blockStyle, activeBlockStyle, paletteBlockStyle, separatorStyle;

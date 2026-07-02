@@ -492,9 +492,9 @@ public class PointCloudManager : MonoBehaviour
     {
         InitializeStyles();
 
-        // 460x930 size control window on the right side of the screen (height increased to match left UI and fit new sections)
-        float width = 460f;
-        float height = 930f;
+        // 画面幅に応じてパネル幅を動的に決定（最大460、画面幅の25%を超えない）
+        float width = Mathf.Min(460f, Screen.width * 0.25f);
+        float height = Mathf.Min(930f, Screen.height - 40f);
         float posX = Screen.width - width - 20f;
         float posY = 20f;
  

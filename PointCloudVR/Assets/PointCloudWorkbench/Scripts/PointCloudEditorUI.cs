@@ -308,13 +308,18 @@ public class PointCloudEditorUI : MonoBehaviour
         float mouseX = Input.mousePosition.x;
         float mouseY = Input.mousePosition.y;
         
-        // Pipeline bar: X=490〜(Screen.width-480), Y=15〜315
-        bool overPipelineBar = (mouseX >= 490f && mouseX <= Screen.width - 480f
+        float sideWidth = Mathf.Min(460f, Screen.width * 0.25f);
+        float barX = sideWidth + 30f;
+        float rightW = sideWidth + 20f;
+        float barMaxX = Screen.width - rightW;
+        
+        // Pipeline bar
+        bool overPipelineBar = (mouseX >= barX && mouseX <= barMaxX
                              && mouseY >= Screen.height - 315f && mouseY <= Screen.height - 15f);
         
-        // Shipped panel bounds (Left Panel: 460w/930h, Right Panel: 460w/930h)
-        bool overLeftUI = (mouseX >= 10f && mouseX <= 480f && mouseY >= (Screen.height - 950f) && mouseY <= (Screen.height - 20f));
-        bool overRightUI = (mouseX >= Screen.width - 480f && mouseX <= Screen.width - 10f && mouseY >= (Screen.height - 950f) && mouseY <= (Screen.height - 20f));
+        // Left Panel & Right Panel bounds
+        bool overLeftUI = (mouseX >= 10f && mouseX <= sideWidth + 20f && mouseY >= (Screen.height - 950f) && mouseY <= (Screen.height - 20f));
+        bool overRightUI = (mouseX >= Screen.width - rightW && mouseX <= Screen.width - 10f && mouseY >= (Screen.height - 950f) && mouseY <= (Screen.height - 20f));
         return overPipelineBar || overLeftUI || overRightUI;
     }
 
@@ -326,12 +331,14 @@ public class PointCloudEditorUI : MonoBehaviour
         PointData[] points = editor.targetRenderer.GetPointData();
         int totalPoints = points != null ? points.Length : 0;
 
-        float width = 460f;
-        float height = 930f;
+        // 画面幅に応じてパネル幅を動的に決定（最大460、画面幅の25%を超えない）
+        float width = Mathf.Min(460f, Screen.width * 0.25f);
+        float height = Mathf.Min(930f, Screen.height - 40f);
         float posX = 20f;
         float posY = 20f;
 
         GUILayout.BeginArea(new Rect(posX, posY, width, height), windowStyle);
+
 
         GUILayout.Label("🛠 植物点群アノテーションパネル", headerStyle);
         GUILayout.Box("", GUILayout.Height(2));

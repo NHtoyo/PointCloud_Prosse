@@ -37,8 +37,8 @@ namespace PointCloudWorkbench
         private Rect presetPopupRect;
 
         // UI設定 (パラメータパネルを廃止して高さはTOP_Hのみ)
-        private const float BAR_X = 490f;
-        private const float RIGHT_W = 480f;
+        private float BAR_X => Mathf.Min(460f, Screen.width * 0.25f) + 30f;
+        private float RIGHT_W => Mathf.Min(460f, Screen.width * 0.25f) + 20f;
         private const float PAL_W = 200f; // 左カラムの幅を200fに広げて文字サイズ拡大に対応
         private const float TOP_H = 160f;
 
