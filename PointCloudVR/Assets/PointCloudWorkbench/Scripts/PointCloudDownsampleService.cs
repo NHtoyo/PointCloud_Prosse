@@ -30,13 +30,19 @@ namespace PointCloudWorkbench
 
     public static class PointCloudDownsampleService
     {
-        public static DownsamplePaths BuildPaths(string inputPath)
+        /// <summary>
+        /// ボクセルサイズ（mm単位）を含んだダウンサンプリングパスを構築します。
+        /// </summary>
+        public static DownsamplePaths BuildPaths(string inputPath, float voxelSizeMm = 0f)
         {
             string baseDirectory = GetBaseDirectory(inputPath);
             string cleanBaseName = GetCleanBaseName(inputPath);
-            string outputDirectory = Path.Combine(baseDirectory, "downsample");
+            // 出力先は元データと同じフォルダ（サブフォルダなし）
+            string outputDirectory = baseDirectory;
             string temporaryLabeledPath = Path.Combine(baseDirectory, $"{cleanBaseName}_labeled.ply");
-            string combinedOutputPath = Path.Combine(outputDirectory, $"{cleanBaseName}_labeled_downsampled.ply");
+            // ファイル名にボクセルサイズを明記（例: leaf_ds5.0mm.ply）
+            string sizeTag = voxelSizeMm > 0f ? $"_ds{voxelSizeMm:0.#}mm" : "_downsampled";
+            string combinedOutputPath = Path.Combine(outputDirectory, $"{cleanBaseName}{sizeTag}.ply");
 
             return new DownsamplePaths(
                 inputPath,
@@ -49,7 +55,8 @@ namespace PointCloudWorkbench
 
         public static string GetLoaderRelativePath(string downsampledPath)
         {
-            return $"downsample/{Path.GetFileName(downsampledPath)}";
+            // 出力先がPointCloudData直下になったため、ファイル名のみ返す
+            return Path.GetFileName(downsampledPath);
         }
 
         private static string GetBaseDirectory(string inputPath)

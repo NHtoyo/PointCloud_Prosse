@@ -76,6 +76,7 @@ public class PointCloudEditorUI : MonoBehaviour
     private volatile bool downsampleFinishedFlag = false;
     private volatile bool downsampleFailedFlag = false;
     private volatile string downsampleErrorMessage = "";
+    private float lastDownsampleVoxelSize = 0f; // 自動ロード時のファイル名解決に使用
 
     public void LoadSettings()
     {
@@ -181,7 +182,7 @@ public class PointCloudEditorUI : MonoBehaviour
                 var loader = editor.targetRenderer.GetComponent<PointCloudLoader>();
                 if (loader != null)
                 {
-                    DownsamplePaths paths = PointCloudDownsampleService.BuildPaths(loader.GetFilePath());
+                    DownsamplePaths paths = PointCloudDownsampleService.BuildPaths(loader.GetFilePath(), lastDownsampleVoxelSize);
                     string downsampledPath = paths.CombinedOutputPath;
 
                     if (System.IO.File.Exists(downsampledPath))
@@ -1131,7 +1132,8 @@ public class PointCloudEditorUI : MonoBehaviour
             return;
         }
 
-        DownsamplePaths paths = PointCloudDownsampleService.BuildPaths(loader.GetFilePath());
+        lastDownsampleVoxelSize = parsedVoxelSize;
+        DownsamplePaths paths = PointCloudDownsampleService.BuildPaths(loader.GetFilePath(), parsedVoxelSize);
 
         var pm = PointCloudProgressManager.Instance;
         pm.Start("ダウンサンプリング", "最新のアノテーション状態を一時保存中...");
