@@ -26,7 +26,8 @@ PointCloudVR/[Uu]serSettings/
 /UnityEditor/
 /OculusSetup.exe
 /MetaQuestLink_Install.lnk
-/PointCloudData/
+PointCloudData/**
+!PointCloudData/.gitkeep
 /*.ply
 /*.log
 /vs/
