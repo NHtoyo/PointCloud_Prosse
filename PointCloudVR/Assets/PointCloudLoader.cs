@@ -17,6 +17,9 @@ public class PointCloudLoader : MonoBehaviour
     public bool useExternalPath = true;
     public string externalFolderPath = "";
     public string CurrentFilePath { get; private set; } = "";
+    public int SuccessfulLoadRevision { get; private set; }
+    public event System.Func<string, bool> PointCloudChanging;
+    public event System.Action<string> PointCloudLoaded;
 
     [Header("Import Controls")]
     [Tooltip("Maximum points to load to prevent memory issues")]
@@ -151,7 +154,6 @@ public class PointCloudLoader : MonoBehaviour
         stopwatch.Start();
 
         Debug.Log($"[PointCloudLoader] Loading file: {filePath}");
-        CurrentFilePath = filePath;
         string extension = Path.GetExtension(filePath).ToLower();
 
         PointData[] loadedPoints = null;
@@ -172,12 +174,29 @@ public class PointCloudLoader : MonoBehaviour
             Debug.Log($"[PointCloudLoader] Loaded {loadedPoints.Length} points in {stopwatch.ElapsedMilliseconds} ms.");
             if (targetRenderer != null)
             {
+                if (!CanChangePointCloud(filePath))
+                {
+                    Debug.LogWarning("[PointCloudLoader] Point-cloud change canceled because pending measurement data could not be saved.");
+                    return;
+                }
+
+                CurrentFilePath = filePath;
                 targetRenderer.SetPointCloudData(loadedPoints);
                 // Apply scale calibration automatically after loading
                 PointCloudManager manager = Object.FindAnyObjectByType<PointCloudManager>();
                 if (manager != null)
                 {
                     manager.ApplyScaleCalibration();
+                }
+
+                SuccessfulLoadRevision++;
+                try
+                {
+                    PointCloudLoaded?.Invoke(filePath);
+                }
+                catch (System.Exception ex)
+                {
+                    Debug.LogError($"[PointCloudLoader] Point-cloud loaded listener failed: {ex.Message}");
                 }
             }
             else
@@ -189,6 +208,26 @@ public class PointCloudLoader : MonoBehaviour
         {
             Debug.LogWarning("[PointCloudLoader] No points loaded from file.");
         }
+    }
+
+    private bool CanChangePointCloud(string filePath)
+    {
+        if (PointCloudChanging == null) return true;
+
+        System.Delegate[] callbacks = PointCloudChanging.GetInvocationList();
+        for (int i = 0; i < callbacks.Length; i++)
+        {
+            try
+            {
+                if (!((System.Func<string, bool>)callbacks[i])(filePath)) return false;
+            }
+            catch (System.Exception ex)
+            {
+                Debug.LogError($"[PointCloudLoader] Point-cloud change listener failed: {ex.Message}");
+                return false;
+            }
+        }
+        return true;
     }
 
     private PointData[] ParsePLY(string path)

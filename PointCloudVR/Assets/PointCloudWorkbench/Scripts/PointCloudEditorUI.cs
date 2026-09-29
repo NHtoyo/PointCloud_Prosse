@@ -1139,14 +1139,18 @@ public class PointCloudEditorUI : MonoBehaviour
         }
 
         var loader = editor.targetRenderer.GetComponent<PointCloudLoader>();
-        if (loader == null || string.IsNullOrEmpty(loader.GetFilePath()))
+        string loadedPath = loader != null && !string.IsNullOrEmpty(loader.CurrentFilePath)
+            ? loader.CurrentFilePath
+            : (loader != null ? loader.GetFilePath() : "");
+        if (loader == null || string.IsNullOrEmpty(loadedPath))
         {
             UnityEngine.Debug.LogError("ロードされた点群ファイルが見つかりません。");
             return;
         }
 
         lastDownsampleVoxelSize = parsedVoxelSize;
-        DownsamplePaths paths = PointCloudDownsampleService.BuildPaths(loader.GetFilePath(), parsedVoxelSize);
+        DownsamplePaths paths = PointCloudDownsampleService.BuildPaths(loadedPath, parsedVoxelSize);
+        MeasurementDocument measurementSnapshot = editor.CreateMeasurementSnapshotForExport();
 
         var pm = PointCloudProgressManager.Instance;
         pm.Start("ダウンサンプリング", "最新のアノテーション状態を一時保存中...");
@@ -1176,6 +1180,10 @@ public class PointCloudEditorUI : MonoBehaviour
 
                 if (!token.IsCancellationRequested && success)
                 {
+                    if (measurementSnapshot != null && System.IO.File.Exists(paths.CombinedOutputPath))
+                    {
+                        MeasurementDocumentStore.WriteDerivedSidecar(paths.CombinedOutputPath, measurementSnapshot);
+                    }
                     downsampleFinishedFlag = true;
                 }
             }

@@ -1,98 +1,87 @@
+using System.Collections.Generic;
 using UnityEngine;
 
 namespace PointCloudWorkbench
 {
-    /// <summary>
-    /// 2点間距離計測専用のコンパクトパネル UI
-    /// アノテーションUI・モヤ処理UIの下に連結され、上のUIが閉じると上に詰まる連鎖式UIとして実装。
-    /// </summary>
+    /// <summary>計測オブジェクトの作成、一覧、編集を行うパネル。</summary>
     public class DistanceMeasurementUI : MonoBehaviour
     {
         private PointCloudEditor editor;
         private PointCloudEditorUI editorUI;
+        private Vector2 contentScroll;
+        private Vector2 listScroll;
+        private Vector2 pointScroll;
+        private Rect lastPanelRect;
+        private string renameTargetId = "";
+        private string renameText = "";
+        private GUIStyle panelStyle;
+        private GUIStyle titleStyle;
+        private GUIStyle labelStyle;
+        private GUIStyle hintStyle;
+        private GUIStyle buttonStyle;
+        private GUIStyle selectedButtonStyle;
+        private GUIStyle statusStyle;
+        private readonly List<Texture2D> styleTextures = new List<Texture2D>();
+        private bool stylesInitialized;
 
-        private float BAR_X => Mathf.Min(460f, Screen.width * 0.25f) + 30f;
-        private float RIGHT_W => Mathf.Min(460f, Screen.width * 0.25f) + 20f;
-        private float TOP_W => Screen.width - BAR_X - RIGHT_W - 30f;
+        private float BarX => Mathf.Min(460f, Screen.width * 0.25f) + 30f;
+        private float AvailableWidth => Screen.width - BarX - Mathf.Min(480f, Screen.width * 0.25f) - 30f;
 
-        private GUIStyle panelStyle, titleStyle, hintStyle, labelStyle, lengthStyle;
-        private GUIStyle blockStyle, activeBlockStyle, paletteBlockStyle, separatorStyle;
-        private bool stylesInitialized = false;
-
-        void Start()
+        private void Start()
         {
             editor = GetComponent<PointCloudEditor>();
             editorUI = GetComponent<PointCloudEditorUI>();
         }
 
-        void Update()
+        private void OnDestroy()
         {
-            if (editor == null || editorUI == null) return;
-            if (!editorUI.showMeasurementUI) return;
-
-            if (editor.activeTool != PointCloudEditor.EditTool.Measure)
+            for (int i = 0; i < styleTextures.Count; i++)
             {
-                editor.activeTool = PointCloudEditor.EditTool.Measure;
+                if (styleTextures[i] != null) Destroy(styleTextures[i]);
             }
+        }
+
+        public bool IsMouseOverPanel()
+        {
+            if (editorUI != null && !editorUI.showMeasurementUI) return false;
+            Vector3 mouse = Input.mousePosition;
+            mouse.y = Screen.height - mouse.y;
+            return lastPanelRect.Contains(mouse);
+        }
+
+        private Texture2D MakeTexture(Color color)
+        {
+            var texture = new Texture2D(1, 1);
+            texture.SetPixel(0, 0, color);
+            texture.Apply();
+            styleTextures.Add(texture);
+            return texture;
         }
 
         private void InitStyles()
         {
             if (stylesInitialized) return;
 
-            Texture2D Tex(Color c) { var t = new Texture2D(1, 1); t.SetPixel(0, 0, c); t.Apply(); return t; }
-
             panelStyle = new GUIStyle(GUI.skin.box);
-            panelStyle.normal.background = Tex(new Color(0.09f, 0.11f, 0.15f, 0.97f));
+            panelStyle.normal.background = MakeTexture(new Color(0.08f, 0.10f, 0.14f, 0.98f));
             panelStyle.border = new RectOffset(1, 1, 1, 1);
+            panelStyle.padding = new RectOffset(12, 12, 8, 8);
 
             titleStyle = new GUIStyle(GUI.skin.label) { fontSize = 22, fontStyle = FontStyle.Bold };
             titleStyle.normal.textColor = new Color(0.22f, 0.80f, 1f);
-
-            hintStyle = new GUIStyle(GUI.skin.label) { fontSize = 16, fontStyle = FontStyle.Bold };
-            hintStyle.normal.textColor = new Color(0.55f, 0.55f, 0.62f);
-
             labelStyle = new GUIStyle(GUI.skin.label) { fontSize = 16, fontStyle = FontStyle.Bold };
-            labelStyle.normal.textColor = new Color(0.88f, 0.88f, 0.92f);
+            labelStyle.normal.textColor = new Color(0.9f, 0.92f, 0.96f);
+            hintStyle = new GUIStyle(GUI.skin.label) { fontSize = 14, wordWrap = true };
+            hintStyle.normal.textColor = new Color(0.67f, 0.72f, 0.8f);
+            statusStyle = new GUIStyle(hintStyle) { fontSize = 13 };
+            statusStyle.normal.textColor = new Color(0.65f, 0.84f, 0.9f);
 
-            lengthStyle = new GUIStyle(GUI.skin.label) { fontSize = 21, fontStyle = FontStyle.Bold };
-            lengthStyle.normal.textColor = Color.white;
-
-            blockStyle = new GUIStyle(GUI.skin.button) { fontSize = 17, fontStyle = FontStyle.Bold };
-            blockStyle.normal.textColor = Color.white;
-            blockStyle.normal.background = Tex(new Color(0.24f, 0.28f, 0.36f));
-            blockStyle.wordWrap = false;
-
-            activeBlockStyle = new GUIStyle(blockStyle);
-            activeBlockStyle.normal.background = Tex(new Color(0.1f, 0.55f, 0.28f)); // Green highlight
-
-            paletteBlockStyle = new GUIStyle(blockStyle) { fontSize = 16 };
-            paletteBlockStyle.normal.background = Tex(new Color(0.17f, 0.20f, 0.27f));
-
-            separatorStyle = new GUIStyle();
-            separatorStyle.normal.background = Tex(new Color(0.24f, 0.28f, 0.36f));
-
+            buttonStyle = new GUIStyle(GUI.skin.button) { fontSize = 15, fontStyle = FontStyle.Bold, wordWrap = true };
+            buttonStyle.normal.textColor = Color.white;
+            buttonStyle.normal.background = MakeTexture(new Color(0.2f, 0.24f, 0.31f));
+            selectedButtonStyle = new GUIStyle(buttonStyle);
+            selectedButtonStyle.normal.background = MakeTexture(new Color(0.08f, 0.48f, 0.28f));
             stylesInitialized = true;
-        }
-
-        private float GetPanelHeight()
-        {
-            float h = 175f; // Title (32) + Mode Buttons (38) + Length Label (34) + Hint (30) + Margins (41)
-            if (editor != null && editor.MeasurementPointCount > 0)
-            {
-                h += 38f; // Delete Last Point / Reset buttons
-            }
-
-            h += 12f; // Separator & spacing
-            h += 28f; // Section Title
-            h += 28f; // Toggle
-
-            if (editor != null && editor.pickDensityEnabled)
-            {
-                h += 28f; // Neighbor count slider
-            }
-
-            return h;
         }
 
         public void DrawGUI(ref float currentY)
@@ -100,93 +89,243 @@ namespace PointCloudWorkbench
             if (editor == null || editorUI == null) return;
             InitStyles();
 
-            float barW = TOP_W;
-            float barH = GetPanelHeight();
+            float barW = Mathf.Min(Mathf.Max(430f, AvailableWidth), Screen.width - 30f);
+            float barX = Mathf.Clamp(BarX + (AvailableWidth - barW) * 0.5f, 15f, Screen.width - barW - 15f);
+            float barH = Mathf.Min(460f, Mathf.Max(220f, Screen.height - currentY - 18f));
+            lastPanelRect = new Rect(barX, currentY, barW, barH);
+            GUI.Box(lastPanelRect, GUIContent.none, panelStyle);
 
-            Rect bar = new Rect(BAR_X, currentY, barW, barH);
-            GUI.Box(bar, "", panelStyle);
-
-            DrawMeasurementSection(new Rect(bar.x + 10f, bar.y + 8f, bar.width - 20f, bar.height - 16f));
+            Rect contentRect = new Rect(lastPanelRect.x + 10f, lastPanelRect.y + 7f, lastPanelRect.width - 20f, lastPanelRect.height - 14f);
+            GUILayout.BeginArea(contentRect);
+            contentScroll = GUILayout.BeginScrollView(contentScroll, false, true);
+            DrawContent();
+            GUILayout.EndScrollView();
+            GUILayout.EndArea();
 
             currentY += barH + 10f;
         }
 
-        private void DrawMeasurementSection(Rect r)
+        private void DrawContent()
         {
-            float x = r.x;
-            float y = r.y;
-            float w = r.width;
+            GUILayout.BeginHorizontal();
+            GUILayout.Label("距離計測", titleStyle, GUILayout.ExpandWidth(true));
+            GUILayout.Label($"保存済み: {editor.MeasurementRecords.Count}", hintStyle, GUILayout.Width(115f));
+            GUILayout.EndHorizontal();
 
-            GUI.Label(new Rect(x, y, w, 28f), "📏 距離計測", titleStyle);
-            y += 32f;
-
-            float modeW = (w - 8f) / 3f;
-            DrawModeButton(new Rect(x, y, modeW, 32f), "2点", PointCloudEditor.MeasurementMode.TwoPoint);
-            DrawModeButton(new Rect(x + modeW + 4f, y, modeW, 32f), "折れ線", PointCloudEditor.MeasurementMode.Polyline);
-            DrawModeButton(new Rect(x + (modeW + 4f) * 2f, y, modeW, 32f), "曲線", PointCloudEditor.MeasurementMode.SmoothCurve);
-            y += 38f;
-
-            // 計測距離の表示（unitおよびmm併記）
-            float localDist = editor.GetMeasurementLength();
-            string distStr = "---";
-            if (editor.MeasurementPointCount >= 2)
+            GUILayout.Label(editor.MeasurementStatus, statusStyle);
+            if (editor.MeasurementStatus.StartsWith("保存に失敗"))
             {
-                float scaleX = editor.targetRenderer != null ? editor.targetRenderer.transform.localScale.x : 1.0f;
-                float worldDistM = localDist * scaleX;
-                float worldDistMm = worldDistM * 1000f;
-
-                distStr = $"{localDist:F5} unit  ({worldDistMm:F1} mm)";
-            }
-            GUI.Label(new Rect(x, y, w, 30f), $"線の長さ: {distStr}", lengthStyle);
-            y += 34f;
-
-            GUI.Label(new Rect(x, y, w, 24f), $"点数: {editor.MeasurementPointCount}    中クリックで点を追加", hintStyle);
-            y += 30f;
-
-            if (editor.MeasurementPointCount > 0)
-            {
-                float buttonW = (w - 6f) / 2f;
-                if (GUI.Button(new Rect(x, y, buttonW, 32f), "直近点を削除", paletteBlockStyle))
-                {
-                    editor.RemoveLastMeasurementPoint();
-                }
-                if (GUI.Button(new Rect(x + buttonW + 6f, y, buttonW, 32f), "リセット", paletteBlockStyle))
-                {
-                    editor.ResetMeasurement();
-                }
-                y += 38f;
+                if (GUILayout.Button("保存を再試行", buttonStyle, GUILayout.Height(30f))) editor.RetrySaveMeasurementDocument();
             }
 
-            // Separator
-            y += 4f;
-            GUI.Label(new Rect(x, y, w, 2f), "", separatorStyle);
-            y += 10f;
-
-            // Pick Settings UI
-            GUI.Label(new Rect(x, y, w, 24f), "🎯 ピッキング設定", labelStyle);
-            y += 28f;
-
-            editor.pickDensityEnabled = GUI.Toggle(new Rect(x, y, w, 24f), editor.pickDensityEnabled, " 構造点優先ピッキング（孤立点スキップ）", labelStyle);
-            y += 28f;
-
-            if (editor.pickDensityEnabled)
+            if (editor.IsMeasurementFingerprintPending)
             {
-                GUI.Label(new Rect(x, y, 160f, 24f), $"最低近傍点数: {editor.pickDensityMinCount}", labelStyle);
-                float sliderX = x + 160f;
-                float sliderW = w - 160f;
-                float newCount = GUI.HorizontalSlider(new Rect(sliderX, y + 4f, sliderW, 20f), (float)editor.pickDensityMinCount, 1f, 10f);
-                editor.pickDensityMinCount = Mathf.RoundToInt(newCount);
+                GUILayout.Label("PLYの指紋を確認しています。確認が終わると計測データを表示します。", hintStyle);
+                return;
+            }
+            if (editor.HasMeasurementFingerprintMismatch)
+            {
+                GUILayout.Label("ファイル内容が前回保存時と異なります。計測線をこのPLYに引き継ぐ場合だけ確認してください。", hintStyle);
+                if (GUILayout.Button("このPLYに計測データを引き継ぐ", buttonStyle, GUILayout.Height(36f)))
+                {
+                    editor.AcceptMeasurementFingerprintMismatch();
+                }
+                return;
+            }
+            if (!editor.IsMeasurementDocumentReady)
+            {
+                GUILayout.Label("点群を読み込むと、この点群に対応する計測JSONを開きます。", hintStyle);
+                return;
+            }
+
+            DrawMeasurementList();
+            DrawSelectedMeasurement();
+            DrawCreationControls();
+            DrawUndoControl();
+
+            GUILayout.Space(5f);
+            GUILayout.Label("点の追加・置換は中央クリックです。左クリックはカメラ操作のままです。", hintStyle);
+            GUILayout.Label("単位換算は点群のスケール校正に追従します。", hintStyle);
+        }
+
+        private void DrawMeasurementList()
+        {
+            List<MeasurementRecord> records = editor.MeasurementRecords;
+            GUILayout.Label("計測一覧", labelStyle);
+            if (records.Count == 0)
+            {
+                GUILayout.Label("保存された計測はありません。", hintStyle);
+                return;
+            }
+
+            listScroll = GUILayout.BeginScrollView(listScroll, GUILayout.Height(Mathf.Min(132f, 36f * records.Count + 4f)));
+            for (int i = 0; i < records.Count; i++)
+            {
+                MeasurementRecord record = records[i];
+                if (record == null) continue;
+                GUILayout.BeginHorizontal();
+                bool selected = record.id == editor.SelectedMeasurementId;
+                string rowText = $"{record.name}  |  {ModeName(record.mode)}  |  {GetLengthText(record)}";
+                if (GUILayout.Button(rowText, selected ? selectedButtonStyle : buttonStyle, GUILayout.Height(32f), GUILayout.ExpandWidth(true)))
+                {
+                    editor.SelectMeasurement(record.id);
+                    renameTargetId = record.id;
+                    renameText = record.name;
+                }
+                Color old = GUI.color;
+                GUI.color = record.visible ? Color.white : new Color(0.65f, 0.68f, 0.72f);
+                if (GUILayout.Button(record.visible ? "隠す" : "表示", buttonStyle, GUILayout.Width(58f), GUILayout.Height(32f)))
+                {
+                    editor.SelectMeasurement(record.id);
+                    editor.ToggleSelectedMeasurementVisibility();
+                }
+                GUI.color = old;
+                if (GUILayout.Button("削除", buttonStyle, GUILayout.Width(58f), GUILayout.Height(32f)))
+                {
+                    editor.SelectMeasurement(record.id);
+                    editor.DeleteSelectedMeasurement();
+                    renameTargetId = "";
+                }
+                GUILayout.EndHorizontal();
+            }
+            GUILayout.EndScrollView();
+        }
+
+        private void DrawSelectedMeasurement()
+        {
+            MeasurementRecord record = editor.SelectedMeasurement;
+            if (record == null || editor.HasMeasurementDraft) return;
+            if (renameTargetId != record.id)
+            {
+                renameTargetId = record.id;
+                renameText = record.name;
+            }
+
+            GUILayout.BeginHorizontal();
+            renameText = GUILayout.TextField(renameText, GUILayout.MinWidth(120f), GUILayout.Height(30f));
+            if (GUILayout.Button("名前", buttonStyle, GUILayout.Width(62f), GUILayout.Height(30f)))
+            {
+                editor.RenameSelectedMeasurement(renameText);
+            }
+            Color oldBackground = GUI.backgroundColor;
+            GUI.backgroundColor = record.color;
+            if (GUILayout.Button("■", buttonStyle, GUILayout.Width(48f), GUILayout.Height(30f))) editor.CycleSelectedMeasurementColor();
+            GUI.backgroundColor = oldBackground;
+            if (GUILayout.Button("頂点編集", buttonStyle, GUILayout.Width(92f), GUILayout.Height(30f))) editor.BeginEditingSelectedMeasurement();
+            GUILayout.EndHorizontal();
+        }
+
+        private void DrawCreationControls()
+        {
+            GUILayout.Space(4f);
+            if (editor.HasMeasurementDraft)
+            {
+                DrawModeButtons(true);
+                GUILayout.BeginHorizontal();
+                GUILayout.Label($"{(editor.IsEditingMeasurementDraft ? "頂点編集中" : "新規計測")}  点数 {editor.MeasurementPointCount}  長さ {GetActiveLengthText()}", labelStyle, GUILayout.ExpandWidth(true));
+                bool wasEnabled = GUI.enabled;
+                GUI.enabled = wasEnabled && editor.MeasurementPointCount >= 2;
+                if (GUILayout.Button("確定", selectedButtonStyle, GUILayout.Width(78f), GUILayout.Height(34f))) editor.FinishMeasurement();
+                GUI.enabled = wasEnabled;
+                if (GUILayout.Button("取消", buttonStyle, GUILayout.Width(78f), GUILayout.Height(34f))) editor.CancelMeasurementDraft();
+                GUILayout.EndHorizontal();
+
+                if (editor.MeasurementPointCount > 0)
+                {
+                    GUILayout.BeginHorizontal();
+                    if (GUILayout.Button("直近点を削除", buttonStyle, GUILayout.Height(30f))) editor.RemoveLastMeasurementPoint();
+                    GUILayout.Label(editor.ReplacingMeasurementPointIndex >= 0
+                        ? $"点{editor.ReplacingMeasurementPointIndex + 1}を置換中"
+                        : "中央クリックで点を追加", hintStyle);
+                    GUILayout.EndHorizontal();
+                    DrawDraftPoints();
+                }
+            }
+            else
+            {
+                DrawModeButtons(false);
+                if (GUILayout.Button("＋ 新規計測", selectedButtonStyle, GUILayout.Height(36f)))
+                {
+                    editor.BeginNewMeasurement(editor.measurementMode);
+                }
+            }
+
+            GUILayout.BeginHorizontal();
+            bool undoWasEnabled = GUI.enabled;
+            GUI.enabled = undoWasEnabled && !editor.HasMeasurementDraft && editor.CanMeasurementUndo;
+            if (GUILayout.Button("↶ 計測を元に戻す", buttonStyle, GUILayout.Height(30f))) editor.UndoMeasurement();
+            GUI.enabled = undoWasEnabled;
+            GUILayout.EndHorizontal();
+        }
+
+        private void DrawModeButtons(bool editing)
+        {
+            GUILayout.BeginHorizontal();
+            DrawModeButton("2点", PointCloudEditor.MeasurementMode.TwoPoint, editing);
+            DrawModeButton("折れ線", PointCloudEditor.MeasurementMode.Polyline, editing);
+            DrawModeButton("曲線", PointCloudEditor.MeasurementMode.SmoothCurve, editing);
+            GUILayout.EndHorizontal();
+        }
+
+        private void DrawModeButton(string label, PointCloudEditor.MeasurementMode mode, bool editing)
+        {
+            bool active = editor.measurementMode == mode;
+            if (GUILayout.Button(label, active ? selectedButtonStyle : buttonStyle, GUILayout.Height(32f)))
+            {
+                if (editing) editor.SetMeasurementMode(mode);
+                else editor.measurementMode = mode;
             }
         }
 
-        private void DrawModeButton(Rect rect, string label, PointCloudEditor.MeasurementMode mode)
+        private void DrawDraftPoints()
         {
-            bool active = editor.measurementMode == mode;
-            if (GUI.Button(rect, label, active ? activeBlockStyle : blockStyle))
+            GUILayout.Label("制御点", hintStyle);
+            pointScroll = GUILayout.BeginScrollView(pointScroll, GUILayout.Height(Mathf.Min(96f, 26f * editor.MeasurementPointCount)));
+            for (int i = 0; i < editor.measurementPath.Points.Count; i++)
             {
-                editor.SetMeasurementMode(mode);
+                Vector3 point = editor.measurementPath.Points[i];
+                GUILayout.BeginHorizontal();
+                GUILayout.Label($"点{i + 1}: {point.x:F4}, {point.y:F4}, {point.z:F4}", hintStyle, GUILayout.ExpandWidth(true));
+                if (GUILayout.Button("置換", buttonStyle, GUILayout.Width(58f), GUILayout.Height(25f))) editor.ArmMeasurementPointReplacement(i);
+                if (GUILayout.Button("削除", buttonStyle, GUILayout.Width(58f), GUILayout.Height(25f))) editor.RemoveMeasurementPointAt(i);
+                GUILayout.EndHorizontal();
             }
+            GUILayout.EndScrollView();
+        }
+
+        private void DrawUndoControl()
+        {
+            MeasurementRecord selected = editor.SelectedMeasurement;
+            if (selected == null || editor.HasMeasurementDraft) return;
+            GUILayout.Label($"選択中: {selected.name}  |  {selected.points.Count}点  |  {GetLengthText(selected)}", hintStyle);
+        }
+
+        private string GetActiveLengthText()
+        {
+            float local = editor.GetMeasurementLength();
+            float scale = editor.targetRenderer != null ? editor.targetRenderer.transform.lossyScale.x : 1f;
+            return $"{local:F5} unit ({local * scale * 1000f:F1} mm)";
+        }
+
+        private string GetLengthText(MeasurementRecord record)
+        {
+            var path = new MeasurementPath();
+            path.SetMode(System.Enum.IsDefined(typeof(PointCloudEditor.MeasurementMode), record.mode)
+                ? (PointCloudEditor.MeasurementMode)record.mode
+                : PointCloudEditor.MeasurementMode.TwoPoint);
+            if (record.points != null)
+            {
+                for (int i = 0; i < record.points.Count; i++) path.AddPoint(record.points[i]);
+            }
+            float scale = editor.targetRenderer != null ? editor.targetRenderer.transform.lossyScale.x : 1f;
+            return $"{path.GetLength() * scale * 1000f:F1} mm";
+        }
+
+        private static string ModeName(int mode)
+        {
+            if (mode == (int)PointCloudEditor.MeasurementMode.Polyline) return "折れ線";
+            if (mode == (int)PointCloudEditor.MeasurementMode.SmoothCurve) return "曲線";
+            return "2点";
         }
     }
 }
-

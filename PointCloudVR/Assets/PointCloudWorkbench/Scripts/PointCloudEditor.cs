@@ -48,9 +48,38 @@ public class PointCloudEditor : MonoBehaviour
     public Vector3 measurePoint1;
     public Vector3 measurePoint2;
     public readonly MeasurementPath measurementPath = new MeasurementPath();
+    private readonly Dictionary<string, MeasurementVisual> measurementVisuals = new Dictionary<string, MeasurementVisual>();
+    private MeasurementVisual draftVisual;
+    private MeasurementDocument measurementDocument;
+    private PointCloudLoader pointCloudLoader;
+    private string measurementDocumentPath = "";
+    private string measurementCloudPath = "";
+    private string measurementExpectedHash = "";
+    private string measurementActualHash = "";
+    private Task<string> measurementFingerprintTask;
+    private bool measurementFingerprintPending;
+    private bool measurementSidecarExisted;
+    private bool measurementDocumentReady;
+    private bool measurementFingerprintMismatch;
+    private bool measurementDocumentDirty;
+    private string measurementStatus = "点群を読み込むと計測データを確認します。";
+    private string selectedMeasurementId = "";
+    private string editingMeasurementId = "";
+    private bool measurementDraftActive;
+    private int replaceMeasurementPointIndex = -1;
+    private EditTool toolBeforeMeasurement = EditTool.None;
+    private int handledPointCloudRevision;
+    private readonly Stack<string> measurementUndoStack = new Stack<string>();
+    private const int MaxMeasurementUndo = 30;
 
-    private readonly List<GameObject> measureMarkers = new List<GameObject>();
-    private LineRenderer measureLine;
+    private sealed class MeasurementVisual
+    {
+        public GameObject root;
+        public LineRenderer line;
+        public Material material;
+        public readonly List<GameObject> markers = new List<GameObject>();
+        public string sourceId;
+    }
 
     [Header("Visual Elements")]
     public Color brushColor = new Color(1f, 0.9f, 0f, 0.3f);
@@ -129,6 +158,62 @@ public class PointCloudEditor : MonoBehaviour
     public int[] GetLabelCounts() => labelCounts;
     public void MarkStatsDirty() => statsDirty = true;
 
+    public List<MeasurementRecord> MeasurementRecords => measurementDocument != null
+        ? measurementDocument.measurements
+        : new List<MeasurementRecord>();
+    public string SelectedMeasurementId => selectedMeasurementId;
+    public MeasurementRecord SelectedMeasurement => FindMeasurement(selectedMeasurementId);
+    public bool HasMeasurementDraft => measurementDraftActive;
+    public bool IsEditingMeasurementDraft => measurementDraftActive && !string.IsNullOrEmpty(editingMeasurementId);
+    public bool IsMeasurementDocumentReady => measurementDocumentReady;
+    public bool IsMeasurementFingerprintPending => measurementFingerprintPending;
+    public bool HasMeasurementFingerprintMismatch => measurementFingerprintMismatch;
+    public string MeasurementStatus => measurementStatus;
+    public bool CanMeasurementUndo => measurementUndoStack.Count > 0 && measurementDocumentReady;
+    public int MeasurementPointCount => measurementDraftActive
+        ? measurementPath.Points.Count
+        : (SelectedMeasurement != null ? SelectedMeasurement.points.Count : 0);
+
+    public MeasurementDocument CreateMeasurementSnapshotForExport()
+    {
+        return measurementDocumentReady && !measurementFingerprintMismatch
+            ? MeasurementDocumentStore.Clone(measurementDocument)
+            : null;
+    }
+
+    private string GetLoadedPointCloudPath()
+    {
+        PointCloudLoader loader = targetRenderer != null ? targetRenderer.GetComponent<PointCloudLoader>() : null;
+        if (loader == null) loader = GetComponent<PointCloudLoader>();
+        if (loader == null) return "";
+        return !string.IsNullOrEmpty(loader.CurrentFilePath) ? loader.CurrentFilePath : loader.GetFilePath();
+    }
+
+    void OnEnable()
+    {
+        if (targetRenderer == null) targetRenderer = GetComponent<PointCloudRenderer>();
+        pointCloudLoader = GetComponent<PointCloudLoader>();
+        if (pointCloudLoader != null)
+        {
+            pointCloudLoader.PointCloudChanging += HandlePointCloudChanging;
+            pointCloudLoader.PointCloudLoaded += HandlePointCloudLoaded;
+            if (pointCloudLoader.SuccessfulLoadRevision > handledPointCloudRevision &&
+                targetRenderer != null && targetRenderer.GetPointData() != null)
+            {
+                HandlePointCloudLoaded(pointCloudLoader.CurrentFilePath);
+            }
+        }
+    }
+
+    void OnDisable()
+    {
+        if (pointCloudLoader != null)
+        {
+            pointCloudLoader.PointCloudChanging -= HandlePointCloudChanging;
+            pointCloudLoader.PointCloudLoaded -= HandlePointCloudLoaded;
+        }
+    }
+
 
     void Start()
     {
@@ -154,6 +239,13 @@ public class PointCloudEditor : MonoBehaviour
 
         CreateBrushVisual();
         statsDirty = true;
+
+        if (pointCloudLoader != null && pointCloudLoader.SuccessfulLoadRevision > 0 &&
+            pointCloudLoader.SuccessfulLoadRevision != handledPointCloudRevision &&
+            targetRenderer.GetPointData() != null)
+        {
+            HandlePointCloudLoaded(pointCloudLoader.CurrentFilePath);
+        }
     }
 
     void CreateBrushVisual()
@@ -174,6 +266,7 @@ public class PointCloudEditor : MonoBehaviour
     void Update()
     {
         if (targetRenderer == null) return;
+        PollMeasurementFingerprint();
 
         // Process asynchronous background task completion in main thread
         if (finishedConnectionFlag)
@@ -219,23 +312,7 @@ public class PointCloudEditor : MonoBehaviour
             brushVisual.SetActive(false);
         }
 
-        // Clean up or update measure visuals based on active tool
-        bool shouldShowMeasure = (activeTool == EditTool.Measure);
-        if (!shouldShowMeasure)
-        {
-            for (int i = 0; i < measureMarkers.Count; i++)
-            {
-                if (measureMarkers[i] != null && measureMarkers[i].activeSelf)
-                {
-                    measureMarkers[i].SetActive(false);
-                }
-            }
-            if (measureLine != null && measureLine.gameObject.activeSelf) measureLine.gameObject.SetActive(false);
-        }
-        else
-        {
-            UpdateMeasureVisuals();
-        }
+        UpdateMeasureVisuals();
 
         // Handle tool interactions
         if (activeTool == EditTool.Brush)
@@ -1282,10 +1359,11 @@ public class PointCloudEditor : MonoBehaviour
 
     public void ExportLabeledPoints(bool asBinary = false)
     {
-        string inputPath = targetRenderer.GetComponent<PointCloudLoader>().GetFilePath();
+        string inputPath = GetLoadedPointCloudPath();
         string directory = Path.GetDirectoryName(inputPath);
         string fileNameWithoutExt = Path.GetFileNameWithoutExtension(inputPath);
         string exportPath = Path.Combine(directory, $"{fileNameWithoutExt}_labeled.ply");
+        MeasurementDocument measurementSnapshot = CreateMeasurementSnapshotForExport();
 
         var pm = PointCloudProgressManager.Instance;
         pm.Start("PLYファイル書き出し", "書き出しデータ準備中...");
@@ -1297,6 +1375,10 @@ public class PointCloudEditor : MonoBehaviour
             try
             {
                 await ExportLabeledPointsAsync(exportPath, asBinary, pm.CancellationToken);
+                if (measurementSnapshot != null && File.Exists(exportPath))
+                {
+                    MeasurementDocumentStore.WriteDerivedSidecar(exportPath, measurementSnapshot);
+                }
                 Debug.Log($"[PointCloudEditor] Successfully exported labeled PLY to: {exportPath}");
             }
             catch (System.Exception ex)
@@ -1321,10 +1403,11 @@ public class PointCloudEditor : MonoBehaviour
             return;
         }
 
-        string inputPath = targetRenderer.GetComponent<PointCloudLoader>().GetFilePath();
+        string inputPath = GetLoadedPointCloudPath();
         string directory = Path.GetDirectoryName(inputPath);
         string fileNameWithoutExt = Path.GetFileNameWithoutExtension(inputPath);
         string exportPath = Path.Combine(directory, $"{fileNameWithoutExt}_cleaned.ply");
+        MeasurementDocument measurementSnapshot = CreateMeasurementSnapshotForExport();
 
         var pm = PointCloudProgressManager.Instance;
         pm.Start("クリーンアップ済PLYエクスポート", "書き出しデータ準備中...");
@@ -1395,6 +1478,11 @@ public class PointCloudEditor : MonoBehaviour
                             pm.Update((float)written / remainingCount, $"データを書き出し中... ({written:N0} / {remainingCount:N0} 点)");
                         }
                     }
+                }
+
+                if (measurementSnapshot != null && File.Exists(exportPath))
+                {
+                    MeasurementDocumentStore.WriteDerivedSidecar(exportPath, measurementSnapshot);
                 }
                 
                 // 同時に、Python側が出力した removal_report.json があればエクスポートフォルダにコピーする
@@ -1562,10 +1650,11 @@ public class PointCloudEditor : MonoBehaviour
 
     public void ExportSelectedPoints(bool asBinary = false)
     {
-        string inputPath = targetRenderer.GetComponent<PointCloudLoader>().GetFilePath();
+        string inputPath = GetLoadedPointCloudPath();
         string directory = Path.GetDirectoryName(inputPath);
         string fileNameWithoutExt = Path.GetFileNameWithoutExtension(inputPath);
         string exportPath = Path.Combine(directory, $"{fileNameWithoutExt}_selected.ply");
+        MeasurementDocument measurementSnapshot = CreateMeasurementSnapshotForExport();
 
         var pm = PointCloudProgressManager.Instance;
         pm.Start("選択点PLYファイル書き出し", "書き出しデータ準備中...");
@@ -1577,6 +1666,10 @@ public class PointCloudEditor : MonoBehaviour
             try
             {
                 await ExportSelectedPointsAsync(exportPath, asBinary, pm.CancellationToken);
+                if (measurementSnapshot != null && File.Exists(exportPath))
+                {
+                    MeasurementDocumentStore.WriteDerivedSidecar(exportPath, measurementSnapshot);
+                }
                 Debug.Log($"[PointCloudEditor] Successfully exported selected PLY to: {exportPath}");
             }
             catch (System.Exception ex)
@@ -2556,15 +2649,7 @@ public class PointCloudEditor : MonoBehaviour
             return;
         }
 
-        PointCloudLoader loader = targetRenderer.GetComponent<PointCloudLoader>();
-        if (loader == null)
-        {
-            loader = GetComponent<PointCloudLoader>();
-        }
-
-        string inputPath = loader != null && !string.IsNullOrEmpty(loader.CurrentFilePath)
-            ? loader.CurrentFilePath
-            : (loader != null ? loader.GetFilePath() : "");
+        string inputPath = GetLoadedPointCloudPath();
 
         if (string.IsNullOrEmpty(inputPath) || !File.Exists(inputPath))
         {
@@ -2759,206 +2844,650 @@ public class PointCloudEditor : MonoBehaviour
     {
         if (brushVisual != null) Destroy(brushVisual);
         if (brushMaterial != null) Destroy(brushMaterial);
-        for (int i = 0; i < measureMarkers.Count; i++)
-        {
-            if (measureMarkers[i] != null) Destroy(measureMarkers[i]);
-        }
-        if (measureLine != null) Destroy(measureLine.gameObject);
+        foreach (MeasurementVisual visual in measurementVisuals.Values) DestroyMeasurementVisual(visual);
+        measurementVisuals.Clear();
+        DestroyMeasurementVisual(draftVisual);
     }
 
-    void CreateMeasureVisuals()
+    private bool HandlePointCloudChanging(string path)
     {
-        if (targetRenderer == null) return;
-
-        var overlayShader = Shader.Find("PointCloudWorkbench/OverlayColor");
-        if (overlayShader == null) overlayShader = Shader.Find("Sprites/Default");
-
-        if (measureLine == null)
+        if (measurementDraftActive)
         {
-            GameObject lineObj = new GameObject("Measure_Line");
-            measureLine = lineObj.AddComponent<LineRenderer>();
-            measureLine.positionCount = 0;
-            measureLine.useWorldSpace = true;
-            measureLine.numCapVertices = 0;
-            measureLine.numCornerVertices = 0;
-            var mat = new Material(overlayShader);
-            mat.color = Color.yellow;
-            measureLine.sharedMaterial = mat;
-            measureLine.gameObject.SetActive(false);
+            if (measurementPath.Points.Count >= 2) FinishMeasurement();
+            else CancelMeasurementDraft();
         }
+        return SaveMeasurementDocument();
     }
 
-    GameObject CreateMeasureMarker(int index)
+    private void HandlePointCloudLoaded(string path)
     {
-        var overlayShader = Shader.Find("PointCloudWorkbench/OverlayColor");
-        if (overlayShader == null) overlayShader = Shader.Find("Sprites/Default");
-
-        GameObject marker = GameObject.CreatePrimitive(PrimitiveType.Sphere);
-        Destroy(marker.GetComponent<SphereCollider>());
-        marker.name = $"Measure_Marker_{index + 1}";
-        marker.transform.SetParent(targetRenderer.transform, false);
-        var mat = new Material(overlayShader);
-        mat.color = index == 0 ? Color.red : new Color(0.15f, 0.45f, 1f);
-        marker.GetComponent<MeshRenderer>().sharedMaterial = mat;
-        marker.SetActive(false);
-        return marker;
-    }
-
-    void EnsureMeasureMarkerCount(int count)
-    {
-        while (measureMarkers.Count < count)
-        {
-            measureMarkers.Add(CreateMeasureMarker(measureMarkers.Count));
-        }
-    }
-
-    void SyncLegacyMeasureFields()
-    {
-        hasMeasurePoint1 = measurementPath.Points.Count >= 1;
-        hasMeasurePoint2 = measurementPath.Points.Count >= 2;
-        measurePoint1 = hasMeasurePoint1 ? measurementPath.Points[0] : Vector3.zero;
-        measurePoint2 = hasMeasurePoint2 ? measurementPath.Points[1] : Vector3.zero;
-    }
-
-    // スクリーン上で常に一定サイズに見えるワールドサイズを計算するヘルパー
-    // screenSizePx: 目標ピクセル数相当のサイズ
-    float CalcConstantScreenSizeWorld(Vector3 worldPos, float screenSizePx)
-    {
-        Camera cam = Camera.main;
-        if (cam == null) return 0.01f;
-        float dist = Vector3.Distance(cam.transform.position, worldPos);
-        if (cam.orthographic)
-        {
-            return cam.orthographicSize * 2f * screenSizePx / Screen.height;
-        }
-        float halfFovRad = cam.fieldOfView * 0.5f * Mathf.Deg2Rad;
-        float worldPerPixel = 2f * dist * Mathf.Tan(halfFovRad) / Screen.height;
-        return worldPerPixel * screenSizePx;
-    }
-
-    public void UpdateMeasureVisuals()
-    {
-        if (targetRenderer == null) return;
-        CreateMeasureVisuals();
-        SyncLegacyMeasureFields();
-
-        EnsureMeasureMarkerCount(measurementPath.Points.Count);
-
-        // マーカーのワールド座標リストを先に求め、カメラ距離ベースでサイズを決める
-        // 目標: スクリーン上で常に約8px相当の球に見えるサイズ
-        const float markerScreenPx = 8f;
-        const float lineScreenPx   = 1.5f;
-
-        for (int i = 0; i < measureMarkers.Count; i++)
-        {
-            GameObject marker = measureMarkers[i];
-            if (i < measurementPath.Points.Count)
-            {
-                marker.transform.localPosition = measurementPath.Points[i];
-                Vector3 worldPos = marker.transform.position;
-                float worldSize = CalcConstantScreenSizeWorld(worldPos, markerScreenPx);
-                // localScaleは親(targetRenderer)のlossyScaleの逆数で補正
-                float lossyScale = Mathf.Max(targetRenderer.transform.lossyScale.x, 0.0001f);
-                marker.transform.localScale = Vector3.one * (worldSize / lossyScale);
-                marker.SetActive(true);
-            }
-            else
-            {
-                marker.SetActive(false);
-            }
-        }
-
-        if (measurementPath.Points.Count >= 2)
-        {
-            List<Vector3> linePoints = measurementPath.BuildWorldLinePoints(targetRenderer.transform);
-            measureLine.positionCount = linePoints.Count;
-            for (int i = 0; i < linePoints.Count; i++)
-            {
-                measureLine.SetPosition(i, linePoints[i]);
-            }
-            measureLine.gameObject.SetActive(true);
-
-            // 線の太さもカメラ距離ベースで一定スクリーンサイズに
-            Vector3 midWorld = linePoints[linePoints.Count / 2];
-            float lineWidth = CalcConstantScreenSizeWorld(midWorld, lineScreenPx);
-            measureLine.startWidth = lineWidth;
-            measureLine.endWidth   = lineWidth;
-        }
-        else
-        {
-            if (measureLine != null) measureLine.gameObject.SetActive(false);
-        }
-    }
-
-    public void ResetMeasurement()
-    {
+        if (pointCloudLoader != null) handledPointCloudRevision = pointCloudLoader.SuccessfulLoadRevision;
+        ClearMeasurementVisuals();
+        measurementCloudPath = Path.GetFullPath(path);
+        measurementDocumentPath = MeasurementDocumentStore.GetSidecarPath(measurementCloudPath);
+        measurementExpectedHash = "";
+        measurementActualHash = "";
+        measurementFingerprintMismatch = false;
+        measurementDocumentReady = false;
+        measurementDocumentDirty = false;
+        measurementSidecarExisted = false;
+        measurementUndoStack.Clear();
+        selectedMeasurementId = "";
+        measurementDraftActive = false;
+        editingMeasurementId = "";
         measurementPath.Clear();
+        measurementVisualsDirty = true;
+
+        try
+        {
+            measurementDocument = MeasurementDocumentStore.LoadOrCreate(measurementCloudPath, out measurementSidecarExisted);
+            measurementExpectedHash = measurementDocument.sourceSha256 ?? "";
+            measurementFingerprintPending = true;
+            measurementStatus = "点群ファイルを照合中...";
+            string pathSnapshot = measurementCloudPath;
+            measurementFingerprintTask = Task.Run(() => MeasurementDocumentStore.ComputeSha256(pathSnapshot));
+        }
+        catch (System.Exception ex)
+        {
+            measurementDocument = null;
+            measurementFingerprintPending = false;
+            measurementFingerprintTask = null;
+            measurementStatus = $"計測JSONを読み込めません: {ex.Message}";
+            Debug.LogError($"[Measurement] {measurementStatus}");
+        }
+        UpdateMeasureVisuals();
+    }
+
+    private void PollMeasurementFingerprint()
+    {
+        if (!measurementFingerprintPending || measurementFingerprintTask == null || !measurementFingerprintTask.IsCompleted) return;
+
+        Task<string> completed = measurementFingerprintTask;
+        measurementFingerprintTask = null;
+        measurementFingerprintPending = false;
+        if (completed.IsFaulted)
+        {
+            measurementStatus = "点群ファイルの照合に失敗しました。";
+            Debug.LogError($"[Measurement] Fingerprint failed: {completed.Exception}");
+            return;
+        }
+
+        string actualHash = completed.Result;
+        measurementActualHash = actualHash;
+        if (measurementSidecarExisted && !string.IsNullOrEmpty(measurementExpectedHash) &&
+            !string.Equals(actualHash, measurementExpectedHash, System.StringComparison.OrdinalIgnoreCase))
+        {
+            measurementFingerprintMismatch = true;
+            measurementStatus = "PLYの内容が保存時から変わっています。計測線を表示する前に関連付けを確認してください。";
+            UpdateMeasureVisuals();
+            return;
+        }
+
+        if (measurementDocument == null) return;
+        measurementDocument.sourceSha256 = actualHash;
+        measurementDocument.sourceFileName = Path.GetFileName(measurementCloudPath);
+        measurementDocumentReady = true;
+        measurementStatus = "計測データを読み込みました。";
+        measurementVisualsDirty = true;
+        if (measurementSidecarExisted && string.IsNullOrEmpty(measurementExpectedHash) &&
+            measurementDocument.measurements.Count > 0)
+        {
+            measurementDocumentDirty = true;
+            SaveMeasurementDocument();
+        }
+        UpdateMeasureVisuals();
+    }
+
+    public bool AcceptMeasurementFingerprintMismatch()
+    {
+        if (!measurementFingerprintMismatch || measurementDocument == null || measurementFingerprintTask != null) return false;
+        try
+        {
+            measurementDocument.sourceSha256 = measurementActualHash;
+            measurementFingerprintMismatch = false;
+            measurementDocumentReady = true;
+            measurementStatus = "計測データをこのPLYに関連付けました。";
+            measurementDocumentDirty = true;
+            SaveMeasurementDocument();
+            measurementVisualsDirty = true;
+            UpdateMeasureVisuals();
+            return true;
+        }
+        catch (System.Exception ex)
+        {
+            measurementStatus = $"関連付けを保存できません: {ex.Message}";
+            return false;
+        }
+    }
+
+    private void ClearMeasurementVisuals()
+    {
+        foreach (MeasurementVisual visual in measurementVisuals.Values) DestroyMeasurementVisual(visual);
+        measurementVisuals.Clear();
+        DestroyMeasurementVisual(draftVisual);
+        draftVisual = null;
+    }
+
+    private MeasurementRecord FindMeasurement(string id)
+    {
+        if (measurementDocument == null || measurementDocument.measurements == null || string.IsNullOrEmpty(id)) return null;
+        for (int i = 0; i < measurementDocument.measurements.Count; i++)
+        {
+            MeasurementRecord record = measurementDocument.measurements[i];
+            if (record != null && record.id == id) return record;
+        }
+        return null;
+    }
+
+    private MeasurementPath CreatePath(MeasurementRecord record)
+    {
+        var path = new MeasurementPath();
+        MeasurementMode mode = record != null && System.Enum.IsDefined(typeof(MeasurementMode), record.mode)
+            ? (MeasurementMode)record.mode
+            : MeasurementMode.TwoPoint;
+        path.SetMode(mode);
+        if (record != null && record.points != null)
+        {
+            for (int i = 0; i < record.points.Count; i++) path.AddPoint(record.points[i]);
+        }
+        return path;
+    }
+
+    public void SelectMeasurement(string id)
+    {
+        if (!measurementDocumentReady || measurementDraftActive || FindMeasurement(id) == null) return;
+        selectedMeasurementId = id;
+        measurementVisualsDirty = true;
         SyncLegacyMeasureFields();
         UpdateMeasureVisuals();
+    }
+
+    public bool BeginNewMeasurement(MeasurementMode mode)
+    {
+        if (!measurementDocumentReady || measurementDraftActive || measurementDocument == null) return false;
+        toolBeforeMeasurement = activeTool == EditTool.Measure ? EditTool.None : activeTool;
+        measurementDraftActive = true;
+        editingMeasurementId = "";
+        replaceMeasurementPointIndex = -1;
+        measurementPath.Clear();
+        measurementMode = mode;
+        measurementPath.SetMode(mode);
+        activeTool = EditTool.Measure;
+        SyncLegacyMeasureFields();
+        measurementVisualsDirty = true;
+        UpdateMeasureVisuals();
+        return true;
+    }
+
+    public bool BeginEditingSelectedMeasurement()
+    {
+        MeasurementRecord record = SelectedMeasurement;
+        if (!measurementDocumentReady || measurementDraftActive || record == null) return false;
+        toolBeforeMeasurement = activeTool == EditTool.Measure ? EditTool.None : activeTool;
+        measurementDraftActive = true;
+        editingMeasurementId = record.id;
+        replaceMeasurementPointIndex = -1;
+        measurementMode = System.Enum.IsDefined(typeof(MeasurementMode), record.mode)
+            ? (MeasurementMode)record.mode
+            : MeasurementMode.TwoPoint;
+        measurementPath.Clear();
+        measurementPath.SetMode(measurementMode);
+        for (int i = 0; i < record.points.Count; i++) measurementPath.AddPoint(record.points[i]);
+        activeTool = EditTool.Measure;
+        SyncLegacyMeasureFields();
+        measurementVisualsDirty = true;
+        UpdateMeasureVisuals();
+        return true;
+    }
+
+    public bool FinishMeasurement()
+    {
+        if (!measurementDraftActive || measurementPath.Points.Count < 2 || measurementDocument == null) return false;
+
+        MeasurementRecord record = FindMeasurement(editingMeasurementId);
+        PushMeasurementUndo();
+        bool isNew = record == null;
+        if (isNew)
+        {
+            record = new MeasurementRecord
+            {
+                id = System.Guid.NewGuid().ToString("N"),
+                name = $"計測 {measurementDocument.measurements.Count + 1}",
+                color = MeasurementPalette[measurementDocument.measurements.Count % MeasurementPalette.Length],
+                createdUtc = System.DateTime.UtcNow.ToString("o")
+            };
+            measurementDocument.measurements.Add(record);
+        }
+
+        record.mode = (int)measurementMode;
+        record.interpolation = MeasurementPath.CurveAlgorithmId;
+        record.points = new List<Vector3>(measurementPath.Points);
+        record.modifiedUtc = System.DateTime.UtcNow.ToString("o");
+        selectedMeasurementId = record.id;
+        measurementDocumentDirty = true;
+        EndMeasurementDraft();
+        SaveMeasurementDocument();
+        measurementVisualsDirty = true;
+        SyncLegacyMeasureFields();
+        UpdateMeasureVisuals();
+        return true;
+    }
+
+    public void CancelMeasurementDraft()
+    {
+        if (!measurementDraftActive) return;
+        EndMeasurementDraft();
+        measurementVisualsDirty = true;
+        SyncLegacyMeasureFields();
+        UpdateMeasureVisuals();
+    }
+
+    private void EndMeasurementDraft()
+    {
+        measurementDraftActive = false;
+        editingMeasurementId = "";
+        replaceMeasurementPointIndex = -1;
+        measurementPath.Clear();
+        activeTool = toolBeforeMeasurement;
     }
 
     public void SetMeasurementMode(MeasurementMode mode)
     {
         measurementMode = mode;
-        measurementPath.SetMode(mode);
+        if (measurementDraftActive)
+        {
+            measurementPath.SetMode(mode);
+            if (mode == MeasurementMode.TwoPoint)
+            {
+                while (measurementPath.Points.Count > 2) measurementPath.RemoveLastPoint();
+            }
+        }
         SyncLegacyMeasureFields();
+        measurementVisualsDirty = true;
         UpdateMeasureVisuals();
+    }
+
+    public void ResetMeasurement()
+    {
+        CancelMeasurementDraft();
     }
 
     public void RemoveLastMeasurementPoint()
     {
+        if (!measurementDraftActive) return;
+        if (replaceMeasurementPointIndex >= 0) replaceMeasurementPointIndex = -1;
         measurementPath.RemoveLastPoint();
+        SyncLegacyMeasureFields();
+        measurementVisualsDirty = true;
+        UpdateMeasureVisuals();
+    }
+
+    public void RemoveMeasurementPointAt(int index)
+    {
+        if (!measurementDraftActive || index < 0 || index >= measurementPath.Points.Count) return;
+        measurementPath.Points.RemoveAt(index);
+        replaceMeasurementPointIndex = -1;
+        SyncLegacyMeasureFields();
+        measurementVisualsDirty = true;
+        UpdateMeasureVisuals();
+    }
+
+    public void ArmMeasurementPointReplacement(int index)
+    {
+        if (!measurementDraftActive || index < 0 || index >= measurementPath.Points.Count) return;
+        replaceMeasurementPointIndex = index;
+        measurementStatus = $"点{index + 1}の置換先を中央クリックしてください。";
+    }
+
+    public int ReplacingMeasurementPointIndex => replaceMeasurementPointIndex;
+
+    public void ToggleSelectedMeasurementVisibility()
+    {
+        MeasurementRecord record = SelectedMeasurement;
+        if (!measurementDocumentReady || measurementDraftActive || record == null) return;
+        PushMeasurementUndo();
+        record.visible = !record.visible;
+        record.modifiedUtc = System.DateTime.UtcNow.ToString("o");
+        measurementDocumentDirty = true;
+        SaveMeasurementDocument();
+        measurementVisualsDirty = true;
+        UpdateMeasureVisuals();
+    }
+
+    public bool RenameSelectedMeasurement(string name)
+    {
+        MeasurementRecord record = SelectedMeasurement;
+        if (!measurementDocumentReady || measurementDraftActive || record == null || string.IsNullOrWhiteSpace(name)) return false;
+        string trimmed = name.Trim();
+        if (record.name == trimmed) return true;
+        PushMeasurementUndo();
+        record.name = trimmed;
+        record.modifiedUtc = System.DateTime.UtcNow.ToString("o");
+        measurementDocumentDirty = true;
+        SaveMeasurementDocument();
+        return true;
+    }
+
+    public void CycleSelectedMeasurementColor()
+    {
+        MeasurementRecord record = SelectedMeasurement;
+        if (!measurementDocumentReady || measurementDraftActive || record == null) return;
+        PushMeasurementUndo();
+        int nearest = 0;
+        float nearestDistance = float.MaxValue;
+        for (int i = 0; i < MeasurementPalette.Length; i++)
+        {
+            Color delta = record.color - MeasurementPalette[i];
+            float distance = delta.r * delta.r + delta.g * delta.g + delta.b * delta.b + delta.a * delta.a;
+            if (distance < nearestDistance) { nearestDistance = distance; nearest = i; }
+        }
+        record.color = MeasurementPalette[(nearest + 1) % MeasurementPalette.Length];
+        record.modifiedUtc = System.DateTime.UtcNow.ToString("o");
+        measurementDocumentDirty = true;
+        SaveMeasurementDocument();
+        measurementVisualsDirty = true;
+        UpdateMeasureVisuals();
+    }
+
+    public void DeleteSelectedMeasurement()
+    {
+        MeasurementRecord record = SelectedMeasurement;
+        if (!measurementDocumentReady || measurementDraftActive || record == null) return;
+        PushMeasurementUndo();
+        int removedIndex = measurementDocument.measurements.IndexOf(record);
+        measurementDocument.measurements.Remove(record);
+        selectedMeasurementId = measurementDocument.measurements.Count > 0
+            ? measurementDocument.measurements[Mathf.Clamp(removedIndex, 0, measurementDocument.measurements.Count - 1)].id
+            : "";
+        measurementDocumentDirty = true;
+        SaveMeasurementDocument();
+        measurementVisualsDirty = true;
         SyncLegacyMeasureFields();
         UpdateMeasureVisuals();
     }
 
-    public int MeasurementPointCount => measurementPath.Points.Count;
+    public bool UndoMeasurement()
+    {
+        if (!CanMeasurementUndo || measurementDraftActive || measurementDocument == null) return false;
+        string previous = measurementUndoStack.Pop();
+        measurementDocument = JsonUtility.FromJson<MeasurementDocument>(previous);
+        if (FindMeasurement(selectedMeasurementId) == null)
+        {
+            selectedMeasurementId = measurementDocument.measurements.Count > 0 ? measurementDocument.measurements[0].id : "";
+        }
+        measurementDocumentDirty = true;
+        SaveMeasurementDocument();
+        measurementVisualsDirty = true;
+        SyncLegacyMeasureFields();
+        UpdateMeasureVisuals();
+        return true;
+    }
+
+    private void PushMeasurementUndo()
+    {
+        if (measurementDocument == null) return;
+        if (measurementUndoStack.Count >= MaxMeasurementUndo)
+        {
+            string[] items = measurementUndoStack.ToArray();
+            measurementUndoStack.Clear();
+            for (int i = items.Length - 2; i >= 0; i--) measurementUndoStack.Push(items[i]);
+        }
+        measurementUndoStack.Push(JsonUtility.ToJson(measurementDocument));
+    }
+
+    private bool SaveMeasurementDocument()
+    {
+        if (!measurementDocumentReady || measurementDocument == null || string.IsNullOrEmpty(measurementCloudPath)) return true;
+        if (!measurementDocumentDirty && File.Exists(measurementDocumentPath)) return true;
+        if (!measurementDocumentDirty && measurementDocument.measurements.Count == 0) return true;
+        try
+        {
+            MeasurementDocumentStore.Save(measurementCloudPath, measurementDocument);
+            measurementDocumentDirty = false;
+            measurementStatus = "自動保存済み";
+            return true;
+        }
+        catch (System.Exception ex)
+        {
+            measurementDocumentDirty = true;
+            measurementStatus = $"保存に失敗しました: {ex.Message}";
+            Debug.LogError($"[Measurement] {measurementStatus}");
+            return false;
+        }
+    }
+
+    public void RetrySaveMeasurementDocument()
+    {
+        SaveMeasurementDocument();
+    }
+
+    private static readonly Color[] MeasurementPalette =
+    {
+        Color.yellow,
+        new Color(0.1f, 0.85f, 1f),
+        new Color(1f, 0.35f, 0.8f),
+        new Color(1f, 0.45f, 0.15f),
+        new Color(0.35f, 1f, 0.35f),
+        Color.white
+    };
+
+    private void SyncLegacyMeasureFields()
+    {
+        List<Vector3> points = measurementDraftActive
+            ? measurementPath.Points
+            : (SelectedMeasurement != null ? SelectedMeasurement.points : null);
+        hasMeasurePoint1 = points != null && points.Count >= 1;
+        hasMeasurePoint2 = points != null && points.Count >= 2;
+        measurePoint1 = hasMeasurePoint1 ? points[0] : Vector3.zero;
+        measurePoint2 = hasMeasurePoint2 ? points[1] : Vector3.zero;
+    }
 
     public float GetMeasurementLength()
     {
-        return measurementPath.GetLength();
+        if (measurementDraftActive) return measurementPath.GetLength();
+        MeasurementRecord record = SelectedMeasurement;
+        return record != null ? CreatePath(record).GetLength() : 0f;
+    }
+
+    public void UpdateMeasureVisuals()
+    {
+        if (targetRenderer == null) return;
+        SyncLegacyMeasureFields();
+
+        if (measurementVisualsDirty)
+        {
+            RefreshSavedMeasurementVisuals();
+            RefreshDraftVisual();
+            measurementVisualsDirty = false;
+        }
+        UpdateVisualScreenSizes();
+    }
+
+    private bool measurementVisualsDirty = true;
+
+    private void RefreshSavedMeasurementVisuals()
+    {
+        if (!measurementDocumentReady || measurementDocument == null)
+        {
+            foreach (MeasurementVisual visual in measurementVisuals.Values) visual.root.SetActive(false);
+            return;
+        }
+
+        var liveIds = new HashSet<string>();
+        for (int i = 0; i < measurementDocument.measurements.Count; i++)
+        {
+            MeasurementRecord record = measurementDocument.measurements[i];
+            if (record == null || string.IsNullOrEmpty(record.id)) continue;
+            liveIds.Add(record.id);
+            if (!measurementVisuals.TryGetValue(record.id, out MeasurementVisual visual))
+            {
+                visual = CreateMeasurementVisual(record.id, record.color);
+                measurementVisuals.Add(record.id, visual);
+            }
+            visual.material.color = record.color;
+            ConfigureMeasurementVisual(visual, record.points, (MeasurementMode)record.mode,
+                record.visible && record.id != editingMeasurementId);
+        }
+
+        var removed = new List<string>();
+        foreach (string id in measurementVisuals.Keys)
+        {
+            if (!liveIds.Contains(id)) removed.Add(id);
+        }
+        for (int i = 0; i < removed.Count; i++)
+        {
+            DestroyMeasurementVisual(measurementVisuals[removed[i]]);
+            measurementVisuals.Remove(removed[i]);
+        }
+    }
+
+    private void RefreshDraftVisual()
+    {
+        if (measurementDraftActive && measurementDocumentReady)
+        {
+            if (draftVisual == null) draftVisual = CreateMeasurementVisual("draft", Color.yellow);
+            draftVisual.material.color = Color.yellow;
+            ConfigureMeasurementVisual(draftVisual, measurementPath.Points, measurementMode, true);
+        }
+        else if (draftVisual != null)
+        {
+            draftVisual.root.SetActive(false);
+        }
+    }
+
+    private MeasurementVisual CreateMeasurementVisual(string id, Color color)
+    {
+        var visual = new MeasurementVisual { sourceId = id };
+        visual.root = new GameObject("Measurement_" + id);
+        visual.root.transform.SetParent(targetRenderer.transform, false);
+        var lineObject = new GameObject("Line");
+        lineObject.transform.SetParent(visual.root.transform, false);
+        visual.line = lineObject.AddComponent<LineRenderer>();
+        visual.line.useWorldSpace = false;
+        visual.line.numCapVertices = 0;
+        visual.line.numCornerVertices = 0;
+        Shader overlay = Shader.Find("PointCloudWorkbench/OverlayColor");
+        if (overlay == null) overlay = Shader.Find("Sprites/Default");
+        visual.material = new Material(overlay) { color = color };
+        visual.line.sharedMaterial = visual.material;
+        visual.line.startColor = color;
+        visual.line.endColor = color;
+        visual.root.SetActive(false);
+        return visual;
+    }
+
+    private void ConfigureMeasurementVisual(MeasurementVisual visual, List<Vector3> points, MeasurementMode mode, bool visible)
+    {
+        if (visual == null || visual.root == null) return;
+        int pointCount = points != null ? points.Count : 0;
+        visual.root.SetActive(visible && pointCount > 0);
+        if (!visible || pointCount == 0)
+        {
+            visual.line.positionCount = 0;
+            for (int i = 0; i < visual.markers.Count; i++) visual.markers[i].SetActive(false);
+            return;
+        }
+
+        var path = new MeasurementPath();
+        path.SetMode(mode);
+        for (int i = 0; i < pointCount; i++) path.AddPoint(points[i]);
+        List<Vector3> linePoints = path.BuildLocalLinePoints();
+        visual.line.positionCount = linePoints.Count;
+        for (int i = 0; i < linePoints.Count; i++) visual.line.SetPosition(i, linePoints[i]);
+
+        while (visual.markers.Count < pointCount)
+        {
+            var marker = GameObject.CreatePrimitive(PrimitiveType.Sphere);
+            Destroy(marker.GetComponent<SphereCollider>());
+            marker.name = "ControlPoint_" + (visual.markers.Count + 1);
+            marker.transform.SetParent(visual.root.transform, false);
+            marker.GetComponent<MeshRenderer>().sharedMaterial = visual.material;
+            visual.markers.Add(marker);
+        }
+        for (int i = 0; i < visual.markers.Count; i++)
+        {
+            bool active = i < pointCount;
+            visual.markers[i].SetActive(active);
+            if (active) visual.markers[i].transform.localPosition = points[i];
+        }
+    }
+
+    private void UpdateVisualScreenSizes()
+    {
+        const float markerScreenPx = 6f;
+        const float lineScreenPx = 1.5f;
+        float lossyScale = Mathf.Max(targetRenderer.transform.lossyScale.x, 0.0001f);
+        foreach (MeasurementVisual visual in measurementVisuals.Values) UpdateOneVisualSize(visual, markerScreenPx, lineScreenPx, lossyScale);
+        if (draftVisual != null) UpdateOneVisualSize(draftVisual, markerScreenPx, lineScreenPx, lossyScale);
+    }
+
+    private void UpdateOneVisualSize(MeasurementVisual visual, float markerScreenPx, float lineScreenPx, float lossyScale)
+    {
+        if (visual == null || visual.root == null || !visual.root.activeSelf) return;
+        for (int i = 0; i < visual.markers.Count; i++)
+        {
+            GameObject marker = visual.markers[i];
+            if (!marker.activeSelf) continue;
+            float worldSize = CalcConstantScreenSizeWorld(marker.transform.position, markerScreenPx);
+            marker.transform.localScale = Vector3.one * (worldSize / lossyScale);
+        }
+        if (visual.line.positionCount > 0)
+        {
+            int mid = visual.line.positionCount / 2;
+            Vector3 worldMid = targetRenderer.transform.TransformPoint(visual.line.GetPosition(mid));
+            float width = CalcConstantScreenSizeWorld(worldMid, lineScreenPx) / lossyScale;
+            bool selected = visual.sourceId == selectedMeasurementId;
+            visual.line.startWidth = width * (selected ? 1.35f : 1f);
+            visual.line.endWidth = visual.line.startWidth;
+        }
+    }
+
+    private float CalcConstantScreenSizeWorld(Vector3 worldPos, float screenSizePx)
+    {
+        Camera cam = Camera.main;
+        if (cam == null) return 0.01f;
+        float dist = Vector3.Distance(cam.transform.position, worldPos);
+        if (cam.orthographic) return cam.orthographicSize * 2f * screenSizePx / Screen.height;
+        float halfFovRad = cam.fieldOfView * 0.5f * Mathf.Deg2Rad;
+        return 2f * dist * Mathf.Tan(halfFovRad) / Screen.height * screenSizePx;
+    }
+
+    private void DestroyMeasurementVisual(MeasurementVisual visual)
+    {
+        if (visual == null) return;
+        if (visual.root != null) Destroy(visual.root);
+        if (visual.material != null) Destroy(visual.material);
     }
 
     void HandleMeasureTool()
     {
-        if (editorUI != null && editorUI.IsMouseOverUI())
-        {
-            if (brushVisual != null && brushVisual.activeSelf) brushVisual.SetActive(false);
-            return;
-        }
-
-        if (!Input.GetMouseButtonDown(2))
-        {
-            if (brushVisual != null && brushVisual.activeSelf)
-            {
-                brushVisual.SetActive(false);
-            }
-            return;
-        }
+        if (!measurementDraftActive || !measurementDocumentReady) return;
+        if (editorUI != null && editorUI.IsMouseOverUI()) return;
+        DistanceMeasurementUI measureUI = GetComponent<DistanceMeasurementUI>();
+        if (measureUI != null && measureUI.IsMouseOverPanel()) return;
+        if (!Input.GetMouseButtonDown(2)) return;
 
         Ray ray = Camera.main.ScreenPointToRay(Input.mousePosition);
-        Vector3 hitPoint;
-        bool hit = FindClosestPointOnRay(ray, out hitPoint);
-
-        if (hit)
+        if (!FindClosestPointOnRay(ray, out Vector3 hitPoint)) return;
+        Vector3 localHit = targetRenderer.transform.InverseTransformPoint(hitPoint);
+        if (replaceMeasurementPointIndex >= 0 && replaceMeasurementPointIndex < measurementPath.Points.Count)
         {
-            if (targetRenderer != null)
-            {
-                // Convert clicked point to local space of renderer
-                Vector3 localHit = targetRenderer.transform.InverseTransformPoint(hitPoint);
-
-                measurementPath.AddPoint(localHit);
-                SyncLegacyMeasureFields();
-                UpdateMeasureVisuals();
-                Debug.Log($"[PointCloudEditor] 計測点{measurementPath.Points.Count}を設定: {localHit}, 線長(unit): {GetMeasurementLength():F5}");
-            }
+            measurementPath.Points[replaceMeasurementPointIndex] = localHit;
+            replaceMeasurementPointIndex = -1;
         }
         else
         {
-            if (brushVisual != null && brushVisual.activeSelf)
-            {
-                brushVisual.SetActive(false);
-            }
+            if (measurementMode == MeasurementMode.TwoPoint && measurementPath.Points.Count >= 2) return;
+            measurementPath.AddPoint(localHit);
+        }
+
+        SyncLegacyMeasureFields();
+        measurementVisualsDirty = true;
+        UpdateMeasureVisuals();
+        Debug.Log($"[PointCloudEditor] 計測点{measurementPath.Points.Count}を設定: {localHit}, 線長(unit): {GetMeasurementLength():F5}");
+        if (measurementMode == MeasurementMode.TwoPoint && measurementPath.Points.Count == 2 && string.IsNullOrEmpty(editingMeasurementId))
+        {
+            FinishMeasurement();
         }
     }
 }

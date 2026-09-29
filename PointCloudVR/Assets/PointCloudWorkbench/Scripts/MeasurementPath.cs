@@ -4,6 +4,7 @@ using UnityEngine;
 public sealed class MeasurementPath
 {
     private const int CurveSamplesPerSegment = 12;
+    public const string CurveAlgorithmId = "catmull_rom_uniform_v1";
 
     public readonly List<Vector3> Points = new List<Vector3>();
     public PointCloudEditor.MeasurementMode Mode { get; private set; } = PointCloudEditor.MeasurementMode.TwoPoint;
@@ -54,15 +55,28 @@ public sealed class MeasurementPath
         List<Vector3> result = new List<Vector3>();
         if (pointCloudTransform == null || Points.Count < 2) return result;
 
+        List<Vector3> localPoints = BuildLocalLinePoints();
+        for (int i = 0; i < localPoints.Count; i++)
+        {
+            result.Add(pointCloudTransform.TransformPoint(localPoints[i]));
+        }
+        return result;
+    }
+
+    public List<Vector3> BuildLocalLinePoints()
+    {
+        List<Vector3> result = new List<Vector3>();
+        if (Points.Count < 2) return result;
+
         if (Mode == PointCloudEditor.MeasurementMode.SmoothCurve && Points.Count >= 3)
         {
-            result.Add(pointCloudTransform.TransformPoint(Points[0]));
+            result.Add(Points[0]);
             for (int i = 0; i < Points.Count - 1; i++)
             {
                 for (int s = 1; s <= CurveSamplesPerSegment; s++)
                 {
                     float t = (float)s / CurveSamplesPerSegment;
-                    result.Add(pointCloudTransform.TransformPoint(CatmullRom(i, t)));
+                    result.Add(CatmullRom(i, t));
                 }
             }
         }
@@ -71,7 +85,7 @@ public sealed class MeasurementPath
             int count = Mode == PointCloudEditor.MeasurementMode.TwoPoint ? Mathf.Min(2, Points.Count) : Points.Count;
             for (int i = 0; i < count; i++)
             {
-                result.Add(pointCloudTransform.TransformPoint(Points[i]));
+                result.Add(Points[i]);
             }
         }
         return result;
