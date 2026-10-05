@@ -50,7 +50,7 @@ def _write_json(path: Path, result, input_path: str, point_count: int):
 
     def section_payload(section):
         payload = _json_value(section)
-        for field in ("center_xyz_units", "centerline_tangent_xyz", "local_axis_xyz", "basis_u_xyz", "basis_v_xyz"):
+        for field in ("center_xyz_mm", "centerline_tangent_xyz", "local_axis_xyz", "basis_u_xyz", "basis_v_xyz"):
             payload[field] = vector(getattr(section, field))
         eigenvalues = section.local_pca_eigenvalues
         payload["local_pca_eigenvalues"] = (
@@ -71,17 +71,16 @@ def _write_json(path: Path, result, input_path: str, point_count: int):
         return payload
 
     payload = {
-        "schema_version": 1,
+        "schema_version": 2,
         "algorithm": "prototype-derived local-PCA cross-section profile",
         "created_utc": datetime.now(timezone.utc).isoformat(),
         "input_path": str(Path(input_path).resolve()),
         "point_count": int(point_count),
-        "scale_mm_per_unit": float(result.scale_mm_per_unit),
         "centerline_length_mm": float(result.centerline_length_mm),
         "parameters": _json_value(result.parameters),
         "centerline": {
-            "support_points_xyz_units": [vector(p) for p in result.centerline_support_points_units],
-            "display_points_xyz_units": [vector(p) for p in result.centerline_display_points_units],
+            "support_points_xyz_mm": [vector(p) for p in result.centerline_support_points_mm],
+            "display_points_xyz_mm": [vector(p) for p in result.centerline_display_points_mm],
         },
         "sections": [section_payload(section) for section in result.sections],
     }

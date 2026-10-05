@@ -12,9 +12,9 @@ public class PointCloudRenderer : MonoBehaviour
     [Header("Scalar Fields Mode")]
     [Range(0, 3)]
     public int colorMode = 0; // 0: RGB, 1: Height, 2: Label, 3: Distance
-    public float minHeight = -2f;
-    public float maxHeight = 2f;
-    public float maxDistanceThreshold = 1f;
+    public float minHeight = -2000f;
+    public float maxHeight = 2000f;
+    public float maxDistanceThreshold = 1000f;
 
     [Header("LOD & Culling Settings")]
     public bool enableLOD = true;
@@ -29,6 +29,7 @@ public class PointCloudRenderer : MonoBehaviour
     private Material pointMaterial;
     private Bounds localBounds;
     private bool isInitialized = false;
+
 
     // Dynamic label colors
     private Vector4[] labelColors = new Vector4[64];
@@ -85,7 +86,7 @@ public class PointCloudRenderer : MonoBehaviour
     {
         if (isInitialized && pointMaterial != null) return;
 
-        // Automatically convert legacy meter-based point size (e.g. 0.003f) to pixel-based (e.g. 2.0f)
+        // Upgrade old sub-pixel point-size settings to the current pixel-based size.
         if (pointSize < 0.5f)
         {
             pointSize = 2.0f;
@@ -237,7 +238,6 @@ public class PointCloudRenderer : MonoBehaviour
     public void SetPointCloudData(Vector3[] positions, Color[] colors)
     {
         Initialize();
-
         int count = positions.Length;
         pointData = new PointData[count];
         cachedPositions = positions;
@@ -311,6 +311,44 @@ public class PointCloudRenderer : MonoBehaviour
         StartOctreeBuild(cachedPositions);
 
         InitializeAnnotationLayers(count);
+    }
+
+    public bool ApplyPointCoordinateCorrection(float correctionFactor)
+    {
+        if (pointData == null || float.IsNaN(correctionFactor) || float.IsInfinity(correctionFactor) || correctionFactor <= 0f)
+        {
+            return false;
+        }
+
+        Vector3 min = pointData.Length > 0 ? pointData[0].position * correctionFactor : Vector3.zero;
+        Vector3 max = min;
+
+        if (cachedPositions == null || cachedPositions.Length != pointData.Length)
+        {
+            cachedPositions = new Vector3[pointData.Length];
+        }
+
+        for (int i = 0; i < pointData.Length; i++)
+        {
+            Vector3 position = pointData[i].position * correctionFactor;
+            if (float.IsNaN(position.x) || float.IsInfinity(position.x) ||
+                float.IsNaN(position.y) || float.IsInfinity(position.y) ||
+                float.IsNaN(position.z) || float.IsInfinity(position.z)) return false;
+        }
+
+        for (int i = 0; i < pointData.Length; i++)
+        {
+            Vector3 position = pointData[i].position * correctionFactor;
+            pointData[i].position = position;
+            cachedPositions[i] = position;
+            min = Vector3.Min(min, position);
+            max = Vector3.Max(max, position);
+        }
+
+        localBounds = new Bounds((min + max) * 0.5f, max - min + Vector3.one * 0.5f);
+        if (pointBuffer != null) pointBuffer.SetData(pointData);
+        StartOctreeBuild(cachedPositions);
+        return true;
     }
 
     private void RecreateComputeBuffer(int count)

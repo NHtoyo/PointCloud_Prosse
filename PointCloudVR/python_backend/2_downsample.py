@@ -1,8 +1,7 @@
 import sys
-import os
 from pathlib import Path
-import json
 import numpy as np
+import json
 import csv
 import argparse
 import open3d as o3d
@@ -15,7 +14,6 @@ def parse_arguments():
     parser = argparse.ArgumentParser(description="Label-aware Downsampling Script (CLI version)")
     parser.add_argument("--input", type=str, required=True, help="Input PLY file path (or folder containing PLY)")
     parser.add_argument("--output", type=str, required=True, help="Output directory for downsampled point clouds")
-    parser.add_argument("--scale_json", type=str, default="config/scale_calibration_report.json", help="Path to scale report JSON")
     parser.add_argument("--mode", type=int, choices=[1, 2, 3], default=1, 
                         help="1: Overall merge downsampling only, 2: Per-organ downsampling only, 3: Both")
     parser.add_argument("--voxel_size", type=float, default=5.0, help="Voxel size in mm (real scale)")
@@ -34,35 +32,11 @@ LABEL_NAMES = {
 def ensure_output_dir(path: str):
     Path(path).mkdir(parents=True, exist_ok=True)
 
-def read_scale_json(json_path: str):
-    if not os.path.exists(json_path):
-        print(f"Error: Scale file not found: {json_path}")
-        print("Please run scale calibration first.")
-        sys.exit(1)
-        
-    with open(json_path, "r", encoding="utf-8") as f:
-        data = json.load(f)
-
-    mm_per_unit = None
-    for k in ["mm_per_unit", "scale_mm_per_unit", "unit_to_mm"]:
-        if k in data and isinstance(data[k], (int, float)):
-            mm_per_unit = float(data[k])
-            break
-
-    if mm_per_unit is None and "meters_per_unit" in data:
-        mm_per_unit = float(data["meters_per_unit"]) * 1000.0
-
-    if mm_per_unit is None:
-        raise ValueError(f"Could not parse scale from JSON: {json_path}")
-    
-    return mm_per_unit
-
 def main():
     args = parse_arguments()
 
     INPUT_PATH = Path(args.input).resolve()
     OUTPUT_DIR = Path(args.output).resolve()
-    SCALE_JSON = Path(args.scale_json).resolve()
     voxel_real_mm = args.voxel_size
 
     # Resolve input PLY file
@@ -83,14 +57,10 @@ def main():
     ensure_output_dir(str(OUTPUT_DIR))
     ensure_output_dir(str(OUTPUT_DIR / "by_organ"))
 
-    # Read scale factor
-    mm_per_unit = read_scale_json(str(SCALE_JSON))
-    meters_per_unit = mm_per_unit / 1000.0
-    print(f"[SCALE] {mm_per_unit:.6f} mm/unit  ({meters_per_unit:.9f} m/unit)")
-
-    # Calculate voxel size in virtual units
-    voxel_unit = voxel_real_mm / mm_per_unit
-    print(f"Voxel size: {voxel_real_mm:.2f} mm -> {voxel_unit:.6f} units")
+    if not np.isfinite(voxel_real_mm) or voxel_real_mm <= 0:
+        raise ValueError("voxel_size must be a finite positive number in mm")
+    voxel_mm = voxel_real_mm
+    print(f"Voxel size: {voxel_real_mm:.2f} mm")
 
     # Load point cloud with attributes using Open3D Tensor API
     print(f"[Progress] 10.0 Loading point cloud: {input_file.name}...", flush=True)
@@ -121,7 +91,7 @@ def main():
     if args.mode in [1, 3]:
         print("[Progress] 40.0 Downsampling entire point cloud...", flush=True)
         # Tensor voxel downsample automatically downsamples custom attributes (like label)
-        merged_ds = pcd.voxel_down_sample(voxel_size=voxel_unit)
+        merged_ds = pcd.voxel_down_sample(voxel_size=voxel_mm)
         merged_ds_n = merged_ds.point.positions.shape[0]
         
         output_filename = f"{input_file.stem}_downsampled.ply"
@@ -154,7 +124,7 @@ def main():
             part_pre_n = len(indices)
             
             # Apply downsampling on the sub-cloud
-            part_ds = part_pcd.voxel_down_sample(voxel_size=voxel_unit)
+            part_ds = part_pcd.voxel_down_sample(voxel_size=voxel_mm)
             part_post_n = part_ds.point.positions.shape[0]
             
             out_org = OUTPUT_DIR / "by_organ" / f"{input_file.stem}_{label_name}_downsampled.ply"
@@ -187,11 +157,9 @@ def main():
     # JSON Runlog
     runlog = {
         "source_file": str(input_file),
-        "scale": {"mm_per_unit": mm_per_unit, "meters_per_unit": meters_per_unit},
         "voxel": {
             "voxel_size_mm": float(voxel_real_mm),
-            "voxel_size_unit": float(voxel_unit),
-            "method": "override_mm"
+            "coordinate_basis": "mm"
         },
         "counts": {
             "total_pre": int(total_pre),

@@ -35,6 +35,7 @@ namespace PointCloudWorkbench
         private string presetSaveName = "NewAnnotationPreset";
         private Vector2 presetScroll = Vector2.zero;
         private Rect presetPopupRect;
+        private Rect lastPanelRect;
 
         // UI設定 (パラメータパネルを廃止して高さはTOP_Hのみ)
         private float BAR_X => Mathf.Min(460f, Screen.width * 0.25f) + 30f;
@@ -167,6 +168,7 @@ namespace PointCloudWorkbench
             float barH = TOP_H; // パネルの高さは160px固定
 
             Rect bar = new Rect(BAR_X, currentY, barW, barH);
+            lastPanelRect = bar;
             GUI.Box(bar, "", panelStyle);
 
             // 1. パレット部分（新規追加・名前変更・適用・Undo/Redo）
@@ -183,6 +185,13 @@ namespace PointCloudWorkbench
 
             // 描画した高さ分 currentY を進める
             currentY += barH + 10f;
+        }
+
+        public bool IsMouseOverUI()
+        {
+            Vector3 mouse = Input.mousePosition;
+            mouse.y = Screen.height - mouse.y;
+            return lastPanelRect.Contains(mouse) || (isPresetPopupOpen && presetPopupRect.Contains(mouse));
         }
 
         private void DrawControlPalette(Rect bar)

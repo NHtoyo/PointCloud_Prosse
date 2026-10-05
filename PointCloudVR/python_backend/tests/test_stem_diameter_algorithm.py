@@ -51,7 +51,7 @@ def cylinder_points_mm(diameter_mm=8.0, tilt_deg=0.0, ellipse_ratio=1.0,
 class StemDiameterAlgorithmTests(unittest.TestCase):
     def analyze(self, points_mm, **overrides):
         params = StemDiameterParams(query_workers=1, **overrides)
-        return analyze_stem(points_mm / 1000.0, 1000.0, params)
+        return analyze_stem(points_mm, params)
 
     def test_algorithm_has_no_io_or_unity_dependencies(self):
         source = Path(inspect.getsourcefile(analyze_stem)).read_text(encoding="utf-8")

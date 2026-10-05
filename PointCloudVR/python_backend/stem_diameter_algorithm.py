@@ -10,6 +10,7 @@ from scipy.ndimage import median_filter
 from scipy.spatial import cKDTree
 
 
+
 @dataclass
 class StemDiameterParams:
     measurement_interval_mm: float = 10.0
@@ -54,7 +55,7 @@ class SliceResult:
 class SectionResult:
     index: int
     position_mm: float
-    center_xyz_units: np.ndarray
+    center_xyz_mm: np.ndarray
     centerline_tangent_xyz: np.ndarray
     local_axis_xyz: Optional[np.ndarray]
     basis_u_xyz: Optional[np.ndarray]
@@ -75,11 +76,10 @@ class SectionResult:
 
 @dataclass
 class StemDiameterAnalysisResult:
-    scale_mm_per_unit: float
     parameters: StemDiameterParams
     centerline_length_mm: float
-    centerline_support_points_units: np.ndarray
-    centerline_display_points_units: np.ndarray
+    centerline_support_points_mm: np.ndarray
+    centerline_display_points_mm: np.ndarray
     sections: list[SectionResult]
 
 
@@ -345,7 +345,6 @@ def _slice_measurement(points_mm, center_mm, axis, basis_u, basis_v, thickness_m
 
 def analyze_stem(
     points_xyz,
-    scale_mm_per_unit,
     params=None,
     progress_callback: Optional[Callable[[float, str], None]] = None,
 ):
@@ -359,15 +358,12 @@ def analyze_stem(
         params = StemDiameterParams()
 
     points_xyz = np.asarray(points_xyz, dtype=np.float64)
-    scale_mm_per_unit = float(scale_mm_per_unit)
     if points_xyz.ndim != 2 or points_xyz.shape[1] != 3:
         raise ValueError("points_xyz must have shape (N, 3).")
     if len(points_xyz) < 100:
         raise ValueError("Too few points.")
     if not np.all(np.isfinite(points_xyz)):
         raise ValueError("points_xyz contains NaN or inf.")
-    if not np.isfinite(scale_mm_per_unit) or scale_mm_per_unit <= 0:
-        raise ValueError("scale_mm_per_unit must be finite and > 0.")
     if params.measurement_interval_mm <= 0 or params.centerline_step_mm <= 0:
         raise ValueError("measurement_interval_mm and centerline_step_mm must be > 0.")
     if params.local_axis_radius_mm <= 0 or params.slice_roi_radius_mm < params.local_axis_radius_mm:
@@ -395,7 +391,7 @@ def analyze_stem(
             progress_callback(float(value), message)
 
     report_progress(0.05, "主茎の大まかな軸と中心線支持点を推定中...")
-    points_mm = points_xyz * scale_mm_per_unit
+    points_mm = points_xyz
     del points_xyz
     support_t, support_points_mm, _ = _build_centerline(points_mm, params)
     splines = _fit_centerline(support_t, support_points_mm, params)
@@ -450,7 +446,7 @@ def analyze_stem(
             if len(local_points) < params.min_local_axis_points:
                 sections.append(
                     SectionResult(
-                        i, float(position_mm), center_mm / scale_mm_per_unit, tangent,
+                        i, float(position_mm), center_mm, tangent,
                         None, None, None, None, None, None, [],
                         None, None, None, None, None, None, None,
                         "insufficient_local_axis_points",
@@ -496,7 +492,7 @@ def analyze_stem(
                 SectionResult(
                     index=i,
                     position_mm=float(position_mm),
-                    center_xyz_units=center_mm / scale_mm_per_unit,
+                    center_xyz_mm=center_mm,
                     centerline_tangent_xyz=tangent,
                     local_axis_xyz=local_axis,
                     basis_u_xyz=basis_u,
@@ -525,10 +521,9 @@ def analyze_stem(
         )
 
     return StemDiameterAnalysisResult(
-        scale_mm_per_unit=scale_mm_per_unit,
         parameters=params,
         centerline_length_mm=float(total_length_mm),
-        centerline_support_points_units=support_points_mm / scale_mm_per_unit,
-        centerline_display_points_units=curve_mm / scale_mm_per_unit,
+        centerline_support_points_mm=support_points_mm,
+        centerline_display_points_mm=curve_mm,
         sections=sections,
     )

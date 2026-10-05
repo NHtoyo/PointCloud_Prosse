@@ -12,7 +12,7 @@ from test_stem_diameter_algorithm import cylinder_points_mm
 
 class StemDiameterCliTests(unittest.TestCase):
     def test_ply_cli_writes_four_outputs_and_unity_json(self):
-        points = (cylinder_points_mm() / 1000.0).astype(np.float32)
+        points = cylinder_points_mm().astype(np.float32)
         colors = np.zeros_like(points, dtype=np.uint8)
         colors[:, 1] = 180
 
@@ -28,7 +28,6 @@ class StemDiameterCliTests(unittest.TestCase):
             code = main([
                 "--input", str(input_path),
                 "--output_dir", str(output_dir),
-                "--scale-mm-per-unit", "1000",
                 "--query-workers", "1",
             ])
 
@@ -40,12 +39,13 @@ class StemDiameterCliTests(unittest.TestCase):
             self.assertEqual({path.name for path in output_dir.iterdir()}, expected)
             self.assertEqual(keep_file.read_text(encoding="utf-8"), "preserve this file")
             payload = json.loads((output_dir / "stem_diameter.json").read_text(encoding="utf-8"))
-            self.assertEqual(payload["schema_version"], 1)
+            self.assertEqual(payload["schema_version"], 2)
+            self.assertNotIn("scale_mm_per_unit", payload)
             self.assertEqual(payload["point_count"], len(points))
             self.assertGreater(len(payload["sections"]), 10)
-            self.assertEqual(len(payload["centerline"]["display_points_xyz_units"][0]), 3)
+            self.assertEqual(len(payload["centerline"]["display_points_xyz_mm"][0]), 3)
             section = payload["sections"][len(payload["sections"]) // 2]
-            self.assertIsInstance(section["center_xyz_units"], dict)
+            self.assertIsInstance(section["center_xyz_mm"], dict)
             self.assertIsInstance(section["slice_results"][0]["contour_uv_mm"][0], dict)
 
 

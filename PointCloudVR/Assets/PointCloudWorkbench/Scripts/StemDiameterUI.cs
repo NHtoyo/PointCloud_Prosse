@@ -9,25 +9,22 @@ using UnityEngine;
 
 public sealed class StemDiameterUI : MonoBehaviour
 {
-    private const int WindowId = 39174;
     private readonly ConcurrentQueue<OutputLine> outputQueue = new ConcurrentQueue<OutputLine>();
     private readonly StringBuilder errorOutput = new StringBuilder();
-    private Rect windowRect = new Rect(12f, 12f, 390f, 470f);
+    private Rect panelRect;
+    private Vector2 contentScroll;
     private Process process;
     private volatile bool stdoutEnded;
     private volatile bool stderrEnded;
-    private bool collapsed;
-    private bool windowPlaced;
     private bool showOverlay = true;
-    private string status = "点群とスケール校正を確認してください。";
+    private string status = "茎径解析の準備ができています。";
     private string outputDirectory = "";
     private string inputPath = "";
-    private float scaleMmPerUnit;
     private int metricMode;
     private int selectedIndex = -1;
     private PointCloudLoader loader;
     private PointCloudRenderer targetRenderer;
-    private PointCloudEditor editor;
+    private PointCloudEditorUI editorUI;
     private StemDiameterVisualizer visualizer;
     private StemDiameterResult result;
 
@@ -37,19 +34,11 @@ public sealed class StemDiameterUI : MonoBehaviour
         public string Text;
     }
 
-    [RuntimeInitializeOnLoadMethod(RuntimeInitializeLoadType.AfterSceneLoad)]
-    private static void AttachToWorkbench()
-    {
-        PointCloudEditorUI workbench = FindAnyObjectByType<PointCloudEditorUI>();
-        if (workbench == null || workbench.GetComponent<StemDiameterUI>() != null) return;
-        workbench.gameObject.AddComponent<StemDiameterUI>();
-    }
-
     private void Awake()
     {
         loader = GetComponent<PointCloudLoader>();
         targetRenderer = GetComponent<PointCloudRenderer>();
-        editor = GetComponent<PointCloudEditor>();
+        editorUI = GetComponent<PointCloudEditorUI>();
         visualizer = GetComponent<StemDiameterVisualizer>();
         if (visualizer == null) visualizer = gameObject.AddComponent<StemDiameterVisualizer>();
         if (loader != null) loader.PointCloudLoaded += OnPointCloudLoaded;
@@ -90,7 +79,7 @@ public sealed class StemDiameterUI : MonoBehaviour
             {
                 string jsonPath = Path.Combine(outputDirectory, "stem_diameter.json");
                 result = JsonUtility.FromJson<StemDiameterResult>(File.ReadAllText(jsonPath));
-                if (result == null || result.schema_version != 1 || result.sections == null)
+                if (result == null || result.schema_version != 2 || result.sections == null)
                     throw new InvalidDataException("JSONの形式またはschema_versionが不正です。");
                 selectedIndex = result.sections.Length > 0 ? 0 : -1;
                 visualizer.SetResult(targetRenderer, result);
@@ -121,65 +110,74 @@ public sealed class StemDiameterUI : MonoBehaviour
         status = "点群が変わりました。茎径解析を再実行してください。";
     }
 
-    private void OnGUI()
+    public bool IsMouseOverPanel()
     {
-        if (!windowPlaced)
-        {
-            windowRect.x = Mathf.Max(12f, Screen.width - windowRect.width - 12f);
-            windowPlaced = true;
-        }
-        if (windowRect.width != 390f) windowRect.width = 390f;
-        windowRect.height = Mathf.Min(windowRect.height, Screen.height - 20f);
-        windowRect.x = Mathf.Clamp(windowRect.x, 0f, Mathf.Max(0f, Screen.width - windowRect.width));
-        windowRect.y = Mathf.Clamp(windowRect.y, 0f, Mathf.Max(0f, Screen.height - windowRect.height));
-        windowRect = GUI.Window(WindowId, windowRect, DrawWindow, "茎径プロファイル");
-
-        Event current = Event.current;
-        if (current != null && current.type == EventType.ScrollWheel && windowRect.Contains(current.mousePosition))
-            current.Use();
+        if (editorUI != null && !editorUI.showStemDiameterUI) return false;
+        Vector3 mouse = Input.mousePosition;
+        mouse.y = Screen.height - mouse.y;
+        return panelRect.Contains(mouse);
     }
 
-    private void DrawWindow(int id)
+    public void DrawGUI(ref float currentY)
     {
+        if (editorUI == null) editorUI = GetComponent<PointCloudEditorUI>();
+        if (editorUI == null || !editorUI.showStemDiameterUI) return;
+
         RefreshSourceInfo();
+        float barX = Mathf.Min(460f, Screen.width * 0.25f) + 30f;
+        float rightWidth = Mathf.Min(480f, Screen.width * 0.25f) + 30f;
+        float availableWidth = Screen.width - barX - rightWidth - 30f;
+        float barWidth = Mathf.Min(Screen.width - 30f, Mathf.Max(430f, availableWidth));
+        barWidth = Mathf.Max(280f, barWidth);
+        barX = Mathf.Clamp(barX + (availableWidth - barWidth) * 0.5f, 15f, Screen.width - barWidth - 15f);
+        float barHeight = Mathf.Min(460f, Mathf.Max(220f, Screen.height - currentY - 18f));
+        panelRect = new Rect(barX, currentY, barWidth, barHeight);
+        GUI.Box(panelRect, GUIContent.none);
+
+        Rect contentRect = new Rect(panelRect.x + 10f, panelRect.y + 7f, panelRect.width - 20f, panelRect.height - 14f);
+        GUILayout.BeginArea(contentRect);
+        contentScroll = GUILayout.BeginScrollView(contentScroll, false, true);
         GUILayout.BeginVertical();
         GUILayout.BeginHorizontal();
+        GUILayout.Label("茎径プロファイル", GUI.skin.label, GUILayout.ExpandWidth(true));
         GUILayout.Label(string.IsNullOrEmpty(inputPath) ? "現在の点群を対象にします" : Path.GetFileName(inputPath),
             GUILayout.ExpandWidth(true));
-        if (GUILayout.Button(collapsed ? "開く" : "最小化", GUILayout.Width(58f), GUILayout.Height(26f)))
-            collapsed = !collapsed;
+        if (GUILayout.Button("閉じる", GUILayout.Width(68f), GUILayout.Height(28f)))
+            editorUI.SetStemDiameterPanelVisible(false);
         GUILayout.EndHorizontal();
 
-        if (!collapsed)
-        {
-            GUILayout.Label($"スケール: {(scaleMmPerUnit > 0f ? $"{scaleMmPerUnit:G5} mm/unit" : "未校正")}");
-            GUILayout.Label("間隔 10 mm   中心線支持 5 mm   局所軸半径 15 mm   断面厚 3 / 5 / 7 mm");
-            GUILayout.Label("主茎を抽出した点群を入力してください。節・葉柄等は品質指標で確認します。");
-            GUILayout.BeginHorizontal();
-            bool priorEnabled = GUI.enabled;
-            GUI.enabled = process == null && !PointCloudProgressManager.Instance.IsRunning;
-            if (GUILayout.Button("茎径解析を実行", GUILayout.Height(32f))) StartAnalysis();
-            GUI.enabled = process != null;
-            if (GUILayout.Button("キャンセル", GUILayout.Width(90f), GUILayout.Height(32f))) StopProcess();
-            GUI.enabled = priorEnabled;
-            GUILayout.EndHorizontal();
-            GUILayout.Label(status, GUILayout.MinHeight(28f));
+        GUILayout.Label("間隔 10 mm   中心線支持 5 mm   局所軸半径 15 mm   断面厚 3 / 5 / 7 mm");
+        GUILayout.Label("主茎を抽出した点群を入力してください。節・葉柄等は品質指標で確認します。");
+        GUILayout.BeginHorizontal();
+        bool priorEnabled = GUI.enabled;
+        GUI.enabled = process == null && !PointCloudProgressManager.Instance.IsRunning;
+        if (GUILayout.Button("茎径解析を実行", GUILayout.Height(32f))) StartAnalysis();
+        GUI.enabled = process != null;
+        if (GUILayout.Button("キャンセル", GUILayout.Width(90f), GUILayout.Height(32f))) StopProcess();
+        GUI.enabled = priorEnabled;
+        GUILayout.EndHorizontal();
+        GUILayout.Label(status, GUILayout.MinHeight(28f));
 
-            if (result != null && result.sections != null && result.sections.Length > 0)
-            {
-                DrawMetricButtons();
-                Rect chart = GUILayoutUtility.GetRect(340f, 155f, GUILayout.ExpandWidth(true));
-                DrawGraph(chart);
-                DrawSelectedDetails();
-                GUILayout.BeginHorizontal();
-                showOverlay = GUILayout.Toggle(showOverlay, "中心線・選択断面を3D表示", "Button", GUILayout.Height(26f));
-                if (visualizer != null) visualizer.SetVisible(showOverlay);
-                GUILayout.EndHorizontal();
-                GUILayout.Label(outputDirectory, GUI.skin.label);
-            }
+        if (result != null && result.sections != null && result.sections.Length > 0)
+        {
+            DrawMetricButtons();
+            Rect chart = GUILayoutUtility.GetRect(340f, 155f, GUILayout.ExpandWidth(true));
+            DrawGraph(chart);
+            DrawSelectedDetails();
+            GUILayout.BeginHorizontal();
+            showOverlay = GUILayout.Toggle(showOverlay, "中心線・選択断面を3D表示", "Button", GUILayout.Height(26f));
+            if (visualizer != null) visualizer.SetVisible(showOverlay);
+            GUILayout.EndHorizontal();
+            GUILayout.Label(outputDirectory, GUI.skin.label);
         }
         GUILayout.EndVertical();
-        GUI.DragWindow(new Rect(0f, 0f, windowRect.width, 24f));
+        GUILayout.EndScrollView();
+        GUILayout.EndArea();
+        currentY += panelRect.height + 10f;
+
+        Event current = Event.current;
+        if (current != null && current.type == EventType.ScrollWheel && panelRect.Contains(current.mousePosition))
+            current.Use();
     }
 
     private void DrawMetricButtons()
@@ -367,9 +365,6 @@ public sealed class StemDiameterUI : MonoBehaviour
                 throw new InvalidOperationException("点群がまだ読み込まれていません。");
             if (!File.Exists(inputPath)) throw new FileNotFoundException("現在の点群PLYが見つかりません。", inputPath);
 
-            if (!IsValid(scaleMmPerUnit) || scaleMmPerUnit <= 0f)
-                throw new InvalidOperationException("点群の実スケールが未校正です。先にスケール校正を行ってください。");
-
             string backend = Path.GetFullPath(Path.Combine(Application.dataPath, "../python_backend"));
             string script = Path.Combine(backend, "run_stem_diameter.py");
             if (!File.Exists(script)) throw new FileNotFoundException("茎径解析CLIが見つかりません。", script);
@@ -385,7 +380,6 @@ public sealed class StemDiameterUI : MonoBehaviour
                 Arguments = string.Join(" ", new[]
                 {
                     Quote(script), "--input", Quote(inputPath), "--output_dir", Quote(outputDirectory),
-                    "--scale-mm-per-unit", scaleMmPerUnit.ToString("R", CultureInfo.InvariantCulture),
                     "--query-workers", "-1"
                 }),
                 WorkingDirectory = backend,
@@ -428,14 +422,9 @@ public sealed class StemDiameterUI : MonoBehaviour
     {
         if (loader == null) loader = GetComponent<PointCloudLoader>();
         if (targetRenderer == null) targetRenderer = GetComponent<PointCloudRenderer>();
-        if (editor == null) editor = GetComponent<PointCloudEditor>();
+        if (editorUI == null) editorUI = GetComponent<PointCloudEditorUI>();
         if (loader != null)
             inputPath = !string.IsNullOrEmpty(loader.CurrentFilePath) ? loader.CurrentFilePath : loader.GetFilePath();
-        scaleMmPerUnit = editor != null && editor.HasScaleCalibration
-            ? editor.ScaleMetersPerSourceUnit * 1000f
-            : targetRenderer != null && targetRenderer.CoordinateScaleIsKnown
-                ? targetRenderer.CoordinateScaleMetersPerSourceUnit * 1000f
-                : 0f;
     }
 
     private void ProcessOutputLine(string line)
@@ -470,7 +459,7 @@ public sealed class StemDiameterUI : MonoBehaviour
     {
         status = message;
         UnityEngine.Debug.LogError($"[StemDiameterUI] {message}");
-        PointCloudProgressManager.Instance.ShowError("茎径解析エラー", message);
+        PointCloudProgressManager.Instance.Complete();
     }
 
     private static string Quote(string value)

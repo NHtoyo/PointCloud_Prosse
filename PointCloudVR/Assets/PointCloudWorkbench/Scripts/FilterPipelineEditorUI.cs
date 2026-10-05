@@ -37,6 +37,7 @@ namespace PointCloudWorkbench
         private string presetSaveName = "NewPreset";
         private Vector2 presetScroll = Vector2.zero;
         private Rect presetPopupRect;
+        private Rect lastPanelRect;
 
         // スタイル
         private GUIStyle panelStyle, titleStyle, hintStyle, labelStyle;
@@ -82,8 +83,8 @@ namespace PointCloudWorkbench
             if (noiseFilterUI?.Params?.customPipeline == null) return;
             var pl = noiseFilterUI.Params.customPipeline;
 
-            // プリセット名入力中のみキー入力を無視する（IMEやBackspaceの競合を回避）
-            if (GUI.GetNameOfFocusedControl() == "PresetNameField") return;
+            // どのUIテキスト欄への入力も、パイプライン操作ショートカットとして扱わない。
+            if (GUIUtility.keyboardControl != 0) return;
 
             if (selectedBlockIndex >= 0 && selectedBlockIndex < pl.Count)
             {
@@ -154,6 +155,7 @@ namespace PointCloudWorkbench
             bool hasSelection = selectedBlockIndex >= 0 && pl != null && selectedBlockIndex < pl.Count;
             float barH = hasSelection ? (TOP_H + PARAM_H) : TOP_H;
             Rect bar = new Rect(BAR_X, currentY, barW, barH);
+            lastPanelRect = bar;
 
             // バー背景
             GUI.Box(bar, "", panelStyle);
@@ -188,6 +190,15 @@ namespace PointCloudWorkbench
 
             // 描画した高さ分 currentY を進める (マージン 10f 追加)
             currentY += barH + 10f;
+        }
+
+        public bool IsMouseOverUI()
+        {
+            Vector3 mouse = Input.mousePosition;
+            mouse.y = Screen.height - mouse.y;
+            if (lastPanelRect.Contains(mouse)) return true;
+            if (isPresetPopupOpen && presetPopupRect.Contains(mouse)) return true;
+            return showContextMenu && new Rect(contextMenuPos.x, contextMenuPos.y, 88f, 72f).Contains(mouse);
         }
 
         private void DrawPresetMenu()
@@ -598,7 +609,7 @@ namespace PointCloudWorkbench
                 if (cc.useKnn)
                     cc.k      = SliderInt(x + colW, y, lw, sw, $"k: {cc.k}",                   cc.k,      3, 50);
                 else
-                    cc.radius = Slider   (x + colW, y, lw, sw, $"半径: {cc.radius:F3} m",       cc.radius, 0.005f, 0.2f);
+                    cc.radius = Slider   (x + colW, y, lw, sw, $"半径: {cc.radius:F1} mm",      cc.radius, 5f, 200f);
 
                 // 2行目: 相対/絶対 トグル + 値スライダー
                 y += lh + 2f;
@@ -608,7 +619,7 @@ namespace PointCloudWorkbench
                 if (cc.useRelative)
                     cc.sigma = Slider(x + colW, y, lw, sw, $"Sigma: {cc.sigma:F2}", cc.sigma, 0.1f, 3f);
                 else
-                    cc.error = Slider(x + colW, y, lw, sw, $"Error: {cc.error:F4}", cc.error, 0.0001f, 0.05f);
+                    cc.error = Slider(x + colW, y, lw, sw, $"絶対誤差: {cc.error:F1} mm", cc.error, 0.1f, 50f);
 
                 // 3行目: 孤立点トグル
                 y += lh + 2f;

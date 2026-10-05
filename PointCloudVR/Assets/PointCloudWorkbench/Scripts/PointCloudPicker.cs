@@ -4,7 +4,7 @@ namespace PointCloudWorkbench
 {
     public class PointCloudPicker : MonoBehaviour
     {
-        public float pickingRadius = 0.08f;
+        public float pickingRadius = 80f;
 
         public bool TryPickPoint(Camera camera, Vector3 mousePos, Vector3 fallbackPivot, out Vector3 pickedPoint)
         {

@@ -33,7 +33,6 @@ public class PointCloudManager : MonoBehaviour
     private float avgDistance = 0f;
     private float maxDistance = 0f;
     private int comparedPointCount = 0;
-    private float currentScaleFactor = 1.0f;
 
     // UI Styles
     private GUIStyle windowStyle;
@@ -69,6 +68,8 @@ public class PointCloudManager : MonoBehaviour
 
     void Start()
     {
+        editorUIInstance = Object.FindAnyObjectByType<PointCloudEditorUI>();
+
         // Find or add CloudCompareCameraController
         Camera cam = Camera.main;
         if (cam != null)
@@ -163,6 +164,7 @@ public class PointCloudManager : MonoBehaviour
     private void HandleCameraMovement()
     {
         if (ccCameraController != null) return; // Let CloudCompareCameraController handle it on PC
+        if (editorUIInstance != null && (editorUIInstance.IsMouseOverUI() || GUIUtility.keyboardControl != 0)) return;
 
         // Get WASD/QE movement
         float h = 0f;
@@ -408,23 +410,9 @@ public class PointCloudManager : MonoBehaviour
             {
                 alignedCloud.transform.localPosition = Vector3.zero;
                 alignedCloud.transform.localRotation = Quaternion.identity;
-                alignedCloud.transform.localScale = new Vector3(currentScaleFactor, currentScaleFactor, currentScaleFactor);
+                alignedCloud.transform.localScale = Vector3.one;
             }
         }
-    }
-
-    /// <summary>
-    /// スケール校正レポートファイルをロードし、点群オブジェクトのTransformスケールに自動適用します。
-    /// </summary>
-    public void ApplyScaleCalibration()
-    {
-        string jsonPath = PointCloudWorkbench.PointCloudScaleService.GetDefaultReportPath();
-        float scaleMetersPerUnit = PointCloudWorkbench.PointCloudScaleService.LoadMetersPerUnitOrDefault(jsonPath);
-        Debug.Log($"[ScaleManager] Applying scale calibration: {scaleMetersPerUnit:F6} m/unit");
-
-        currentScaleFactor = scaleMetersPerUnit;
-        PointCloudWorkbench.PointCloudScaleService.ApplyUniformScale(referenceCloud, scaleMetersPerUnit);
-        PointCloudWorkbench.PointCloudScaleService.ApplyUniformScale(alignedCloud, scaleMetersPerUnit);
     }
 
     private void InitializeStyles()
@@ -620,14 +608,19 @@ public class PointCloudManager : MonoBehaviour
             bool prevAnn = editorUIInstance.showAnnotationUI;
             bool prevNoise = editorUIInstance.showNoiseFilterUI;
             bool prevMeas = editorUIInstance.showMeasurementUI;
+            bool prevStem = editorUIInstance.showStemDiameterUI;
 
             editorUIInstance.showAnnotationUI = GUILayout.Toggle(editorUIInstance.showAnnotationUI, " アノテーションUI", toggleStyle);
             editorUIInstance.showNoiseFilterUI = GUILayout.Toggle(editorUIInstance.showNoiseFilterUI, " モヤ処理UI", toggleStyle);
+            GUILayout.EndHorizontal();
+            GUILayout.BeginHorizontal();
             editorUIInstance.showMeasurementUI = GUILayout.Toggle(editorUIInstance.showMeasurementUI, " 二点間距離計測UI", toggleStyle);
+            editorUIInstance.showStemDiameterUI = GUILayout.Toggle(editorUIInstance.showStemDiameterUI, " 茎径プロファイルUI", toggleStyle);
 
             if (editorUIInstance.showAnnotationUI != prevAnn || 
                 editorUIInstance.showNoiseFilterUI != prevNoise || 
-                editorUIInstance.showMeasurementUI != prevMeas)
+                editorUIInstance.showMeasurementUI != prevMeas ||
+                editorUIInstance.showStemDiameterUI != prevStem)
             {
                 editorUIInstance.SaveSettings();
             }

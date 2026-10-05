@@ -11,7 +11,6 @@ import pointcloud_io
 from stem_diameter_algorithm import StemDiameterParams, analyze_stem
 from stem_diameter_output import write_stem_diameter_outputs
 
-
 def _progress(value: float, message: str) -> None:
     print(f"[Progress] {value * 100.0:.1f} {message}", flush=True)
 
@@ -20,8 +19,6 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Estimate a plant main-stem diameter profile.")
     parser.add_argument("--input", required=True, help="Input PLY or NPZ point cloud")
     parser.add_argument("--output_dir", required=True, help="Directory for JSON, CSV and PNG outputs")
-    parser.add_argument("--scale-mm-per-unit", type=float, required=True,
-                        help="Physical millimeters represented by one input coordinate unit")
     parser.add_argument("--measurement-interval-mm", type=float, default=10.0)
     parser.add_argument("--centerline-step-mm", type=float, default=5.0)
     parser.add_argument("--local-axis-radius-mm", type=float, default=15.0)
@@ -54,7 +51,7 @@ def main(argv=None) -> int:
             primary_slice_thickness_mm=args.primary_slice_thickness_mm,
             query_workers=args.query_workers,
         )
-        result = analyze_stem(points, args.scale_mm_per_unit, params, _progress)
+        result = analyze_stem(points, params, _progress)
         _progress(0.93, "JSON、CSV、品質グラフを書き出し中...")
         write_stem_diameter_outputs(args.output_dir, result, str(input_path), len(points))
         valid = [s.equivalent_diameter_mm for s in result.sections if s.equivalent_diameter_mm is not None]

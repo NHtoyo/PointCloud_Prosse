@@ -77,7 +77,6 @@ namespace PointCloudWorkbench
             {
                 throw new InvalidDataException($"未対応の計測座標系です: {document.coordinateSpace}");
             }
-
             if (string.IsNullOrEmpty(document.cloudId)) document.cloudId = Guid.NewGuid().ToString("N");
             if (document.measurements == null) document.measurements = new List<MeasurementRecord>();
             for (int i = document.measurements.Count - 1; i >= 0; i--)
@@ -134,7 +133,7 @@ namespace PointCloudWorkbench
 
         public static MeasurementDocument CreateDerivedDocument(MeasurementDocument source, string outputPath)
         {
-            if (source == null || source.measurements == null || source.measurements.Count == 0) return null;
+            if (source == null) return null;
 
             MeasurementDocument derived = Clone(source);
             derived.cloudId = Guid.NewGuid().ToString("N");

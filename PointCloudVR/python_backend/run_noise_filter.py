@@ -44,7 +44,7 @@ def setup_argparser():
                         help="実行モード: 'full' (フル解像度、DBSCANのみ自動ダウンサンプリング) "
                              "または 'downsample' (全フィルタをダウンサンプリングされた点群に適用)")
     parser.add_argument("--voxel_size", type=float, default=None,
-                        help="Downsample モード時のボクセルサイズ（m）。指定しない場合は自動計算")
+                        help="Downsample モード時のボクセルサイズ（mm）。指定しない場合は自動計算")
     
     # フィルタパラメータの引数
     parser.add_argument("--sor_nb", type=int, default=20, help="SORの近傍点数 (default: 20)")
@@ -60,7 +60,7 @@ def setup_argparser():
     parser.add_argument("--cc_sigma", type=float, default=1.0, help="CC平面フィルタの相対シグマ閾値 (default: 1.0)")
     parser.add_argument("--cc_error", type=float, default=0.0, help="CC平面フィルタの絶対誤差閾値 (default: 0.0)")
     parser.add_argument("--cc_use_knn", type=str_to_bool, default=True, help="CC平面フィルタでKNNモードを使用するか (default: True)")
-    parser.add_argument("--cc_radius", type=float, default=0.05, help="CC平面フィルタのRadiusモード時の近傍半径 (default: 0.05)")
+    parser.add_argument("--cc_radius", type=float, default=50.0, help="CC平面フィルタのRadiusモード時の近傍半径（mm）")
     parser.add_argument("--cc_remove_isolated", type=str_to_bool, default=False, help="CC平面フィルタのRadiusモードで孤立点を除去するか (default: False)")
     parser.add_argument("--cc_use_relative", type=str_to_bool, default=True, help="CC平面フィルタで相対シグマ閾値を使用するか (default: True)")
     parser.add_argument("--dbscan_eps", type=float, default=4.0, help="DBSCANのepsマルチプライヤ (default: 4.0)")
@@ -106,8 +106,8 @@ def build_pipeline_from_json(json_path):
         "ror": {"radius_multiplier": 3.0, "min_neighbors": 8},
         "density": {"k": 8, "threshold": 0.0},
         "cc_noise": {
-            "k": 20, "relative_sigma": 1.0, "absolute_error": 0.01,
-            "use_knn": True, "radius": 0.05, "remove_isolated_points": False
+            "k": 20, "relative_sigma": 1.0, "absolute_error": 10.0,
+            "use_knn": True, "radius": 50.0, "remove_isolated_points": False
         },
         "dbscan": {
             "eps_multiplier": 4.0, "min_points": 10, "min_cluster_size": 200,
@@ -191,7 +191,7 @@ def run_downsample_mode(points, colors, params, enabled_filters, pipeline, args,
         else:
             v_size = float(base_spacing * 2.0)
             
-    print(f"点群のダウンサンプリングを実行中 (ボクセルサイズ: {v_size:.5f} m) ...")
+    print(f"点群のダウンサンプリングを実行中 (ボクセルサイズ: {v_size:.2f} mm) ...")
     pcd = o3d.geometry.PointCloud()
     pcd.points = o3d.utility.Vector3dVector(points.astype(np.float64))
     pcd_ds = pcd.voxel_down_sample(v_size)

@@ -87,8 +87,8 @@ namespace PointCloudWorkbench
 
             if (Params.processMode == "downsample")
             {
-                GUILayout.Label($"  ボクセルサイズ: {Params.voxelSize:F4} m", textStyle);
-                Params.voxelSize = GUILayout.HorizontalSlider(Params.voxelSize, 0.001f, 0.02f);
+                GUILayout.Label($"  ボクセルサイズ: {Params.voxelSize:F1} mm", textStyle);
+                Params.voxelSize = GUILayout.HorizontalSlider(Params.voxelSize, 1f, 20f);
             }
             GUILayout.Space(5);
         }
@@ -144,8 +144,8 @@ namespace PointCloudWorkbench
                 }
                 else
                 {
-                    GUILayout.Label($"      近傍半径 (radius): {Params.cc.radius:F3} m", textStyle);
-                    Params.cc.radius = GUILayout.HorizontalSlider(Params.cc.radius, 0.005f, 0.2f);
+                    GUILayout.Label($"      近傍半径 (radius): {Params.cc.radius:F1} mm", textStyle);
+                    Params.cc.radius = GUILayout.HorizontalSlider(Params.cc.radius, 5f, 200f);
                 }
 
                 GUILayout.BeginHorizontal();
@@ -169,8 +169,8 @@ namespace PointCloudWorkbench
                 }
                 else
                 {
-                    GUILayout.Label($"      絶対誤差閾値 (Error): {Params.cc.error:F4} m", textStyle);
-                    Params.cc.error = GUILayout.HorizontalSlider(Params.cc.error, 0.0001f, 0.05f);
+                    GUILayout.Label($"      絶対誤差閾値 (Error): {Params.cc.error:F1} mm", textStyle);
+                    Params.cc.error = GUILayout.HorizontalSlider(Params.cc.error, 0.1f, 50f);
                 }
 
                 Params.cc.removeIsolated = GUILayout.Toggle(Params.cc.removeIsolated, "    近傍不足の孤立点も除去する", toggleStyle);

@@ -26,11 +26,13 @@ public class PointCloudController : MonoBehaviour
 
     private XRGrabInteractable grabInteractable;
     private Vector3 initialScale;
+    private PointCloudEditorUI editorUI;
 
     void Start()
     {
         grabInteractable = GetComponent<XRGrabInteractable>();
         initialScale = transform.localScale;
+        editorUI = Object.FindAnyObjectByType<PointCloudEditorUI>();
         
         // Ensure Rigidbody is present for XRI Grab
         Rigidbody rb = GetComponent<Rigidbody>();
@@ -86,6 +88,7 @@ public class PointCloudController : MonoBehaviour
     private void ProcessPCInput()
     {
         if (!isControlEnabled) return;
+        if (editorUI != null && (editorUI.IsMouseOverUI() || GUIUtility.keyboardControl != 0)) return;
 
         float h = 0f;
         float v = 0f;

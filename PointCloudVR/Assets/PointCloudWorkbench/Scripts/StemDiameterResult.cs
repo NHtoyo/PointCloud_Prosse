@@ -8,7 +8,6 @@ namespace PointCloudWorkbench
         public int schema_version;
         public string input_path;
         public int point_count;
-        public float scale_mm_per_unit;
         public float centerline_length_mm;
         public StemCenterlineResult centerline;
         public StemDiameterSection[] sections;
@@ -17,8 +16,8 @@ namespace PointCloudWorkbench
     [Serializable]
     public sealed class StemCenterlineResult
     {
-        public StemVector3[] support_points_xyz_units;
-        public StemVector3[] display_points_xyz_units;
+        public StemVector3[] support_points_xyz_mm;
+        public StemVector3[] display_points_xyz_mm;
     }
 
     [Serializable]
@@ -26,7 +25,7 @@ namespace PointCloudWorkbench
     {
         public int index;
         public float position_mm;
-        public StemVector3 center_xyz_units;
+        public StemVector3 center_xyz_mm;
         public StemVector3 centerline_tangent_xyz;
         public StemVector3 local_axis_xyz;
         public StemVector3 basis_u_xyz;

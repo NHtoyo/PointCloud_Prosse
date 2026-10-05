@@ -41,10 +41,12 @@ public class PointCloudEditorUI : MonoBehaviour
     private FilterPipelineEditorUI pipelineEditorUI;
     private AnnotationPipelineEditorUI annotationPipelineEditorUI;
     private DistanceMeasurementUI distanceMeasurementUI;
+    private StemDiameterUI stemDiameterUI;
 
     // UI Toggle states
     public bool showNoiseFilterUI = false;
     public bool showAnnotationUI = true;
+    public bool showStemDiameterUI = false;
     private string newLayerName = "NewLayer";
 
     // Lasso drawing texture
@@ -69,10 +71,6 @@ public class PointCloudEditorUI : MonoBehaviour
     private string downsampleOutputDir = "../PointCloudData/downsample";
 
     // Async execution flags
-    private volatile bool scaleFinishedFlag = false;
-    private volatile bool scaleFailedFlag = false;
-    private volatile string scaleErrorMessage = "";
-
     private volatile bool downsampleFinishedFlag = false;
     private volatile bool downsampleFailedFlag = false;
     private volatile string downsampleErrorMessage = "";
@@ -90,6 +88,7 @@ public class PointCloudEditorUI : MonoBehaviour
         showNoiseFilterUI = PlayerPrefs.GetInt("Show_NoiseFilterUI", 0) == 1;
         showAnnotationUI = PlayerPrefs.GetInt("Show_AnnotationUI", 1) == 1;
         showMeasurementUI = PlayerPrefs.GetInt("Show_MeasurementUI", 1) == 1;
+        showStemDiameterUI = PlayerPrefs.GetInt("Show_StemDiameterUI", 0) == 1;
     }
 
     public void SaveSettings()
@@ -104,6 +103,7 @@ public class PointCloudEditorUI : MonoBehaviour
         PlayerPrefs.SetInt("Show_NoiseFilterUI", showNoiseFilterUI ? 1 : 0);
         PlayerPrefs.SetInt("Show_AnnotationUI", showAnnotationUI ? 1 : 0);
         PlayerPrefs.SetInt("Show_MeasurementUI", showMeasurementUI ? 1 : 0);
+        PlayerPrefs.SetInt("Show_StemDiameterUI", showStemDiameterUI ? 1 : 0);
         PlayerPrefs.Save();
     }
 
@@ -130,6 +130,11 @@ public class PointCloudEditorUI : MonoBehaviour
         {
             distanceMeasurementUI = gameObject.AddComponent<DistanceMeasurementUI>();
         }
+        stemDiameterUI = GetComponent<StemDiameterUI>();
+        if (stemDiameterUI == null)
+        {
+            stemDiameterUI = gameObject.AddComponent<StemDiameterUI>();
+        }
         LoadSettings();
         RefreshFileList();
     }
@@ -150,26 +155,7 @@ public class PointCloudEditorUI : MonoBehaviour
             fileCheckTimer = 2.0f;
         }
 
-        // スケール校正とダウンサンプリングの非同期結果チェック
-        if (scaleFinishedFlag)
-        {
-            scaleFinishedFlag = false;
-            PointCloudProgressManager.Instance.Complete();
-            UnityEngine.Debug.Log("スケール校正処理が正常に完了しました。");
-            
-            // スケール校正完了後に、Transformスケールへ即座に反映する
-            PointCloudManager manager = Object.FindAnyObjectByType<PointCloudManager>();
-            if (manager != null)
-            {
-                manager.ApplyScaleCalibration();
-            }
-        }
-        if (scaleFailedFlag)
-        {
-            scaleFailedFlag = false;
-            PointCloudProgressManager.Instance.ShowError("スケール校正エラー", scaleErrorMessage);
-        }
-
+        // ダウンサンプリングの非同期結果チェック
         if (downsampleFinishedFlag)
         {
             downsampleFinishedFlag = false;
@@ -303,7 +289,12 @@ public class PointCloudEditorUI : MonoBehaviour
     public bool IsMouseOverUI()
     {
         // Block mouse interactions if modal progress dialog is running or parameters dialogs are open
-        if (PointCloudProgressManager.Instance.IsRunning || showDownsampleDialog || showExportDialog) return true;
+        if (PointCloudProgressManager.Instance.IsRunning || showDownsampleDialog || showScaleCalibDialog || showExportDialog) return true;
+        if (GUIUtility.hotControl != 0) return true;
+        if (showNoiseFilterUI && pipelineEditorUI != null && pipelineEditorUI.IsMouseOverUI()) return true;
+        if (showAnnotationUI && annotationPipelineEditorUI != null && annotationPipelineEditorUI.IsMouseOverUI()) return true;
+        if (showMeasurementUI && distanceMeasurementUI != null && distanceMeasurementUI.IsMouseOverPanel()) return true;
+        if (showStemDiameterUI && stemDiameterUI != null && stemDiameterUI.IsMouseOverPanel()) return true;
 
         float mouseX = Input.mousePosition.x;
         float mouseY = Input.mousePosition.y;
@@ -321,6 +312,13 @@ public class PointCloudEditorUI : MonoBehaviour
         bool overLeftUI = (mouseX >= 10f && mouseX <= sideWidth + 20f && mouseY >= (Screen.height - 950f) && mouseY <= (Screen.height - 20f));
         bool overRightUI = (mouseX >= Screen.width - rightW && mouseX <= Screen.width - 10f && mouseY >= (Screen.height - 950f) && mouseY <= (Screen.height - 20f));
         return overPipelineBar || overLeftUI || overRightUI;
+    }
+
+    public void SetStemDiameterPanelVisible(bool visible)
+    {
+        if (showStemDiameterUI == visible) return;
+        showStemDiameterUI = visible;
+        SaveSettings();
     }
 
     void OnGUI()
@@ -382,8 +380,8 @@ public class PointCloudEditorUI : MonoBehaviour
         // --- 2. Tool Configurations ---
         if (editor.activeTool == PointCloudEditor.EditTool.Brush)
         {
-            GUILayout.Label($"🖌 ブラシ半径: {editor.brushRadius:F2} m", textStyle);
-            editor.brushRadius = GUILayout.HorizontalSlider(editor.brushRadius, 0.02f, 0.2f);
+            GUILayout.Label($"🖌 ブラシ半径: {editor.brushRadius:F0} mm", textStyle);
+            editor.brushRadius = GUILayout.HorizontalSlider(editor.brushRadius, 20f, 200f);
             GUILayout.Label("ヒント: [Alt] + ホイールでブラシ半径を変更できます。", textStyle);
             GUILayout.Space(5);
         }
@@ -398,9 +396,9 @@ public class PointCloudEditorUI : MonoBehaviour
         else if (editor.activeTool == PointCloudEditor.EditTool.Connect)
         {
             GUILayout.Label("🌀 空間近接（接続探索）設定", textStyle);
-            editor.connectionRadius = Mathf.Clamp(editor.connectionRadius, 0.00005f, 0.02f);
-            GUILayout.Label($"  接続しきい値 (距離): {editor.connectionRadius:F5} m", textStyle);
-            editor.connectionRadius = GUILayout.HorizontalSlider(editor.connectionRadius, 0.00005f, 0.02f);
+            editor.connectionRadius = Mathf.Clamp(editor.connectionRadius, 0.05f, 20f);
+            GUILayout.Label($"  接続しきい値 (距離): {editor.connectionRadius:F2} mm", textStyle);
+            editor.connectionRadius = GUILayout.HorizontalSlider(editor.connectionRadius, 0.05f, 20f);
 
             GUILayout.Label($"  最大接続制限点数: {editor.maxConnectionPoints:N0} 点", textStyle);
             
@@ -477,8 +475,8 @@ public class PointCloudEditorUI : MonoBehaviour
             }
             GUILayout.EndHorizontal();
 
-            GUILayout.Label($"RANSAC用 許容誤差: {editor.ransacTolerance * 100f:F1} cm", textStyle);
-            editor.ransacTolerance = GUILayout.HorizontalSlider(editor.ransacTolerance, 0.002f, 0.15f);
+            GUILayout.Label($"RANSAC用 許容誤差: {editor.ransacTolerance:F1} mm", textStyle);
+            editor.ransacTolerance = GUILayout.HorizontalSlider(editor.ransacTolerance, 2f, 150f);
 
             GUILayout.Label($"支柱 色許容: {editor.supportColorTolerance:F0}", textStyle);
             editor.supportColorTolerance = GUILayout.HorizontalSlider(editor.supportColorTolerance, 20f, 180f);
@@ -503,14 +501,14 @@ public class PointCloudEditorUI : MonoBehaviour
             if (GUILayout.Button("高度(Y)", editor.filterType == PointCloudEditor.FilterType.Height ? activeButtonStyle : buttonStyle))
             {
                 editor.filterType = PointCloudEditor.FilterType.Height;
-                editor.filterMin = -1.5f;
-                editor.filterMax = 2.5f;
+                editor.filterMin = -1500f;
+                editor.filterMax = 2500f;
             }
             if (GUILayout.Button("C2C距離", editor.filterType == PointCloudEditor.FilterType.Distance ? activeButtonStyle : buttonStyle))
             {
                 editor.filterType = PointCloudEditor.FilterType.Distance;
                 editor.filterMin = 0.0f;
-                editor.filterMax = 0.5f;
+                editor.filterMax = 500f;
             }
             GUILayout.EndHorizontal();
             GUILayout.BeginHorizontal();
@@ -531,30 +529,30 @@ public class PointCloudEditorUI : MonoBehaviour
             // Dynamic slider bounds depending on filter type
             float sliderMinLimit = 0f;
             float sliderMaxLimit = 1f;
-            string unit = "";
+            string suffix = "";
             if (editor.filterType == PointCloudEditor.FilterType.Height)
             {
-                sliderMinLimit = -3.0f;
-                sliderMaxLimit = 4.0f;
-                unit = " m";
+                sliderMinLimit = -3000f;
+                sliderMaxLimit = 4000f;
+                suffix = " mm";
             }
             else if (editor.filterType == PointCloudEditor.FilterType.Distance)
             {
                 sliderMinLimit = 0.0f;
-                sliderMaxLimit = 2.0f;
-                unit = " m";
+                sliderMaxLimit = 2000f;
+                suffix = " mm";
             }
             else if (editor.filterType == PointCloudEditor.FilterType.Redness || editor.filterType == PointCloudEditor.FilterType.Greenness)
             {
                 sliderMinLimit = 0.0f;
                 sliderMaxLimit = 5.0f;
-                unit = " (比率)";
+                suffix = " (比率)";
             }
 
-            GUILayout.Label($"  下限値 (Min): {editor.filterMin:F2}{unit}", textStyle);
+            GUILayout.Label($"  下限値 (Min): {editor.filterMin:F2}{suffix}", textStyle);
             editor.filterMin = GUILayout.HorizontalSlider(editor.filterMin, sliderMinLimit, sliderMaxLimit);
             
-            GUILayout.Label($"  上限値 (Max): {editor.filterMax:F2}{unit}", textStyle);
+            GUILayout.Label($"  上限値 (Max): {editor.filterMax:F2}{suffix}", textStyle);
             editor.filterMax = GUILayout.HorizontalSlider(editor.filterMax, sliderMinLimit, sliderMaxLimit);
 
             // Keep min <= max
@@ -774,6 +772,10 @@ public class PointCloudEditorUI : MonoBehaviour
         if (showMeasurementUI && distanceMeasurementUI != null)
         {
             distanceMeasurementUI.DrawGUI(ref currentCenterY);
+        }
+        if (showStemDiameterUI && stemDiameterUI != null)
+        {
+            stemDiameterUI.DrawGUI(ref currentCenterY);
         }
 
         // Draw Progress Pop-up Window if running (Modal state)
@@ -1029,7 +1031,7 @@ public class PointCloudEditorUI : MonoBehaviour
     private void DrawScaleCalibWindow(int windowID)
     {
         GUILayout.Space(10);
-        GUILayout.Label("実寸法（mm）と計測値（unit）を指定してスケール校正を実行します。", textStyle);
+        GUILayout.Label("基準物の実寸法と、対応する点群上の直線距離を指定します。", textStyle);
         GUILayout.Space(10);
 
         GUILayout.BeginHorizontal();
@@ -1038,14 +1040,14 @@ public class PointCloudEditorUI : MonoBehaviour
         GUILayout.EndHorizontal();
 
         GUILayout.Space(5);
-        GUILayout.Label("計測値 (unit) (カンマ区切りで複数可):", textStyle);
+        GUILayout.Label("点群上の直線距離（複数はカンマ区切り）:", textStyle);
         scaleMeasurementsStr = GUILayout.TextField(scaleMeasurementsStr);
-        GUILayout.Label("例: 0.052, 0.051, 0.053", textStyle);
+        GUILayout.Label("基準物の両端を結ぶ直線距離を入力してください。", textStyle);
 
         if (editor != null && editor.MeasurementPointCount >= 2)
         {
-            float localDist = editor.GetMeasurementLength();
-            if (GUILayout.Button($"[現在の線の長さをコピー ({localDist:F5})]", buttonStyle))
+            float localDist = editor.GetMeasurementChordLength();
+            if (GUILayout.Button($"[計測線の直線距離を使用 ({localDist:F5})]", buttonStyle))
             {
                 scaleMeasurementsStr = localDist.ToString("F5", System.Globalization.CultureInfo.InvariantCulture);
             }
@@ -1073,6 +1075,23 @@ public class PointCloudEditorUI : MonoBehaviour
 
     public void ExecuteScaleCalibration()
     {
+        if (editor == null || editor.targetRenderer == null)
+        {
+            UnityEngine.Debug.LogError("校正する点群が読み込まれていません。");
+            return;
+        }
+        PointCloudLoader activeLoader = editor.targetRenderer.GetComponent<PointCloudLoader>();
+        if (activeLoader != null && activeLoader.CurrentPointCloudCoordinatesAreMillimeters)
+        {
+            PointCloudProgressManager.Instance.ShowError("この点群はmm座標です", "二重補正を防ぐため、基準径の校正は適用できません。");
+            return;
+        }
+        if (!editor.IsMeasurementDocumentReady || editor.HasMeasurementFingerprintMismatch)
+        {
+            UnityEngine.Debug.LogError("点群と計測JSONの照合が終わってから校正してください。");
+            return;
+        }
+
         if (!float.TryParse(scaleRealDiameterStr, System.Globalization.NumberStyles.Any, System.Globalization.CultureInfo.InvariantCulture, out float parsedDiameter))
         {
             UnityEngine.Debug.LogError("基準球の実寸が有効な数値ではありません。");
@@ -1085,47 +1104,59 @@ public class PointCloudEditorUI : MonoBehaviour
             return;
         }
 
-        var pm = PointCloudProgressManager.Instance;
-        pm.Start("スケール校正", "Pythonプロセスを準備中...");
-
-        System.Threading.Tasks.Task.Run(async () =>
+        if (!PointCloudScaleService.TryCalculateCoordinateCorrection(
+                parsedDiameter, scaleMeasurementsStr, out float correctionFactor))
         {
-            try
-            {
-                var token = pm.CancellationToken;
-                bool success = await PythonBridge.RunScaleCalibrationAsync(
-                    parsedDiameter,
-                    scaleMeasurementsStr,
-                    "config/scale_calibration_report.json",
-                    token
-                );
+            PointCloudProgressManager.Instance.ShowError("校正値を確認してください", "実寸法と計測距離には、0より大きい有効な数値を入力してください。");
+            return;
+        }
 
-                if (!token.IsCancellationRequested && success)
-                {
-                    scaleFinishedFlag = true;
-                }
-            }
-            catch (System.OperationCanceledException)
+        PointCloudProgressManager.Instance.Start("スケール校正", "点群座標を補正したPLYを作成中...");
+        ApplyScaleCalibrationAndSaveAsync(correctionFactor);
+    }
+
+    private async void ApplyScaleCalibrationAndSaveAsync(float correctionFactor)
+    {
+        PointCloudProgressManager progress = PointCloudProgressManager.Instance;
+        PointCloudLoader loader = editor != null && editor.targetRenderer != null
+            ? editor.targetRenderer.GetComponent<PointCloudLoader>()
+            : null;
+        if (loader == null)
+        {
+            progress.ShowError("スケール校正を適用できません", "点群ローダーが見つかりません。");
+            return;
+        }
+
+        try
+        {
+            progress.Update(0.82f, "補正済みPLYをPointCloudDataへ保存中...");
+            string outputPath = await editor.ApplyScaleCalibrationAndSaveAsync(
+                correctionFactor,
+                loader.GetPointCloudDataDirectory(),
+                progress.CancellationToken);
+            if (!loader.AdoptSavedCalibratedPointCloud(outputPath))
             {
-                UnityEngine.Debug.LogWarning("[PointCloudEditorUI] スケール校正処理がユーザーによってキャンセルされました。");
+                throw new System.InvalidOperationException("補正済みPLYを現在の点群として切り替えられませんでした。");
             }
-            catch (System.Exception ex)
-            {
-                UnityEngine.Debug.LogError($"[PointCloudEditorUI] スケール校正処理エラー: {ex.Message}");
-                scaleErrorMessage = ex.Message;
-                scaleFailedFlag = true;
-            }
-        });
+
+            progress.Complete();
+            UnityEngine.Debug.Log($"補正済み点群を保存して切り替えました: {outputPath}");
+            var cameraController = Object.FindAnyObjectByType<CloudCompareCameraController>();
+            if (cameraController != null) cameraController.CenterOnRenderer(editor.targetRenderer);
+        }
+        catch (System.OperationCanceledException)
+        {
+            progress.ShowError("スケール校正をキャンセルしました", "元PLYは変更されていません。");
+        }
+        catch (System.Exception ex)
+        {
+            UnityEngine.Debug.LogError($"[PointCloudEditorUI] 補正PLYの保存に失敗しました: {ex}");
+            progress.ShowError("補正済みPLYの保存に失敗しました", ex.Message);
+        }
     }
 
     private void ExecuteDownsampling()
     {
-        if (!System.IO.File.Exists("config/scale_calibration_report.json"))
-        {
-            UnityEngine.Debug.LogError("スケール校正ファイルが見つかりません。先に「スケール校正を実行」ボタンから、実寸合わせを行ってください。");
-            return;
-        }
-
         if (!float.TryParse(downsampleVoxelSizeStr, System.Globalization.NumberStyles.Any, System.Globalization.CultureInfo.InvariantCulture, out float parsedVoxelSize))
         {
             UnityEngine.Debug.LogError("ダウンサンプリング間隔が有効な数値ではありません。");
@@ -1172,7 +1203,6 @@ public class PointCloudEditorUI : MonoBehaviour
                 bool success = await PythonBridge.RunDownsamplingAsync(
                     paths.TemporaryLabeledPath,
                     paths.OutputDirectory,
-                    "config/scale_calibration_report.json",
                     downsampleMode,
                     parsedVoxelSize,
                     token

@@ -33,11 +33,11 @@ namespace PointCloudWorkbench
     {
         public bool useKnn = true;
         public int k = 20;
-        public float radius = 0.05f;
+        public float radius = 50f;
         public bool removeIsolated = false;
         public bool useRelative = true;
         public float sigma = 1.0f;
-        public float error = 0.01f;
+        public float error = 10f;
 
         public CcConfig()
         {
@@ -123,7 +123,7 @@ namespace PointCloudWorkbench
 
         // 実行モード
         public string processMode = "full";
-        public float voxelSize = 0.005f;
+        public float voxelSize = 5f;
 
         // 動的なパイプライン順序を保持するリスト
         public List<FilterStepConfig> customPipeline = new List<FilterStepConfig>();

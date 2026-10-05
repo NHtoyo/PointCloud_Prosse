@@ -8,11 +8,11 @@ public class CloudCompareCameraController : MonoBehaviour
     public float panSpeed = 1.0f;
     public float zoomSpeed = 2f;
     public float doubleClickTime = 0.3f;
-    public float pickingRadius = 0.08f; 
+    public float pickingRadius = 80f;
 
     [Header("Target Pivot")]
-    public Vector3 pivotPoint = new Vector3(0, 1, 0);
-    public float distanceToPivot = 3f;
+    public Vector3 pivotPoint = new Vector3(0, 1000, 0);
+    public float distanceToPivot = 3000f;
 
     [Header("Visual Indicator")]
     public Color indicatorColor = new Color(0f, 1f, 0f, 0.8f);
@@ -26,12 +26,14 @@ public class CloudCompareCameraController : MonoBehaviour
     private PivotIndicator pivotIndicator;
     private CameraRotationGuide rotationGuide;
     private PointCloudPicker pointCloudPicker;
+    private PointCloudEditorUI editorUI;
     private Camera mainCamera;
 
     void Start()
     {
         mainCamera = GetComponent<Camera>();
         if (mainCamera == null) mainCamera = Camera.main;
+        editorUI = Object.FindAnyObjectByType<PointCloudEditorUI>();
 
         // PCモード: TrackedPoseDriver を無効化してマウス操作を有効にする
         var trackedPoseDriver = GetComponent<UnityEngine.InputSystem.XR.TrackedPoseDriver>();
@@ -65,7 +67,7 @@ public class CloudCompareCameraController : MonoBehaviour
         TryCenterOnPointCloud();
 
         distanceToPivot = Vector3.Distance(transform.position, pivotPoint);
-        if (distanceToPivot < 0.1f) distanceToPivot = 5f;
+        if (distanceToPivot < 100f) distanceToPivot = 5000f;
 
         lastMousePos = Input.mousePosition;
     }
@@ -91,7 +93,7 @@ public class CloudCompareCameraController : MonoBehaviour
         Vector3 worldCenter = renderer.transform.TransformPoint(localCenter);
         Vector3 worldSize = Vector3.Scale(localMax - localMin, renderer.transform.lossyScale);
         float cloudRadius = worldSize.magnitude * 0.5f;
-        if (cloudRadius < 0.1f) cloudRadius = 1f;
+        if (cloudRadius < 100f) cloudRadius = 1000f;
 
         pivotPoint = worldCenter;
         distanceToPivot = cloudRadius * 1.5f;
@@ -113,7 +115,6 @@ public class CloudCompareCameraController : MonoBehaviour
 
     private bool IsMouseOverUI()
     {
-        var editorUI = Object.FindAnyObjectByType<PointCloudEditorUI>();
         if (editorUI != null)
         {
             return editorUI.IsMouseOverUI();
@@ -164,16 +165,19 @@ public class CloudCompareCameraController : MonoBehaviour
             isEditing = true;
         }
 
-        // 0. 点サイズ ショートカットキー
-        if (Input.GetKeyDown(KeyCode.Minus) || Input.GetKeyDown(KeyCode.LeftBracket))
+        // UIを操作中はカメラ／点サイズのキーボード操作も受け取らない。
+        if (!overUI && GUIUtility.keyboardControl == 0)
         {
-            var r = Object.FindAnyObjectByType<PointCloudRenderer>();
-            if (r != null) r.pointSize = Mathf.Max(1.0f, Mathf.Round(r.pointSize) - 1.0f);
-        }
-        if (Input.GetKeyDown(KeyCode.Equals) || Input.GetKeyDown(KeyCode.RightBracket))
-        {
-            var r = Object.FindAnyObjectByType<PointCloudRenderer>();
-            if (r != null) r.pointSize = Mathf.Min(20.0f, Mathf.Round(r.pointSize) + 1.0f);
+            if (Input.GetKeyDown(KeyCode.Minus) || Input.GetKeyDown(KeyCode.LeftBracket))
+            {
+                var r = Object.FindAnyObjectByType<PointCloudRenderer>();
+                if (r != null) r.pointSize = Mathf.Max(1.0f, Mathf.Round(r.pointSize) - 1.0f);
+            }
+            if (Input.GetKeyDown(KeyCode.Equals) || Input.GetKeyDown(KeyCode.RightBracket))
+            {
+                var r = Object.FindAnyObjectByType<PointCloudRenderer>();
+                if (r != null) r.pointSize = Mathf.Min(20.0f, Mathf.Round(r.pointSize) + 1.0f);
+            }
         }
 
         // ダブルクリックでピボット選択（編集ツール動作中は無効化）
@@ -194,7 +198,7 @@ public class CloudCompareCameraController : MonoBehaviour
             if (Mathf.Abs(scroll) > 0.001f)
             {
                 distanceToPivot -= scroll * zoomSpeed * distanceToPivot;
-                distanceToPivot = Mathf.Max(0.05f, distanceToPivot);
+                distanceToPivot = Mathf.Max(50f, distanceToPivot);
                 if (pivotIndicator != null) pivotIndicator.Show(pivotPoint, distanceToPivot);
             }
 
@@ -203,7 +207,7 @@ public class CloudCompareCameraController : MonoBehaviour
             {
                 float zoomDelta = mouseDelta.y * 0.005f * zoomSpeed * distanceToPivot;
                 distanceToPivot += zoomDelta;
-                distanceToPivot = Mathf.Max(0.05f, distanceToPivot);
+                distanceToPivot = Mathf.Max(50f, distanceToPivot);
                 if (pivotIndicator != null) pivotIndicator.Show(pivotPoint, distanceToPivot);
             }
         }

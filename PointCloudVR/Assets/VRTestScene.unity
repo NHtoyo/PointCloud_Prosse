@@ -5386,7 +5386,7 @@ MonoBehaviour:
   m_EditorClassIdentifier: Assembly-CSharp::PointCloudEditor
   targetRenderer: {fileID: 589584589}
   activeTool: 0
-  brushRadius: 0.2
+  brushRadius: 200
   brushSelectMode: 1
   activeLabelClass: 2
   brushColor: {r: 1, g: 0.9, b: 0, a: 0.3}
@@ -5658,9 +5658,9 @@ MonoBehaviour:
   panSpeed: 1
   zoomSpeed: 2
   doubleClickTime: 0.3
-  pickingRadius: 0.08
+  pickingRadius: 80
   pivotPoint: {x: 0, y: 1, z: 0}
-  distanceToPivot: 3
+  distanceToPivot: 3000
   indicatorColor: {r: 0, g: 1, b: 0, a: 0.8}
 --- !u!1 &1881171247
 GameObject:

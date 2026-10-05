@@ -5,7 +5,7 @@ namespace PointCloudWorkbench
 {
     public sealed class StemDiameterVisualizer : MonoBehaviour
     {
-        private const float OverlayWidth = 0.00035f;
+        private const float OverlayWidth = 0.35f;
         private Transform overlayRoot;
         private PointCloudRenderer targetRenderer;
         private StemDiameterResult result;
@@ -33,13 +33,12 @@ namespace PointCloudWorkbench
             sectionContour = CreateLine("Selected section contour", sectionMaterial, OverlayWidth * 1.5f);
             sectionAxis = CreateLine("Selected local axis", sectionMaterial, OverlayWidth * 1.5f);
 
-            StemVector3[] line = value.centerline.display_points_xyz_units;
+            StemVector3[] line = value.centerline.display_points_xyz_mm;
             if (line != null && line.Length > 1)
             {
-                float unitsToUnity = value.scale_mm_per_unit / 1000f;
                 centerline.positionCount = line.Length;
                 for (int i = 0; i < line.Length; i++)
-                    centerline.SetPosition(i, line[i].ToUnity() * unitsToUnity);
+                    centerline.SetPosition(i, line[i].ToUnity());
             }
             SetVisible(visible);
         }
@@ -77,14 +76,14 @@ namespace PointCloudWorkbench
         {
             if (selectedIndex < 0 || sectionContour == null || sectionAxis == null) return;
             StemDiameterSection section = result.sections[selectedIndex];
-            if (section.center_xyz_units == null || section.local_axis_xyz == null) return;
+            if (section.center_xyz_mm == null || section.local_axis_xyz == null) return;
 
-            float unitsToUnity = result.scale_mm_per_unit / 1000f;
-            Vector3 center = section.center_xyz_units.ToUnity() * unitsToUnity;
+            Vector3 center = section.center_xyz_mm.ToUnity();
             Vector3 axis = section.local_axis_xyz.ToUnity().normalized;
             sectionAxis.positionCount = 2;
-            sectionAxis.SetPosition(0, center - axis * 0.01f);
-            sectionAxis.SetPosition(1, center + axis * 0.01f);
+            const float axisHalfLengthMm = 10f;
+            sectionAxis.SetPosition(0, center - axis * axisHalfLengthMm);
+            sectionAxis.SetPosition(1, center + axis * axisHalfLengthMm);
 
             StemDiameterSlice slice = null;
             if (section.slice_results != null)
@@ -109,7 +108,7 @@ namespace PointCloudWorkbench
             for (int i = 0; i < slice.contour_uv_mm.Length; i++)
             {
                 StemContourPoint point = slice.contour_uv_mm[i];
-                sectionContour.SetPosition(i, center + (u * point.u_mm + v * point.v_mm) * 0.001f);
+                sectionContour.SetPosition(i, center + u * point.u_mm + v * point.v_mm);
             }
             sectionContour.SetPosition(slice.contour_uv_mm.Length, sectionContour.GetPosition(0));
         }

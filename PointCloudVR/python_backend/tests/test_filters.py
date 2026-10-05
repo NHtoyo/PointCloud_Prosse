@@ -8,6 +8,13 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import pointcloud_io
 import noise_filters
 
+
+def load_legacy_test_cloud_mm(path):
+    points, colors = pointcloud_io.load_ply(path)
+    # These checked-in test generators use meter-sized coordinates; normalize only these fixtures.
+    return points * 1000.0, colors
+
+
 class TestNoiseFilters(unittest.TestCase):
     
     @classmethod
@@ -28,7 +35,7 @@ class TestNoiseFilters(unittest.TestCase):
         → SOR/RORでその20点が90%以上(18点以上)除去対象になることを確認
         """
         print("\n=== テスト1: 浮遊点除去テスト ===")
-        points, colors = pointcloud_io.load_ply(self.floating_ply)
+        points, colors = load_legacy_test_cloud_mm(self.floating_ply)
         self.assertEqual(len(points), 1020)
         
         # デフォルトパラメータでフィルタ実行
@@ -65,7 +72,7 @@ class TestNoiseFilters(unittest.TestCase):
         - Strong設定: 線状点群 of 50%以上(20点以上)が除去対象になること
         """
         print("\n=== テスト2: 細い構造物除去比較テスト ===")
-        points, colors = pointcloud_io.load_ply(self.thin_ply)
+        points, colors = load_legacy_test_cloud_mm(self.thin_ply)
         self.assertEqual(len(points), 1040)
         
         # 1. Soft 設定
@@ -101,7 +108,7 @@ class TestNoiseFilters(unittest.TestCase):
         → 小クラスタ(計90点)とノイズ(20点)はすべて除去対象になり、大クラスタは残ることを確認
         """
         print("\n=== テスト3: 小クラスタ検出テスト ===")
-        points, colors = pointcloud_io.load_ply(self.clusters_ply)
+        points, colors = load_legacy_test_cloud_mm(self.clusters_ply)
         self.assertEqual(len(points), 3110)
         
         # パラメータ設定: 小クラスタ検出用に min_cluster_size=200 と設定

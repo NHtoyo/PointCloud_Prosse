@@ -61,7 +61,7 @@ class FilterPipeline:
         print(f"[Pipeline] original_count={n_points:,}")
         
         # 共通の点間隔 base_spacing
-        base_spacing = 0.01  # デフォルト値
+        base_spacing = 1.0  # mm; only used as a fallback when spacing estimation is skipped
         
         # 必要なフィルタが有効な場合、全体の active_points から base_spacing を推定
         # デフォルトのパイプラインでは最初の active_points (全体) で一度だけ推定する設計と互換
@@ -69,7 +69,7 @@ class FilterPipeline:
         if spacing_needed and n_points > 0:
             from noise_filters import estimate_base_spacing
             base_spacing = estimate_base_spacing(points)
-            print(f"[Pipeline] 基準点間隔の初期推定完了: {base_spacing:.6f} m")
+            print(f"[Pipeline] 基準点間隔の初期推定完了: {base_spacing:.6f} mm")
  
         # 重みの定義と各ステップの進捗範囲の動的計算
         FILTER_WEIGHTS = {

@@ -16,19 +16,19 @@ public class PointCloudEditor : MonoBehaviour
 
     [Header("Tool Settings")]
     public EditTool activeTool = EditTool.None;
-    public float brushRadius = 0.2f;
+    public float brushRadius = 200f;
     public bool brushSelectMode = true; // true = select, false = deselect
     public bool selectOnlyUnclassified = false; // true = ignore points with label > 0
     public int activeLabelClass = 2; // Default to Leaf (2) for painting
 
     [Header("Advanced Selection Settings")]
-    public float connectionRadius = 0.005f;
+    public float connectionRadius = 5f;
     public int maxConnectionPoints = 50000;
     public float ransacColorTolerance = 30f; // RGB Euclidean distance tolerance (0 to 441) for cylinder fitting
 
     public enum RansacType { Plane, Cylinder }
     public RansacType ransacType = RansacType.Plane;
-    public float ransacTolerance = 0.02f;
+    public float ransacTolerance = 20f;
     public float supportColorTolerance = 90f;
     public float supportTubeMultiplier = 4.0f;
     public float supportHeightBinMultiplier = 4.0f;
@@ -168,6 +168,15 @@ public class PointCloudEditor : MonoBehaviour
     public bool IsMeasurementDocumentReady => measurementDocumentReady;
     public bool IsMeasurementFingerprintPending => measurementFingerprintPending;
     public bool HasMeasurementFingerprintMismatch => measurementFingerprintMismatch;
+    public bool MeasurementCoordinatesAreMillimeters
+    {
+        get
+        {
+            PointCloudLoader loader = pointCloudLoader;
+            if (loader == null && targetRenderer != null) loader = targetRenderer.GetComponent<PointCloudLoader>();
+            return loader != null && loader.CurrentPointCloudCoordinatesAreMillimeters;
+        }
+    }
     public string MeasurementStatus => measurementStatus;
     public bool CanMeasurementUndo => measurementUndoStack.Count > 0 && measurementDocumentReady;
     public int MeasurementPointCount => measurementDraftActive
@@ -176,9 +185,83 @@ public class PointCloudEditor : MonoBehaviour
 
     public MeasurementDocument CreateMeasurementSnapshotForExport()
     {
-        return measurementDocumentReady && !measurementFingerprintMismatch
-            ? MeasurementDocumentStore.Clone(measurementDocument)
-            : null;
+        if (!measurementDocumentReady || measurementFingerprintMismatch) return null;
+
+        MeasurementDocument snapshot = MeasurementDocumentStore.Clone(measurementDocument);
+        return snapshot;
+    }
+
+    public async Task<string> ApplyScaleCalibrationAndSaveAsync(
+        float correctionFactor,
+        string outputDirectory,
+        CancellationToken cancellationToken)
+    {
+        if (!measurementDocumentReady || measurementDocument == null || measurementFingerprintMismatch)
+        {
+            throw new System.InvalidOperationException("点群と計測JSONの照合が完了していません。照合後にもう一度実行してください。");
+        }
+        if (float.IsNaN(correctionFactor) || float.IsInfinity(correctionFactor) || correctionFactor <= 0f)
+        {
+            throw new System.ArgumentOutOfRangeException(nameof(correctionFactor), "校正値が不正です。");
+        }
+        if (targetRenderer == null || targetRenderer.GetPointData() == null || targetRenderer.GetPointData().Length == 0)
+        {
+            throw new System.InvalidOperationException("校正する点群が読み込まれていません。");
+        }
+        if (measurementDraftActive)
+        {
+            if (measurementPath.Points.Count >= 2) FinishMeasurement();
+            else CancelMeasurementDraft();
+        }
+        if (!SaveMeasurementDocument())
+        {
+            throw new System.IO.IOException(measurementStatus);
+        }
+
+        string sourcePath = GetLoadedPointCloudPath();
+        if (string.IsNullOrEmpty(sourcePath)) throw new System.IO.IOException("現在の点群ファイルパスを取得できません。");
+        string outputPath = PointCloudScaleService.BuildCalibratedOutputPath(sourcePath, outputDirectory);
+        PointData[] points = targetRenderer.GetPointData();
+        MeasurementDocument calibratedMeasurements = MeasurementDocumentStore.Clone(measurementDocument);
+        for (int i = 0; i < calibratedMeasurements.measurements.Count; i++)
+        {
+            MeasurementRecord record = calibratedMeasurements.measurements[i];
+            for (int p = 0; p < record.points.Count; p++) record.points[p] *= correctionFactor;
+        }
+
+        if (!PointCloudScaleService.ApplyPointCoordinateCorrection(targetRenderer, correctionFactor))
+        {
+            throw new System.InvalidOperationException("補正後の点座標を適用できませんでした。");
+        }
+
+        bool outputWritten = false;
+        try
+        {
+            measurementVisualsDirty = true;
+            UpdateMeasureVisuals();
+            cancellationToken.ThrowIfCancellationRequested();
+            await Task.Run(() => PointCloudScaleService.WriteCalibratedPlyAtomic(points, outputPath, cancellationToken), cancellationToken);
+            outputWritten = true;
+            if (calibratedMeasurements.measurements.Count > 0)
+            {
+                MeasurementDocumentStore.WriteDerivedSidecar(outputPath, calibratedMeasurements);
+            }
+            measurementStatus = $"補正済み点群を保存しました: {Path.GetFileName(outputPath)}";
+            return outputPath;
+        }
+        catch
+        {
+            PointCloudScaleService.ApplyPointCoordinateCorrection(targetRenderer, 1f / correctionFactor);
+            measurementVisualsDirty = true;
+            UpdateMeasureVisuals();
+            if (outputWritten)
+            {
+                if (File.Exists(outputPath)) File.Delete(outputPath);
+                string sidecarPath = MeasurementDocumentStore.GetSidecarPath(outputPath);
+                if (File.Exists(sidecarPath)) File.Delete(sidecarPath);
+            }
+            throw;
+        }
     }
 
     private string GetLoadedPointCloudPath()
@@ -234,8 +317,7 @@ public class PointCloudEditor : MonoBehaviour
             annotationUI = gameObject.AddComponent<AnnotationPipelineEditorUI>();
         }
 
-        // シーン保存等による古い範囲外の値（0.03mなど）をクランプして初期スライダー表示崩れを防止
-        connectionRadius = Mathf.Clamp(connectionRadius, 0.00005f, 0.02f);
+        connectionRadius = Mathf.Clamp(connectionRadius, 0.05f, 20f);
 
         CreateBrushVisual();
         statsDirty = true;
@@ -367,7 +449,7 @@ public class PointCloudEditor : MonoBehaviour
                 float scroll = Input.GetAxis("Mouse ScrollWheel");
                 if (Mathf.Abs(scroll) > 0.01f)
                 {
-                    brushRadius = Mathf.Clamp(brushRadius + scroll * 0.02f, 0.02f, 0.2f);
+                    brushRadius = Mathf.Clamp(brushRadius + scroll * 20f, 20f, 200f);
                 }
             }
 
@@ -425,7 +507,7 @@ public class PointCloudEditor : MonoBehaviour
         Ray localRay = new Ray(localOrigin, localDir);
 
         float localConeAngle = 0.01f; 
-        float localCylinderRadius = 0.01f / targetRenderer.transform.lossyScale.x; 
+        float localCylinderRadius = 10f / targetRenderer.transform.lossyScale.x;
 
         if (Camera.main != null)
         {
@@ -531,8 +613,7 @@ public class PointCloudEditor : MonoBehaviour
         // Sort candidates by distance from camera (proj)
         pickCandidates.Sort((a, b) => a.proj.CompareTo(b.proj));
 
-        // Auto-calculated radius from scale: 0.005f (0.5cm) world-space radius mapped to local-space
-        float pickRadiusLocal = 0.005f / targetRenderer.transform.lossyScale.x;
+        float pickRadiusLocal = 5f / targetRenderer.transform.lossyScale.x;
 
         for (int i = 0; i < pickCandidates.Count; i++)
         {
@@ -1847,7 +1928,7 @@ public class PointCloudEditor : MonoBehaviour
         Ray localRay = new Ray(localOrigin, localDir);
 
         float localConeAngle = 0.01f; 
-        float localCylinderRadius = 0.01f / targetRenderer.transform.lossyScale.x; 
+        float localCylinderRadius = 10f / targetRenderer.transform.lossyScale.x;
 
         if (Camera.main != null)
         {
@@ -1951,7 +2032,7 @@ public class PointCloudEditor : MonoBehaviour
         // Sort candidates by distance from camera (proj)
         pickCandidates.Sort((a, b) => a.proj.CompareTo(b.proj));
 
-        float pickRadiusLocal = 0.005f / targetRenderer.transform.lossyScale.x;
+        float pickRadiusLocal = 5f / targetRenderer.transform.lossyScale.x;
 
         for (int i = 0; i < pickCandidates.Count; i++)
         {
@@ -2288,7 +2369,7 @@ public class PointCloudEditor : MonoBehaviour
                 Vector3 pcaUp = localUp;
                 Color32 targetAvgColor = new Color32(0, 0, 0, 0);
                 bool hasColorConstraint = false;
-                float rEst = 0.01f / scaleX; // 座標スケール推定用の基準半径（デフォルト1cm相当）
+                float rEst = 10f / scaleX;
 
                 if (isSelectedPointFit)
                 {
@@ -2357,7 +2438,7 @@ public class PointCloudEditor : MonoBehaviour
                         totalDist += Vector2.Distance(proj, meanProj);
                     }
                     rEst = totalDist / selectedIndices.Count;
-                    if (rEst < 0.0001f) rEst = 0.01f / scaleX;
+                    if (rEst < 0.1f) rEst = 10f / scaleX;
                 }
 
                 object locker = new object();
@@ -3289,6 +3370,15 @@ public class PointCloudEditor : MonoBehaviour
         return record != null ? CreatePath(record).GetLength() : 0f;
     }
 
+    public float GetMeasurementChordLength()
+    {
+        List<Vector3> points = measurementDraftActive
+            ? measurementPath.Points
+            : (SelectedMeasurement != null ? SelectedMeasurement.points : null);
+        if (points == null || points.Count < 2) return 0f;
+        return Vector3.Distance(points[0], points[points.Count - 1]);
+    }
+
     public void UpdateMeasureVisuals()
     {
         if (targetRenderer == null) return;
@@ -3484,7 +3574,10 @@ public class PointCloudEditor : MonoBehaviour
         SyncLegacyMeasureFields();
         measurementVisualsDirty = true;
         UpdateMeasureVisuals();
-        Debug.Log($"[PointCloudEditor] 計測点{measurementPath.Points.Count}を設定: {localHit}, 線長(unit): {GetMeasurementLength():F5}");
+        string lengthText = MeasurementCoordinatesAreMillimeters
+            ? $"{GetMeasurementLength():F2} mm"
+            : $"{GetMeasurementLength():F5} (補正前)";
+        Debug.Log($"[PointCloudEditor] 計測点{measurementPath.Points.Count}を設定: {localHit}, 線長: {lengthText}");
         if (measurementMode == MeasurementMode.TwoPoint && measurementPath.Points.Count == 2 && string.IsNullOrEmpty(editingMeasurementId))
         {
             FinishMeasurement();

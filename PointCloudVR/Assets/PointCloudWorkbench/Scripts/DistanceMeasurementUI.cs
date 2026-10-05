@@ -49,6 +49,15 @@ namespace PointCloudWorkbench
             return lastPanelRect.Contains(mouse);
         }
 
+        private void CommitRename()
+        {
+            if (editor.RenameSelectedMeasurement(renameText) && editor.SelectedMeasurement != null)
+            {
+                renameText = editor.SelectedMeasurement.name;
+            }
+            GUI.FocusControl(null);
+        }
+
         private Texture2D MakeTexture(Color color)
         {
             var texture = new Texture2D(1, 1);
@@ -145,7 +154,7 @@ namespace PointCloudWorkbench
 
             GUILayout.Space(5f);
             GUILayout.Label("点の追加・置換は中央クリックです。左クリックはカメラ操作のままです。", hintStyle);
-            GUILayout.Label("単位換算は点群のスケール校正に追従します。", hintStyle);
+            GUILayout.Label("計測点は点群と同じ座標で保存され、スケール補正にも追従します。", hintStyle);
         }
 
         private void DrawMeasurementList()
@@ -202,15 +211,31 @@ namespace PointCloudWorkbench
             }
 
             GUILayout.BeginHorizontal();
+            const string renameControlName = "MeasurementRenameField";
+            GUI.SetNextControlName(renameControlName);
             renameText = GUILayout.TextField(renameText, GUILayout.MinWidth(120f), GUILayout.Height(30f));
-            if (GUILayout.Button("名前", buttonStyle, GUILayout.Width(62f), GUILayout.Height(30f)))
+            Event currentEvent = Event.current;
+            bool enterPressed = currentEvent != null && currentEvent.type == EventType.KeyDown &&
+                GUI.GetNameOfFocusedControl() == renameControlName &&
+                (currentEvent.keyCode == KeyCode.Return || currentEvent.keyCode == KeyCode.KeypadEnter);
+            if (enterPressed) currentEvent.Use();
+            if (GUILayout.Button("名前", buttonStyle, GUILayout.Width(62f), GUILayout.Height(30f)) || enterPressed)
             {
-                editor.RenameSelectedMeasurement(renameText);
+                CommitRename();
             }
-            Color oldBackground = GUI.backgroundColor;
-            GUI.backgroundColor = record.color;
-            if (GUILayout.Button("■", buttonStyle, GUILayout.Width(48f), GUILayout.Height(30f))) editor.CycleSelectedMeasurementColor();
-            GUI.backgroundColor = oldBackground;
+            bool colorClicked = GUILayout.Button(GUIContent.none, buttonStyle, GUILayout.Width(48f), GUILayout.Height(30f));
+            Rect colorButtonRect = GUILayoutUtility.GetLastRect();
+            Rect swatchBorder = new Rect(colorButtonRect.center.x - 11f, colorButtonRect.center.y - 11f, 22f, 22f);
+            Rect swatchRect = new Rect(swatchBorder.x + 2f, swatchBorder.y + 2f, 18f, 18f);
+            if (Event.current.type == EventType.Repaint)
+            {
+                GUI.DrawTexture(swatchBorder, Texture2D.blackTexture);
+                Color oldColor = GUI.color;
+                GUI.color = record.color;
+                GUI.DrawTexture(swatchRect, Texture2D.whiteTexture);
+                GUI.color = oldColor;
+            }
+            if (colorClicked) editor.CycleSelectedMeasurementColor();
             if (GUILayout.Button("頂点編集", buttonStyle, GUILayout.Width(92f), GUILayout.Height(30f))) editor.BeginEditingSelectedMeasurement();
             GUILayout.EndHorizontal();
         }
@@ -302,9 +327,7 @@ namespace PointCloudWorkbench
 
         private string GetActiveLengthText()
         {
-            float local = editor.GetMeasurementLength();
-            float scale = editor.targetRenderer != null ? editor.targetRenderer.transform.lossyScale.x : 1f;
-            return $"{local:F5} unit ({local * scale * 1000f:F1} mm)";
+            return FormatLength(editor.GetMeasurementLength());
         }
 
         private string GetLengthText(MeasurementRecord record)
@@ -317,8 +340,14 @@ namespace PointCloudWorkbench
             {
                 for (int i = 0; i < record.points.Count; i++) path.AddPoint(record.points[i]);
             }
-            float scale = editor.targetRenderer != null ? editor.targetRenderer.transform.lossyScale.x : 1f;
-            return $"{path.GetLength() * scale * 1000f:F1} mm";
+            return FormatLength(path.GetLength());
+        }
+
+        private string FormatLength(float length)
+        {
+            return editor.MeasurementCoordinatesAreMillimeters
+                ? $"{length:F1} mm"
+                : $"{length:F5} (補正前)";
         }
 
         private static string ModeName(int mode)

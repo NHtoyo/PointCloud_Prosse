@@ -50,14 +50,27 @@ namespace PointCloudWorkbench
             return Path.GetFullPath(Path.Combine(Application.dataPath, "../python_backend/run_noise_filter.py"));
         }
 
-        private static string GetScaleCalibScriptPath()
-        {
-            return Path.GetFullPath(Path.Combine(Application.dataPath, "../python_backend/1_scale_calibration.py"));
-        }
-
         private static string GetDownsampleScriptPath()
         {
             return Path.GetFullPath(Path.Combine(Application.dataPath, "../python_backend/2_downsample.py"));
+        }
+
+        private static string GetProjectRootPath()
+        {
+            return Path.GetFullPath(Path.Combine(Application.dataPath, ".."));
+        }
+
+        private static string ResolveProjectPath(string path)
+        {
+            if (string.IsNullOrWhiteSpace(path))
+            {
+                throw new ArgumentException("A file path is required.", nameof(path));
+            }
+
+            string resolvedPath = Path.IsPathRooted(path)
+                ? path
+                : Path.Combine(GetProjectRootPath(), path);
+            return Path.GetFullPath(resolvedPath);
         }
 
         /// <summary>
@@ -423,134 +436,31 @@ namespace PointCloudWorkbench
         }
 
         /// <summary>
-        /// スケール校正スクリプトを非同期実行します。
-        /// </summary>
-        public static async Task<bool> RunScaleCalibrationAsync(
-            float realDiameter,
-            string measurements,
-            string outputJsonPath = "config/scale_calibration_report.json",
-            CancellationToken cancellationToken = default)
-        {
-            await EnsureEnvironmentReadyAsync(cancellationToken);
-
-            string pythonPath = GetPythonPath();
-            string scriptPath = GetScaleCalibScriptPath();
-
-            if (!File.Exists(scriptPath))
-            {
-                throw new FileNotFoundException($"スケール校正スクリプトが見つかりません: {scriptPath}");
-            }
-
-            // 引数の構築
-            string arguments = $"-u \"{scriptPath}\" --real_diameter {realDiameter.ToString(System.Globalization.CultureInfo.InvariantCulture)} --measurements \"{measurements}\" --output \"{outputJsonPath}\"";
-
-            ProcessStartInfo psi = new ProcessStartInfo
-            {
-                FileName = pythonPath,
-                Arguments = arguments,
-                UseShellExecute = false,
-                RedirectStandardOutput = true,
-                RedirectStandardError = true,
-                CreateNoWindow = true,
-                StandardOutputEncoding = Encoding.UTF8,
-                StandardErrorEncoding = Encoding.UTF8
-            };
-
-            UnityEngine.Debug.Log($"[PythonBridge] スケール校正実行コマンド: {pythonPath} {psi.Arguments}");
-            PointCloudProgressManager.Instance.Update(0.1f, "スケール校正処理を開始中...");
-
-            using (Process process = new Process())
-            {
-                process.StartInfo = psi;
-                StringBuilder outputLog = new StringBuilder();
-                StringBuilder errorLog = new StringBuilder();
-
-                long lastActivityTicks = System.DateTime.UtcNow.Ticks;
-                const int timeoutSeconds = 60; // 校正は短いので60秒
-
-                process.OutputDataReceived += (sender, e) =>
-                {
-                    if (e.Data != null)
-                    {
-                        System.Threading.Interlocked.Exchange(ref lastActivityTicks, System.DateTime.UtcNow.Ticks);
-                        outputLog.AppendLine(e.Data);
-                        UnityEngine.Debug.Log($"[Scale Calib Out] {e.Data}");
-                    }
-                };
-
-                process.ErrorDataReceived += (sender, e) =>
-                {
-                    if (e.Data != null)
-                    {
-                        System.Threading.Interlocked.Exchange(ref lastActivityTicks, System.DateTime.UtcNow.Ticks);
-                        errorLog.AppendLine(e.Data);
-                        UnityEngine.Debug.LogError($"[Scale Calib Err] {e.Data}");
-                    }
-                };
-
-                if (!process.Start())
-                {
-                    throw new Exception("スケール校正プロセスの開始に失敗しました。");
-                }
-
-                process.BeginOutputReadLine();
-                process.BeginErrorReadLine();
-
-                while (!process.HasExited)
-                {
-                    if (cancellationToken.IsCancellationRequested)
-                    {
-                        try { process.Kill(); } catch { }
-                        throw new OperationCanceledException(cancellationToken);
-                    }
-
-                    long lastTicks = System.Threading.Interlocked.Read(ref lastActivityTicks);
-                    double idleSeconds = (System.DateTime.UtcNow.Ticks - lastTicks) / (double)System.TimeSpan.TicksPerSecond;
-                    if (idleSeconds > timeoutSeconds)
-                    {
-                        try { process.Kill(); } catch { }
-                        throw new TimeoutException("スケール校正処理がタイムアウトしました。");
-                    }
-
-                    await Task.Delay(100);
-                }
-
-                if (process.ExitCode != 0)
-                {
-                    throw new Exception($"スケール校正がエラーで終了しました (ExitCode: {process.ExitCode})\n{errorLog.ToString()}");
-                }
-            }
-
-            PointCloudProgressManager.Instance.Update(1.0f, "スケール校正が完了しました。");
-            return true;
-        }
-
-        /// <summary>
         /// ダウンサンプリングスクリプトを非同期実行します。
         /// </summary>
         public static async Task<bool> RunDownsamplingAsync(
             string inputDir,
             string outputDir,
-            string scaleJson = "config/scale_calibration_report.json",
             int mode = 1,
             float voxelSize = 5.0f,
             CancellationToken cancellationToken = default)
         {
             string pythonPath = GetPythonPath();
             string scriptPath = GetDownsampleScriptPath();
-
+            string projectRoot = GetProjectRootPath();
             if (!File.Exists(scriptPath))
             {
                 throw new FileNotFoundException($"ダウンサンプリングスクリプトが見つかりません: {scriptPath}");
             }
 
             // 引数の構築
-            string arguments = $"-u \"{scriptPath}\" --input \"{inputDir}\" --output \"{outputDir}\" --scale_json \"{scaleJson}\" --mode {mode} --voxel_size {voxelSize.ToString(System.Globalization.CultureInfo.InvariantCulture)}";
+            string arguments = $"-u \"{scriptPath}\" --input \"{inputDir}\" --output \"{outputDir}\" --mode {mode} --voxel_size {voxelSize.ToString(System.Globalization.CultureInfo.InvariantCulture)}";
 
             ProcessStartInfo psi = new ProcessStartInfo
             {
                 FileName = pythonPath,
                 Arguments = arguments,
+                WorkingDirectory = projectRoot,
                 UseShellExecute = false,
                 RedirectStandardOutput = true,
                 RedirectStandardError = true,
