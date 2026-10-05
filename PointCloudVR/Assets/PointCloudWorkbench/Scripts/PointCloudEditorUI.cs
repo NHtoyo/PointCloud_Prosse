@@ -64,7 +64,6 @@ public class PointCloudEditorUI : MonoBehaviour
     private Rect downsampleDialogRect = new Rect(0, 0, 480, 360);
 
     public string scaleRealDiameterStr = "60";
-    public string scaleMeasurementsStr = "";
     private string downsampleVoxelSizeStr = "5.0";
     private int downsampleMode = 1;
     private string downsampleInputDir = "../PointCloudData";
@@ -79,7 +78,7 @@ public class PointCloudEditorUI : MonoBehaviour
     public void LoadSettings()
     {
         scaleRealDiameterStr = PlayerPrefs.GetString("ScaleCalib_RealDiameterStr", "60");
-        scaleMeasurementsStr = PlayerPrefs.GetString("ScaleCalib_Measurements", "");
+        PlayerPrefs.DeleteKey("ScaleCalib_Measurements");
         downsampleMode = PlayerPrefs.GetInt("Downsample_Mode", 1);
         downsampleVoxelSizeStr = PlayerPrefs.GetString("Downsample_VoxelSizeStr", "5.0");
         downsampleInputDir = PlayerPrefs.GetString("Downsample_InputDir", "../PointCloudData");
@@ -94,7 +93,7 @@ public class PointCloudEditorUI : MonoBehaviour
     public void SaveSettings()
     {
         PlayerPrefs.SetString("ScaleCalib_RealDiameterStr", scaleRealDiameterStr);
-        PlayerPrefs.SetString("ScaleCalib_Measurements", scaleMeasurementsStr);
+        PlayerPrefs.DeleteKey("ScaleCalib_Measurements");
         PlayerPrefs.SetInt("Downsample_Mode", downsampleMode);
         PlayerPrefs.SetString("Downsample_VoxelSizeStr", downsampleVoxelSizeStr);
         PlayerPrefs.SetString("Downsample_InputDir", downsampleInputDir);
@@ -1031,7 +1030,7 @@ public class PointCloudEditorUI : MonoBehaviour
     private void DrawScaleCalibWindow(int windowID)
     {
         GUILayout.Space(10);
-        GUILayout.Label("基準物の実寸法と、対応する点群上の直線距離を指定します。", textStyle);
+        GUILayout.Label("基準物の実寸法を入力し、計測一覧で選択した線の両端を校正に使います。", textStyle);
         GUILayout.Space(10);
 
         GUILayout.BeginHorizontal();
@@ -1040,23 +1039,17 @@ public class PointCloudEditorUI : MonoBehaviour
         GUILayout.EndHorizontal();
 
         GUILayout.Space(5);
-        GUILayout.Label("点群上の直線距離（複数はカンマ区切り）:", textStyle);
-        scaleMeasurementsStr = GUILayout.TextField(scaleMeasurementsStr);
-        GUILayout.Label("基準物の両端を結ぶ直線距離を入力してください。", textStyle);
-
-        if (editor != null && editor.MeasurementPointCount >= 2)
-        {
-            float localDist = editor.GetMeasurementChordLength();
-            if (GUILayout.Button($"[計測線の直線距離を使用 ({localDist:F5})]", buttonStyle))
-            {
-                scaleMeasurementsStr = localDist.ToString("F5", System.Globalization.CultureInfo.InvariantCulture);
-            }
-        }
+        bool hasCalibrationMeasurement = editor != null && editor.TryGetSelectedMeasurementChordLength(out _);
+        string selectedMeasurementName = hasCalibrationMeasurement && editor.SelectedMeasurement != null
+            ? editor.SelectedMeasurement.name
+            : "なし";
+        GUILayout.Label($"校正元の計測線: {selectedMeasurementName}", textStyle);
+        GUILayout.Label("選択した計測線の両端間距離を、基準球の実寸 (mm) に合わせます。", textStyle);
 
         GUILayout.Space(20);
 
         GUILayout.BeginHorizontal();
-        bool hasValidInput = !string.IsNullOrEmpty(scaleMeasurementsStr.Trim());
+        bool hasValidInput = hasCalibrationMeasurement;
         GUI.enabled = hasValidInput;
         if (GUILayout.Button("校正実行", activeButtonStyle, GUILayout.Height(35)))
         {
@@ -1098,14 +1091,14 @@ public class PointCloudEditorUI : MonoBehaviour
             return;
         }
 
-        if (string.IsNullOrEmpty(scaleMeasurementsStr.Trim()))
+        if (!editor.TryGetSelectedMeasurementChordLength(out float measuredChordLength))
         {
-            UnityEngine.Debug.LogError("NeRFでの計測値が入力されていません。");
+            PointCloudProgressManager.Instance.ShowError("校正元の計測がありません", "距離計測一覧から基準物の両端を結ぶ計測線を選択してください。");
             return;
         }
 
         if (!PointCloudScaleService.TryCalculateCoordinateCorrection(
-                parsedDiameter, scaleMeasurementsStr, out float correctionFactor))
+                parsedDiameter, measuredChordLength, out float correctionFactor))
         {
             PointCloudProgressManager.Instance.ShowError("校正値を確認してください", "実寸法と計測距離には、0より大きい有効な数値を入力してください。");
             return;

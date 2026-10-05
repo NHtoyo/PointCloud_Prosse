@@ -229,7 +229,9 @@ public sealed class StemDiameterUI : MonoBehaviour
             float y = plot.y + plot.height * i / 4f;
             DrawLine(new Vector2(plot.x, y), new Vector2(plot.xMax, y), new Color(0.35f, 0.39f, 0.43f), 1f);
         }
-        GUI.Label(new Rect(rect.x + 1f, plot.y, 35f, 20f), max.ToString("G3", CultureInfo.InvariantCulture));
+        string graphUnit = metricMode == 0 ? "mm" : metricMode == 2 || metricMode == 3 ? "°" : "";
+        GUI.Label(new Rect(rect.x + 1f, plot.y, 35f, 20f), graphUnit);
+        GUI.Label(new Rect(rect.x + 1f, plot.y + 18f, 35f, 20f), max.ToString("G3", CultureInfo.InvariantCulture));
         GUI.Label(new Rect(rect.x + 1f, plot.yMax - 17f, 35f, 20f), min.ToString("G3", CultureInfo.InvariantCulture));
 
         if (metricMode == 0)
@@ -256,7 +258,7 @@ public sealed class StemDiameterUI : MonoBehaviour
             float x = plot.x + (result.sections.Length <= 1 ? 0f : (float)selectedIndex / (result.sections.Length - 1)) * plot.width;
             DrawLine(new Vector2(x, plot.y), new Vector2(x, plot.yMax), Color.white, 1.5f);
         }
-        GUI.Label(new Rect(plot.x, plot.yMax + 2f, plot.width, 18f), "上端  ← 距離に沿った断面 →  下端");
+        GUI.Label(new Rect(plot.x, plot.yMax + 2f, plot.width, 18f), "上端からの距離 (mm) → 下端");
 
         Event e = Event.current;
         if (e.type == EventType.MouseDown && e.button == 0 && rect.Contains(e.mousePosition))

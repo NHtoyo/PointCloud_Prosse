@@ -116,7 +116,7 @@ public class CloudCompareCameraController : MonoBehaviour
         }
 
         hasCenteredOnCloud = true;
-        Debug.Log($"[CC_Camera] Auto-centered on point cloud. Center={worldCenter}, Radius={cloudRadius:F2}");
+        Debug.Log("[CC_Camera] Auto-centered on point cloud.");
     }
 
     private void TryCenterOnPointCloud()

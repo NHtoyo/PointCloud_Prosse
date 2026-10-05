@@ -28,7 +28,22 @@ namespace PointCloudWorkbench
             double medianLength = lengths.Length % 2 == 0
                 ? ((double)lengths[lengths.Length / 2 - 1] + lengths[lengths.Length / 2]) * 0.5
                 : lengths[lengths.Length / 2];
-            double factor = realDiameterMm / medianLength;
+            return TryCalculateCoordinateCorrection(realDiameterMm, medianLength, out correctionFactor);
+        }
+
+        public static bool TryCalculateCoordinateCorrection(float realDiameterMm, float measuredLength, out float correctionFactor)
+        {
+            return TryCalculateCoordinateCorrection(realDiameterMm, (double)measuredLength, out correctionFactor);
+        }
+
+        private static bool TryCalculateCoordinateCorrection(double realDiameterMm, double measuredLength, out float correctionFactor)
+        {
+            correctionFactor = 0f;
+            if (double.IsNaN(realDiameterMm) || double.IsInfinity(realDiameterMm) || realDiameterMm <= 0.0 ||
+                double.IsNaN(measuredLength) || double.IsInfinity(measuredLength) || measuredLength <= 0.0)
+                return false;
+
+            double factor = realDiameterMm / measuredLength;
             if (double.IsNaN(factor) || double.IsInfinity(factor) || factor <= 0.0 || factor > float.MaxValue) return false;
             correctionFactor = (float)factor;
             return true;

@@ -154,7 +154,7 @@ namespace PointCloudWorkbench
 
             GUILayout.Space(5f);
             GUILayout.Label("点の追加・置換は中央クリックです。左クリックはカメラ操作のままです。", hintStyle);
-            GUILayout.Label("計測点は点群と同じ座標で保存され、スケール補正にも追従します。", hintStyle);
+            GUILayout.Label("距離と座標はmmで表示しています。", hintStyle);
         }
 
         private void DrawMeasurementList()
@@ -310,7 +310,8 @@ namespace PointCloudWorkbench
             {
                 Vector3 point = editor.measurementPath.Points[i];
                 GUILayout.BeginHorizontal();
-                GUILayout.Label($"点{i + 1}: {point.x:F4}, {point.y:F4}, {point.z:F4}", hintStyle, GUILayout.ExpandWidth(true));
+                string pointText = $"点{i + 1}: {point.x:F1}, {point.y:F1}, {point.z:F1} mm";
+                GUILayout.Label(pointText, hintStyle, GUILayout.ExpandWidth(true));
                 if (GUILayout.Button("置換", buttonStyle, GUILayout.Width(58f), GUILayout.Height(25f))) editor.ArmMeasurementPointReplacement(i);
                 if (GUILayout.Button("削除", buttonStyle, GUILayout.Width(58f), GUILayout.Height(25f))) editor.RemoveMeasurementPointAt(i);
                 GUILayout.EndHorizontal();
@@ -345,9 +346,7 @@ namespace PointCloudWorkbench
 
         private string FormatLength(float length)
         {
-            return editor.MeasurementCoordinatesAreMillimeters
-                ? $"{length:F1} mm"
-                : $"{length:F5} (補正前)";
+            return $"{length:F1} mm";
         }
 
         private static string ModeName(int mode)

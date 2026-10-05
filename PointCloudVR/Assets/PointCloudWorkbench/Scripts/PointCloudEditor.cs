@@ -168,15 +168,6 @@ public class PointCloudEditor : MonoBehaviour
     public bool IsMeasurementDocumentReady => measurementDocumentReady;
     public bool IsMeasurementFingerprintPending => measurementFingerprintPending;
     public bool HasMeasurementFingerprintMismatch => measurementFingerprintMismatch;
-    public bool MeasurementCoordinatesAreMillimeters
-    {
-        get
-        {
-            PointCloudLoader loader = pointCloudLoader;
-            if (loader == null && targetRenderer != null) loader = targetRenderer.GetComponent<PointCloudLoader>();
-            return loader != null && loader.CurrentPointCloudCoordinatesAreMillimeters;
-        }
-    }
     public string MeasurementStatus => measurementStatus;
     public bool CanMeasurementUndo => measurementUndoStack.Count > 0 && measurementDocumentReady;
     public int MeasurementPointCount => measurementDraftActive
@@ -2743,7 +2734,6 @@ public class PointCloudEditor : MonoBehaviour
         float colorTolerance = supportColorTolerance;
         float heightBinMultiplier = supportHeightBinMultiplier;
         int maxEmptyBins = supportMaxEmptyBins;
-
         string backendDir = Path.GetFullPath(Path.Combine(Application.dataPath, "../python_backend"));
         string outputDir = Path.Combine(backendDir, "output_support");
         string seedPath = Path.Combine(outputDir, "support_seed_indices.bin");
@@ -3379,6 +3369,19 @@ public class PointCloudEditor : MonoBehaviour
         return Vector3.Distance(points[0], points[points.Count - 1]);
     }
 
+    public bool TryGetSelectedMeasurementChordLength(out float chordLength)
+    {
+        chordLength = 0f;
+        MeasurementRecord record = SelectedMeasurement;
+        if (measurementDraftActive || record == null || record.points == null || record.points.Count < 2)
+            return false;
+
+        float distance = Vector3.Distance(record.points[0], record.points[record.points.Count - 1]);
+        if (float.IsNaN(distance) || float.IsInfinity(distance) || distance <= 0f) return false;
+        chordLength = distance;
+        return true;
+    }
+
     public void UpdateMeasureVisuals()
     {
         if (targetRenderer == null) return;
@@ -3574,10 +3577,9 @@ public class PointCloudEditor : MonoBehaviour
         SyncLegacyMeasureFields();
         measurementVisualsDirty = true;
         UpdateMeasureVisuals();
-        string lengthText = MeasurementCoordinatesAreMillimeters
-            ? $"{GetMeasurementLength():F2} mm"
-            : $"{GetMeasurementLength():F5} (補正前)";
-        Debug.Log($"[PointCloudEditor] 計測点{measurementPath.Points.Count}を設定: {localHit}, 線長: {lengthText}");
+        string lengthText = $"{GetMeasurementLength():F1} mm";
+        string pointText = $"座標 ({localHit.x:F1}, {localHit.y:F1}, {localHit.z:F1}) mm";
+        Debug.Log($"[PointCloudEditor] 計測点{measurementPath.Points.Count}を設定: {pointText}, 線長: {lengthText}");
         if (measurementMode == MeasurementMode.TwoPoint && measurementPath.Points.Count == 2 && string.IsNullOrEmpty(editingMeasurementId))
         {
             FinishMeasurement();

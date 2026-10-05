@@ -25,7 +25,7 @@ public class PointCloudManager : MonoBehaviour
 
     // Parameters
     private float pointSize = 2.0f;
-    private float maxDistanceThreshold = 1.0f;
+    private float maxDistanceThreshold = 1000.0f;
     private float[] calculatedDistances;
     private bool hasCompared = false;
 
@@ -63,8 +63,6 @@ public class PointCloudManager : MonoBehaviour
     private CloudCompareCameraController ccCameraController;
 
     // Loader references
-    private PointCloudLoader refLoader;
-    private PointCloudLoader alignLoader;
 
     void Start()
     {
@@ -377,7 +375,7 @@ public class PointCloudManager : MonoBehaviour
         avgDistance = sumDist / nAlign;
         hasCompared = true;
 
-        Debug.Log($"[PointCloudManager] C2C calculation complete. Avg Distance: {avgDistance:F4}m, Max Distance: {maxDistance:F4}m");
+        Debug.Log($"[PointCloudManager] C2C calculation complete. Avg Distance: {avgDistance:F1} mm, Max Distance: {maxDistance:F1} mm");
 
         // Force colors update
         UpdateColors();
@@ -575,9 +573,9 @@ public class PointCloudManager : MonoBehaviour
         }
         GUILayout.Space(10);
 
-        GUILayout.Label($"C2C カラーしきい値: {maxDistanceThreshold:F2}m", textStyle);
-        float newThreshold = GUILayout.HorizontalSlider(maxDistanceThreshold, 0.05f, 5.0f);
-        if (Mathf.Abs(newThreshold - maxDistanceThreshold) > 0.01f)
+        GUILayout.Label($"C2C カラーしきい値: {maxDistanceThreshold:F0} mm", textStyle);
+        float newThreshold = GUILayout.HorizontalSlider(maxDistanceThreshold, 50f, 5000f);
+        if (Mathf.Abs(newThreshold - maxDistanceThreshold) > 1f)
         {
             maxDistanceThreshold = newThreshold;
         }
@@ -589,8 +587,8 @@ public class PointCloudManager : MonoBehaviour
         if (hasCompared)
         {
             GUILayout.Label($"比較対象点数: {comparedPointCount:N0}", textStyle);
-            GUILayout.Label($"平均距離偏差: {avgDistance:F5} m", textStyle);
-            GUILayout.Label($"最大距離偏差: {maxDistance:F5} m", textStyle);
+            GUILayout.Label($"平均距離偏差: {avgDistance:F1} mm", textStyle);
+            GUILayout.Label($"最大距離偏差: {maxDistance:F1} mm", textStyle);
         }
         else
         {

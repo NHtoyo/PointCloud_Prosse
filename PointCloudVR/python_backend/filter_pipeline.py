@@ -61,7 +61,7 @@ class FilterPipeline:
         print(f"[Pipeline] original_count={n_points:,}")
         
         # 共通の点間隔 base_spacing
-        base_spacing = 1.0  # mm; only used as a fallback when spacing estimation is skipped
+        base_spacing = 1.0  # Coordinate length; only used as a fallback when spacing estimation is skipped.
         
         # 必要なフィルタが有効な場合、全体の active_points から base_spacing を推定
         # デフォルトのパイプラインでは最初の active_points (全体) で一度だけ推定する設計と互換

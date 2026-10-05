@@ -52,8 +52,8 @@ def main() -> int:
         print(f"seed点数       : {report['seed_count']:,}", flush=True)
         print(f"候補点数       : {report['candidate_count']:,}", flush=True)
         print(f"選択点数       : {report['selected_count']:,}", flush=True)
-        print(f"点間隔         : {report['spacing']:.6f}", flush=True)
-        print(f"探索太さ       : {report['tube_radius']:.6f}", flush=True)
+        print(f"点間隔         : {report['spacing']:.2f} mm", flush=True)
+        print(f"探索太さ       : {report['tube_radius']:.2f} mm", flush=True)
         print(f"結果出力       : {args.output_dir}", flush=True)
         print("==================================================", flush=True)
         return 0
