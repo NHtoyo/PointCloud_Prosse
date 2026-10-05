@@ -28,6 +28,7 @@ public class CloudCompareCameraController : MonoBehaviour
     private PointCloudPicker pointCloudPicker;
     private PointCloudEditorUI editorUI;
     private Camera mainCamera;
+    private float minimumOrbitDistance = 0.000001f;
 
     void Start()
     {
@@ -67,7 +68,6 @@ public class CloudCompareCameraController : MonoBehaviour
         TryCenterOnPointCloud();
 
         distanceToPivot = Vector3.Distance(transform.position, pivotPoint);
-        if (distanceToPivot < 100f) distanceToPivot = 5000f;
 
         lastMousePos = Input.mousePosition;
     }
@@ -78,27 +78,42 @@ public class CloudCompareCameraController : MonoBehaviour
         var positions = renderer.GetPositions();
         if (positions == null || positions.Length == 0) return;
 
-        Vector3 localCenter = Vector3.zero;
+        // Source PLYs may use different coordinate scales, so fit from actual bounds without unit-based fallbacks.
         Vector3 localMin = positions[0];
         Vector3 localMax = positions[0];
-        int sample = Mathf.Min(positions.Length, 5000);
-        for (int i = 0; i < sample; i++)
+        for (int i = 1; i < positions.Length; i++)
         {
-            localCenter += positions[i];
             localMin = Vector3.Min(localMin, positions[i]);
             localMax = Vector3.Max(localMax, positions[i]);
         }
-        localCenter /= sample;
 
+        Vector3 localCenter = (localMin + localMax) * 0.5f;
         Vector3 worldCenter = renderer.transform.TransformPoint(localCenter);
-        Vector3 worldSize = Vector3.Scale(localMax - localMin, renderer.transform.lossyScale);
-        float cloudRadius = worldSize.magnitude * 0.5f;
-        if (cloudRadius < 100f) cloudRadius = 1000f;
+        float cloudRadius = 0f;
+        for (int cornerIndex = 0; cornerIndex < 8; cornerIndex++)
+        {
+            Vector3 localCorner = new Vector3(
+                (cornerIndex & 1) == 0 ? localMin.x : localMax.x,
+                (cornerIndex & 2) == 0 ? localMin.y : localMax.y,
+                (cornerIndex & 4) == 0 ? localMin.z : localMax.z);
+            Vector3 worldCorner = renderer.transform.TransformPoint(localCorner);
+            cloudRadius = Mathf.Max(cloudRadius, Vector3.Distance(worldCenter, worldCorner));
+        }
+        cloudRadius = Mathf.Max(cloudRadius, 0.000001f);
 
         pivotPoint = worldCenter;
-        distanceToPivot = cloudRadius * 1.5f;
+        float halfFovRadians = (mainCamera != null ? mainCamera.fieldOfView : 60f) * 0.5f * Mathf.Deg2Rad;
+        distanceToPivot = cloudRadius / Mathf.Max(Mathf.Sin(halfFovRadians), 0.01f) * 1.1f;
+        minimumOrbitDistance = Mathf.Max(cloudRadius * 0.005f, 0.000001f);
+        pickingRadius = Mathf.Max(cloudRadius * 0.08f, 0.000001f);
         transform.position = pivotPoint - transform.forward * distanceToPivot + Vector3.up * cloudRadius * 0.3f;
         transform.LookAt(pivotPoint);
+        if (mainCamera != null)
+        {
+            mainCamera.nearClipPlane = Mathf.Min(mainCamera.nearClipPlane, Mathf.Max(cloudRadius * 0.05f, 0.000001f));
+            float requiredFarClip = Vector3.Distance(transform.position, pivotPoint) + cloudRadius * 1.1f;
+            mainCamera.farClipPlane = Mathf.Max(mainCamera.farClipPlane, requiredFarClip);
+        }
 
         hasCenteredOnCloud = true;
         Debug.Log($"[CC_Camera] Auto-centered on point cloud. Center={worldCenter}, Radius={cloudRadius:F2}");
@@ -198,7 +213,7 @@ public class CloudCompareCameraController : MonoBehaviour
             if (Mathf.Abs(scroll) > 0.001f)
             {
                 distanceToPivot -= scroll * zoomSpeed * distanceToPivot;
-                distanceToPivot = Mathf.Max(50f, distanceToPivot);
+                distanceToPivot = Mathf.Max(minimumOrbitDistance, distanceToPivot);
                 if (pivotIndicator != null) pivotIndicator.Show(pivotPoint, distanceToPivot);
             }
 
@@ -207,7 +222,7 @@ public class CloudCompareCameraController : MonoBehaviour
             {
                 float zoomDelta = mouseDelta.y * 0.005f * zoomSpeed * distanceToPivot;
                 distanceToPivot += zoomDelta;
-                distanceToPivot = Mathf.Max(50f, distanceToPivot);
+                distanceToPivot = Mathf.Max(minimumOrbitDistance, distanceToPivot);
                 if (pivotIndicator != null) pivotIndicator.Show(pivotPoint, distanceToPivot);
             }
         }
