@@ -7,7 +7,7 @@ using PointCloudWorkbench;
 public class PointCloudLoader : MonoBehaviour
 {
     private const string CalibratedPointCloudPreferenceKey = "PointCloudLoader.CalibratedPointCloudPath";
-    private const float SourceCoordinatesToMillimeters = 1000f;
+    private const float SourceCoordinatesToMillimeters = 1200f;
 
     [Header("References")]
     public PointCloudRenderer targetRenderer;
@@ -39,7 +39,6 @@ public class PointCloudLoader : MonoBehaviour
         public int offset;
     }
 
-    private bool parsedCoordinatesAreMillimeters;
     private bool parsedCoordinatesAreScaleCalibrated;
 
     void Awake()
@@ -212,7 +211,6 @@ public class PointCloudLoader : MonoBehaviour
         string extension = Path.GetExtension(filePath).ToLower();
 
         PointData[] loadedPoints = null;
-        parsedCoordinatesAreMillimeters = false;
         parsedCoordinatesAreScaleCalibrated = false;
 
         if (extension == ".ply")
@@ -224,14 +222,11 @@ public class PointCloudLoader : MonoBehaviour
             loadedPoints = ParseTXT(filePath);
         }
 
-        bool sourceIsMillimeters = parsedCoordinatesAreMillimeters || PointCloudScaleService.IsMillimeterPointCloud(filePath);
         bool sourceScaleIsCalibrated = parsedCoordinatesAreScaleCalibrated || PointCloudScaleService.IsCalibratedPointCloud(filePath);
-        float coordinateScaleFactor = sourceIsMillimeters ? 1f : SourceCoordinatesToMillimeters;
-        if (loadedPoints != null && loadedPoints.Length > 0 && coordinateScaleFactor != 1f)
+        float coordinateScaleFactor = SourceCoordinatesToMillimeters;
+        if (loadedPoints != null && loadedPoints.Length > 0)
         {
-            for (int i = 0; i < loadedPoints.Length; i++)
-                loadedPoints[i].position *= coordinateScaleFactor;
-            Debug.Log($"[PointCloudLoader] Converted source coordinates to Unity millimeters in memory (x{coordinateScaleFactor:F0}): {Path.GetFileName(filePath)}");
+            Debug.Log($"[PointCloudLoader] Interpreted source coordinates as Unity millimeters (conversion x{coordinateScaleFactor:F0}; source PLY unchanged): {Path.GetFileName(filePath)}");
         }
 
         stopwatch.Stop();
@@ -304,6 +299,11 @@ public class PointCloudLoader : MonoBehaviour
         return true;
     }
 
+    private static Vector3 InterpretSourceCoordinatesAsUnityMillimeters(Vector3 sourcePosition)
+    {
+        return sourcePosition * SourceCoordinatesToMillimeters;
+    }
+
     private PointData[] ParsePLY(string path)
     {
         List<string> headerLines = new List<string>();
@@ -354,12 +354,7 @@ public class PointCloudLoader : MonoBehaviour
             if (tokens.Length == 0) continue;
 
             if (tokens[0] == "comment" && tokens.Length >= 3 &&
-                tokens[1] == "pcwb_coordinate_basis" && tokens[2] == "mm")
-            {
-                parsedCoordinatesAreMillimeters = true;
-            }
-            else if (tokens[0] == "comment" && tokens.Length >= 3 &&
-                     tokens[1] == "pcwb_scale_calibrated" && tokens[2] == "true")
+                tokens[1] == "pcwb_scale_calibrated" && tokens[2] == "true")
             {
                 parsedCoordinatesAreScaleCalibrated = true;
             }
@@ -447,7 +442,8 @@ public class PointCloudLoader : MonoBehaviour
                     // Read Label (optional)
                     int label = labelOffset >= 0 ? ReadInt(buffer, elementOffset + labelOffset, labelType) : 0;
 
-                    points[i] = new PointData(new Vector3(x, y, z), new Color32(r, g, b, 255), label, 0f);
+                    Vector3 unityMillimeterPosition = InterpretSourceCoordinatesAsUnityMillimeters(new Vector3(x, y, z));
+                    points[i] = new PointData(unityMillimeterPosition, new Color32(r, g, b, 255), label, 0f);
                 }
             }
         }
@@ -498,7 +494,8 @@ public class PointCloudLoader : MonoBehaviour
                         label = int.Parse(tokens[properties.FindIndex(p => p.name == "label" || p.name == "class" || p.name == "scalar_label")]);
                     }
 
-                    points[i] = new PointData(new Vector3(x, y, z), new Color32(r, g, b, 255), label, 0f);
+                    Vector3 unityMillimeterPosition = InterpretSourceCoordinatesAsUnityMillimeters(new Vector3(x, y, z));
+                    points[i] = new PointData(unityMillimeterPosition, new Color32(r, g, b, 255), label, 0f);
                 }
             }
         }
@@ -540,7 +537,8 @@ public class PointCloudLoader : MonoBehaviour
                 byte gNorm = g > 1.0f ? (byte)g : (byte)(g * 255f);
                 byte bNorm = b > 1.0f ? (byte)b : (byte)(b * 255f);
 
-                list.Add(new PointData(new Vector3(x, y, z), new Color32(rNorm, gNorm, bNorm, 255), 0, 0f));
+                Vector3 unityMillimeterPosition = InterpretSourceCoordinatesAsUnityMillimeters(new Vector3(x, y, z));
+                list.Add(new PointData(unityMillimeterPosition, new Color32(rNorm, gNorm, bNorm, 255), 0, 0f));
                 loaded++;
             }
         }

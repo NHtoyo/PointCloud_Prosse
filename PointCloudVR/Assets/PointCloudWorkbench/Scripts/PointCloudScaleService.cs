@@ -65,13 +65,6 @@ namespace PointCloudWorkbench
             return false;
         }
 
-        public static bool IsMillimeterPointCloud(string pointCloudPath)
-        {
-            if (string.IsNullOrWhiteSpace(pointCloudPath)) return false;
-            string name = Path.GetFileNameWithoutExtension(pointCloudPath);
-            return HasMarkerSuffix(name, CalibratedSuffix);
-        }
-
         private static bool HasMarkerSuffix(string name, string marker)
         {
             int index = name.LastIndexOf(marker, StringComparison.OrdinalIgnoreCase);
