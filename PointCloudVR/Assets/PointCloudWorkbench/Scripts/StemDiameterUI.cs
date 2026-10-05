@@ -130,7 +130,10 @@ public sealed class StemDiameterUI : MonoBehaviour
         float barWidth = Mathf.Min(Screen.width - 30f, Mathf.Max(430f, availableWidth));
         barWidth = Mathf.Max(280f, barWidth);
         barX = Mathf.Clamp(barX + (availableWidth - barWidth) * 0.5f, 15f, Screen.width - barWidth - 15f);
-        float barHeight = Mathf.Min(460f, Mathf.Max(220f, Screen.height - currentY - 18f));
+        bool hasResult = result != null && result.sections != null && result.sections.Length > 0;
+        float preferredHeight = hasResult ? 460f : 220f;
+        float availableHeight = Mathf.Max(160f, Screen.height - currentY - 18f);
+        float barHeight = Mathf.Min(preferredHeight, availableHeight);
         panelRect = new Rect(barX, currentY, barWidth, barHeight);
         GUI.Box(panelRect, GUIContent.none);
 
