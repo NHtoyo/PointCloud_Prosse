@@ -1074,9 +1074,9 @@ public class PointCloudEditorUI : MonoBehaviour
             return;
         }
         PointCloudLoader activeLoader = editor.targetRenderer.GetComponent<PointCloudLoader>();
-        if (activeLoader != null && activeLoader.CurrentPointCloudCoordinatesAreMillimeters)
+        if (activeLoader != null && activeLoader.CurrentPointCloudScaleIsCalibrated)
         {
-            PointCloudProgressManager.Instance.ShowError("この点群はmm座標です", "二重補正を防ぐため、基準径の校正は適用できません。");
+            PointCloudProgressManager.Instance.ShowError("この点群は校正済みです", "二重補正を防ぐため、基準径の校正は適用できません。");
             return;
         }
         if (!editor.IsMeasurementDocumentReady || editor.HasMeasurementFingerprintMismatch)

@@ -60,10 +60,7 @@ namespace PointCloudWorkbench
             string name = Path.GetFileNameWithoutExtension(pointCloudPath);
             foreach (string marker in new[] { "_calibrated_mm", "_calibrated_m", "_calibrated" })
             {
-                int index = name.LastIndexOf(marker, StringComparison.OrdinalIgnoreCase);
-                if (index < 0) continue;
-                string suffix = name.Substring(index + marker.Length);
-                if (suffix.Length == 0 || (suffix.StartsWith("_") && int.TryParse(suffix.Substring(1), out _))) return true;
+                if (HasMarkerSuffix(name, marker)) return true;
             }
             return false;
         }
@@ -72,10 +69,15 @@ namespace PointCloudWorkbench
         {
             if (string.IsNullOrWhiteSpace(pointCloudPath)) return false;
             string name = Path.GetFileNameWithoutExtension(pointCloudPath);
-            int index = name.LastIndexOf(CalibratedSuffix, StringComparison.OrdinalIgnoreCase);
+            return HasMarkerSuffix(name, CalibratedSuffix);
+        }
+
+        private static bool HasMarkerSuffix(string name, string marker)
+        {
+            int index = name.LastIndexOf(marker, StringComparison.OrdinalIgnoreCase);
             if (index < 0) return false;
-            string suffix = name.Substring(index + CalibratedSuffix.Length);
-            return suffix.Length == 0 || (suffix.StartsWith("_") && int.TryParse(suffix.Substring(1), out _));
+            string suffix = name.Substring(index + marker.Length);
+            return suffix.Length == 0 || suffix.StartsWith("_");
         }
 
         public static string BuildCalibratedOutputPath(string sourcePath, string outputDirectory)
@@ -130,6 +132,7 @@ namespace PointCloudWorkbench
                     string header = "ply\n" +
                                     "format binary_little_endian 1.0\n" +
                                     "comment pcwb_coordinate_basis mm\n" +
+                                    "comment pcwb_scale_calibrated true\n" +
                                     $"element vertex {points.Length}\n" +
                                     "property float x\n" +
                                     "property float y\n" +

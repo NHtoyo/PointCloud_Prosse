@@ -7,7 +7,7 @@ using PointCloudWorkbench;
 public class PointCloudLoader : MonoBehaviour
 {
     private const string CalibratedPointCloudPreferenceKey = "PointCloudLoader.CalibratedPointCloudPath";
-    private const float LegacyMetersToMillimeters = 1000f;
+    private const float SourceCoordinatesToMillimeters = 1000f;
 
     [Header("References")]
     public PointCloudRenderer targetRenderer;
@@ -21,6 +21,8 @@ public class PointCloudLoader : MonoBehaviour
     public string externalFolderPath = "";
     public string CurrentFilePath { get; private set; } = "";
     public bool CurrentPointCloudCoordinatesAreMillimeters { get; private set; }
+    public bool CurrentPointCloudScaleIsCalibrated { get; private set; }
+    public float CurrentCoordinateScaleFactor { get; private set; } = 1f;
     public int SuccessfulLoadRevision { get; private set; }
     public event System.Func<string, bool> PointCloudChanging;
     public event System.Action<string> PointCloudLoaded;
@@ -38,7 +40,7 @@ public class PointCloudLoader : MonoBehaviour
     }
 
     private bool parsedCoordinatesAreMillimeters;
-    private bool parsedCoordinatesAreLegacyMeters;
+    private bool parsedCoordinatesAreScaleCalibrated;
 
     void Awake()
     {
@@ -176,6 +178,8 @@ public class PointCloudLoader : MonoBehaviour
 
         CurrentFilePath = fullPath;
         CurrentPointCloudCoordinatesAreMillimeters = true;
+        CurrentPointCloudScaleIsCalibrated = true;
+        CurrentCoordinateScaleFactor = 1f;
         fileName = Path.GetFileName(fullPath);
         useExternalPath = true;
         externalFolderPath = Path.GetDirectoryName(fullPath);
@@ -209,8 +213,7 @@ public class PointCloudLoader : MonoBehaviour
 
         PointData[] loadedPoints = null;
         parsedCoordinatesAreMillimeters = false;
-        parsedCoordinatesAreLegacyMeters = false;
-        bool migratedLegacyMeters = false;
+        parsedCoordinatesAreScaleCalibrated = false;
 
         if (extension == ".ply")
         {
@@ -221,21 +224,14 @@ public class PointCloudLoader : MonoBehaviour
             loadedPoints = ParseTXT(filePath);
         }
 
-        if (loadedPoints != null && loadedPoints.Length > 0 && !parsedCoordinatesAreMillimeters &&
-            (parsedCoordinatesAreLegacyMeters || IsLegacyMeterPointCloud(filePath)))
+        bool sourceIsMillimeters = parsedCoordinatesAreMillimeters || PointCloudScaleService.IsMillimeterPointCloud(filePath);
+        bool sourceScaleIsCalibrated = parsedCoordinatesAreScaleCalibrated || PointCloudScaleService.IsCalibratedPointCloud(filePath);
+        float coordinateScaleFactor = sourceIsMillimeters ? 1f : SourceCoordinatesToMillimeters;
+        if (loadedPoints != null && loadedPoints.Length > 0 && coordinateScaleFactor != 1f)
         {
-            try
-            {
-                filePath = UpgradeLegacyMeterPointCloud(filePath, loadedPoints);
-                parsedCoordinatesAreMillimeters = true;
-                migratedLegacyMeters = true;
-                Debug.Log($"[PointCloudLoader] Legacy meter-coordinate cloud converted to mm: {filePath}");
-            }
-            catch (System.Exception ex)
-            {
-                Debug.LogError($"[PointCloudLoader] Could not migrate legacy calibrated PLY: {ex.Message}");
-                return;
-            }
+            for (int i = 0; i < loadedPoints.Length; i++)
+                loadedPoints[i].position *= coordinateScaleFactor;
+            Debug.Log($"[PointCloudLoader] Converted source coordinates to Unity millimeters in memory (x{coordinateScaleFactor:F0}): {Path.GetFileName(filePath)}");
         }
 
         stopwatch.Stop();
@@ -252,14 +248,10 @@ public class PointCloudLoader : MonoBehaviour
                 }
 
                 CurrentFilePath = Path.GetFullPath(filePath);
+                CurrentPointCloudCoordinatesAreMillimeters = true;
+                CurrentPointCloudScaleIsCalibrated = sourceScaleIsCalibrated;
+                CurrentCoordinateScaleFactor = coordinateScaleFactor;
                 targetRenderer.SetPointCloudData(loadedPoints);
-                CurrentPointCloudCoordinatesAreMillimeters = parsedCoordinatesAreMillimeters ||
-                    PointCloudScaleService.IsMillimeterPointCloud(CurrentFilePath);
-                if (migratedLegacyMeters)
-                {
-                    PlayerPrefs.SetString(CalibratedPointCloudPreferenceKey, CurrentFilePath);
-                    PlayerPrefs.Save();
-                }
                 fileName = Path.GetFileName(CurrentFilePath);
                 if (useExternalPath) externalFolderPath = Path.GetDirectoryName(CurrentFilePath);
 
@@ -310,55 +302,6 @@ public class PointCloudLoader : MonoBehaviour
             }
         }
         return true;
-    }
-
-    private static bool IsLegacyMeterPointCloud(string path)
-    {
-        string name = Path.GetFileNameWithoutExtension(path);
-        return name.EndsWith("_calibrated_m", System.StringComparison.OrdinalIgnoreCase) ||
-               System.Text.RegularExpressions.Regex.IsMatch(name, @"_calibrated_m_\d+$", System.Text.RegularExpressions.RegexOptions.IgnoreCase);
-    }
-
-    private string UpgradeLegacyMeterPointCloud(string sourcePath, PointData[] points)
-    {
-        // This applies only to files explicitly identified as legacy meter coordinates.
-        for (int i = 0; i < points.Length; i++) points[i].position *= LegacyMetersToMillimeters;
-        string outputPath = PointCloudScaleService.BuildCalibratedOutputPath(sourcePath, GetPointCloudDataDirectory());
-        bool outputWritten = false;
-        try
-        {
-            PointCloudScaleService.WriteCalibratedPlyAtomic(points, outputPath, System.Threading.CancellationToken.None);
-            outputWritten = true;
-
-            string sourceSidecar = MeasurementDocumentStore.GetSidecarPath(sourcePath);
-            if (File.Exists(sourceSidecar))
-            {
-                MeasurementDocument document = MeasurementDocumentStore.LoadOrCreate(sourcePath, out bool existed);
-                string sourceHash = MeasurementDocumentStore.ComputeSha256(sourcePath);
-                if (existed && !string.IsNullOrWhiteSpace(document.sourceSha256) &&
-                    string.Equals(document.sourceSha256, sourceHash, System.StringComparison.OrdinalIgnoreCase))
-                {
-                    for (int i = 0; i < document.measurements.Count; i++)
-                    {
-                        MeasurementRecord record = document.measurements[i];
-                        for (int p = 0; p < record.points.Count; p++) record.points[p] *= LegacyMetersToMillimeters;
-                    }
-                    MeasurementDocumentStore.WriteDerivedSidecar(outputPath, document);
-                }
-                else
-                {
-                    Debug.LogWarning("[PointCloudLoader] Legacy measurement JSON hash mismatch; it was not copied to the migrated PLY.");
-                }
-            }
-            return outputPath;
-        }
-        catch
-        {
-            if (outputWritten && File.Exists(outputPath)) File.Delete(outputPath);
-            string outputSidecar = MeasurementDocumentStore.GetSidecarPath(outputPath);
-            if (File.Exists(outputSidecar)) File.Delete(outputSidecar);
-            throw;
-        }
     }
 
     private PointData[] ParsePLY(string path)
@@ -416,9 +359,9 @@ public class PointCloudLoader : MonoBehaviour
                 parsedCoordinatesAreMillimeters = true;
             }
             else if (tokens[0] == "comment" && tokens.Length >= 3 &&
-                     tokens[1] == "pcwb_coordinate_unit" && tokens[2] == "meters")
+                     tokens[1] == "pcwb_scale_calibrated" && tokens[2] == "true")
             {
-                parsedCoordinatesAreLegacyMeters = true;
+                parsedCoordinatesAreScaleCalibrated = true;
             }
             else if (tokens[0] == "format")
             {

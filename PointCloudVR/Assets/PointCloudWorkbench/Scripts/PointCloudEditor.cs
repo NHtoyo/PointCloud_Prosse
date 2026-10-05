@@ -1328,6 +1328,7 @@ public class PointCloudEditor : MonoBehaviour
                     // PLY Header (ASCII characters)
                     string header = "ply\n" +
                                     "format binary_little_endian 1.0\n" +
+                                    "comment pcwb_coordinate_basis mm\n" +
                                     $"element vertex {nonDeletedCount}\n" +
                                     "property float x\n" +
                                     "property float y\n" +
@@ -1385,6 +1386,7 @@ public class PointCloudEditor : MonoBehaviour
                     // PLY ASCII Header
                     writer.WriteLine("ply");
                     writer.WriteLine("format ascii 1.0");
+                    writer.WriteLine("comment pcwb_coordinate_basis mm");
                     writer.WriteLine($"element vertex {nonDeletedCount}");
                     writer.WriteLine("property float x");
                     writer.WriteLine("property float y");
@@ -1510,6 +1512,7 @@ public class PointCloudEditor : MonoBehaviour
                     // PLY ASCII Header
                     writer.WriteLine("ply");
                     writer.WriteLine("format ascii 1.0");
+                    writer.WriteLine("comment pcwb_coordinate_basis mm");
                     writer.WriteLine($"element vertex {remainingCount}");
                     writer.WriteLine("property float x");
                     writer.WriteLine("property float y");
@@ -1617,6 +1620,7 @@ public class PointCloudEditor : MonoBehaviour
                     // PLY Header (ASCII characters)
                     string header = "ply\n" +
                                     "format binary_little_endian 1.0\n" +
+                                    "comment pcwb_coordinate_basis mm\n" +
                                     $"element vertex {selectedCount}\n" +
                                     "property float x\n" +
                                     "property float y\n" +
@@ -1675,6 +1679,7 @@ public class PointCloudEditor : MonoBehaviour
                     // PLY ASCII Header
                     writer.WriteLine("ply");
                     writer.WriteLine("format ascii 1.0");
+                    writer.WriteLine("comment pcwb_coordinate_basis mm");
                     writer.WriteLine($"element vertex {selectedCount}");
                     writer.WriteLine("property float x");
                     writer.WriteLine("property float y");
@@ -2952,6 +2957,8 @@ public class PointCloudEditor : MonoBehaviour
         try
         {
             measurementDocument = MeasurementDocumentStore.LoadOrCreate(measurementCloudPath, out measurementSidecarExisted);
+            float coordinateScale = pointCloudLoader != null ? pointCloudLoader.CurrentCoordinateScaleFactor : 1f;
+            MeasurementDocumentStore.ConvertCoordinatesToScale(measurementDocument, coordinateScale);
             measurementExpectedHash = measurementDocument.sourceSha256 ?? "";
             measurementFingerprintPending = true;
             measurementStatus = "点群ファイルを照合中...";
@@ -3000,8 +3007,8 @@ public class PointCloudEditor : MonoBehaviour
         measurementDocumentReady = true;
         measurementStatus = "計測データを読み込みました。";
         measurementVisualsDirty = true;
-        if (measurementSidecarExisted && string.IsNullOrEmpty(measurementExpectedHash) &&
-            measurementDocument.measurements.Count > 0)
+        if (measurementDocumentDirty || (measurementSidecarExisted && string.IsNullOrEmpty(measurementExpectedHash) &&
+            measurementDocument.measurements.Count > 0))
         {
             measurementDocumentDirty = true;
             SaveMeasurementDocument();
