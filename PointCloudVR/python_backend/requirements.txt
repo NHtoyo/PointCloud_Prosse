@@ -4,3 +4,4 @@ scipy
 fastapi
 uvicorn
 pydantic
+matplotlib

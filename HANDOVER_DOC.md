@@ -38,6 +38,14 @@ Unity上において数千万点規模の大規模な点群データ（PLY形式
 | **1_scale_calibration.py** | `python_backend/1_scale_calibration.py` | UIで入力された実寸および計測値から1 unitあたりの実寸法（mm/unit）スケールを算出して報告JSONを出力するキャリブレーションスクリプト。 |
 | **2_downsample.py** | `python_backend/2_downsample.py` | 算出されたスケールを用いて、ボクセルダウンサンプリング（全体結合、部位別、個別ファイル別）を実行し、比較用レポートを生成するスクリプト。 |
 | **pointcloud_io.py** | `python_backend/pointcloud_io.py` | Open3D を用いた PLY ファイル of ロード・セーブ、および Python 内部用 NPZ データのロード・セーブ。 |
+| **stem_diameter_algorithm.py** | `PointCloudVR/python_backend/stem_diameter_algorithm.py` | 試作を基準に、全体PCA中心線・弧長断面位置・局所PCA・3/5/7 mm断面・品質指標・等価径を算出。SciPy cKDTreeで局所候補を検索し、UnityやファイルI/Oには依存しない。 |
+| **stem_diameter_output.py** | `PointCloudVR/python_backend/stem_diameter_output.py` | 茎径結果をUnity DTO互換JSON、CSV、径プロファイルPNG、品質プロファイルPNGに出力。他のファイルは削除しない。 |
+| **run_stem_diameter.py** | `PointCloudVR/python_backend/run_stem_diameter.py` | PLY/NPZと明示スケールを受け取り、茎径解析と出力を実行するCLI。 |
+| **test_stem_diameter_algorithm.py** | `PointCloudVR/python_backend/tests/test_stem_diameter_algorithm.py` | 既知径/傾斜/楕円/欠損円周/曲線チューブの純粋アルゴリズム試験。 |
+| **test_run_stem_diameter.py** | `PointCloudVR/python_backend/tests/test_run_stem_diameter.py` | 人工PLYからJSON/CSV/PNGを生成し、ユーザーの別出力ファイルを保持するCLI試験。 |
+| **StemDiameterUI.cs** | `PointCloudVR/Assets/PointCloudWorkbench/Scripts/StemDiameterUI.cs` | Unityから解析を起動し、進捗とプロファイルグラフを表示する独立パネル。断面選択を3D表示へ伝える。 |
+| **StemDiameterResult.cs** | `PointCloudVR/Assets/PointCloudWorkbench/Scripts/StemDiameterResult.cs` | 茎径JSONのUnityシリアライズ用DTO。 |
+| **StemDiameterVisualizer.cs** | `PointCloudVR/Assets/PointCloudWorkbench/Scripts/StemDiameterVisualizer.cs` | 中心線、選択断面の輪郭線、局所軸を点群上に簡易表示する。 |
 | **result_writer.py** | `python_backend/result_writer.py` | 処理結果をリトルエンディアンの `.bin` ファイル、`metadata.json`、`removal_report.json` に出力。 |
 | **PythonBridge.cs** | `Assets/PointCloudWorkbench/Scripts/PythonBridge.cs` | Pythonプロセスを非同期で詳細パラメータ引数を渡して起動・監視し、リトルエンディアンバイナリを高速デシリアライズするブリッジ。 |
 | **NoiseFilterResult.cs** | `Assets/PointCloudWorkbench/Scripts/NoiseFilterResult.cs` | デシリアライズされた各種ノイズスコア、クラスタID、削除理由マスクを保持するデータクラス。 |
