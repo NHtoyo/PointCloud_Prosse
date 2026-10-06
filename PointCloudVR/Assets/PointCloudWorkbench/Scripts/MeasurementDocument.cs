@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.IO;
+using System.Globalization;
 using System.Security.Cryptography;
 using System.Text;
 using UnityEngine;
@@ -32,6 +33,54 @@ namespace PointCloudWorkbench
         public Color color = Color.yellow;
         public string createdUtc;
         public string modifiedUtc;
+    }
+
+    [Serializable]
+    public sealed class MeasurementResult
+    {
+        public string id;
+        public string name;
+        public string mode;
+        public float length_mm;
+        public float chord_length_mm;
+        public int point_count;
+    }
+
+    public static class MeasurementResultCsv
+    {
+        public static void Write(string outputPath, IList<MeasurementResult> results)
+        {
+            if (string.IsNullOrWhiteSpace(outputPath)) throw new ArgumentException("CSV出力先がありません。", nameof(outputPath));
+            if (results == null) throw new ArgumentNullException(nameof(results));
+
+            string directory = Path.GetDirectoryName(Path.GetFullPath(outputPath));
+            if (string.IsNullOrEmpty(directory)) throw new IOException("CSV出力先フォルダがありません。");
+            Directory.CreateDirectory(directory);
+
+            using (FileStream stream = new FileStream(outputPath, FileMode.CreateNew, FileAccess.Write, FileShare.None))
+            using (StreamWriter writer = new StreamWriter(stream, new UTF8Encoding(true)))
+            {
+                writer.WriteLine("measurement_id,name,mode,length_mm,chord_length_mm,point_count");
+                for (int i = 0; i < results.Count; i++)
+                {
+                    MeasurementResult result = results[i];
+                    if (result == null) continue;
+                    writer.Write(Escape(result.id)); writer.Write(',');
+                    writer.Write(Escape(result.name)); writer.Write(',');
+                    writer.Write(Escape(result.mode)); writer.Write(',');
+                    writer.Write(result.length_mm.ToString("G9", CultureInfo.InvariantCulture)); writer.Write(',');
+                    writer.Write(result.chord_length_mm.ToString("G9", CultureInfo.InvariantCulture)); writer.Write(',');
+                    writer.WriteLine(result.point_count.ToString(CultureInfo.InvariantCulture));
+                }
+            }
+        }
+
+        private static string Escape(string value)
+        {
+            if (value == null) return "";
+            if (value.IndexOfAny(new[] { ',', '"', '\r', '\n' }) < 0) return value;
+            return "\"" + value.Replace("\"", "\"\"") + "\"";
+        }
     }
 
     public static class MeasurementDocumentStore

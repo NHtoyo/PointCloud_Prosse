@@ -1039,11 +1039,15 @@ public class PointCloudEditorUI : MonoBehaviour
         GUILayout.EndHorizontal();
 
         GUILayout.Space(5);
-        bool hasCalibrationMeasurement = editor != null && editor.TryGetSelectedMeasurementChordLength(out _);
+        float measuredChordLengthMm = 0f;
+        bool hasCalibrationMeasurement = editor != null &&
+            editor.TryGetSelectedMeasurementChordLengthMm(out measuredChordLengthMm);
         string selectedMeasurementName = hasCalibrationMeasurement && editor.SelectedMeasurement != null
             ? editor.SelectedMeasurement.name
             : "なし";
         GUILayout.Label($"校正元の計測線: {selectedMeasurementName}", textStyle);
+        if (hasCalibrationMeasurement)
+            GUILayout.Label($"計測値: {measuredChordLengthMm:F1} mm", textStyle);
         GUILayout.Label("選択した計測線の両端間距離を、基準球の実寸 (mm) に合わせます。", textStyle);
 
         GUILayout.Space(20);
@@ -1091,14 +1095,14 @@ public class PointCloudEditorUI : MonoBehaviour
             return;
         }
 
-        if (!editor.TryGetSelectedMeasurementChordLength(out float measuredChordLength))
+        if (!editor.TryGetSelectedMeasurementChordLengthMm(out float measuredChordLengthMm))
         {
             PointCloudProgressManager.Instance.ShowError("校正元の計測がありません", "距離計測一覧から基準物の両端を結ぶ計測線を選択してください。");
             return;
         }
 
-        if (!PointCloudScaleService.TryCalculateCoordinateCorrection(
-                parsedDiameter, measuredChordLength, out float correctionFactor))
+        if (!PointCloudScaleService.TryCalculateCoordinateCorrectionFromMillimeters(
+                parsedDiameter, measuredChordLengthMm, out float correctionFactor))
         {
             PointCloudProgressManager.Instance.ShowError("校正値を確認してください", "実寸法と計測距離には、0より大きい有効な数値を入力してください。");
             return;

@@ -1345,7 +1345,7 @@ public class PointCloudEditor : MonoBehaviour
                     // PLY Header (ASCII characters)
                     string header = "ply\n" +
                                     "format binary_little_endian 1.0\n" +
-                                    coordinateMetadata +
+                                    calibrationMetadata +
                                     $"element vertex {nonDeletedCount}\n" +
                                     "property float x\n" +
                                     "property float y\n" +
@@ -1639,7 +1639,7 @@ public class PointCloudEditor : MonoBehaviour
                     // PLY Header (ASCII characters)
                     string header = "ply\n" +
                                     "format binary_little_endian 1.0\n" +
-                                    coordinateMetadata +
+                                    calibrationMetadata +
                                     $"element vertex {selectedCount}\n" +
                                     "property float x\n" +
                                     "property float y\n" +
@@ -3375,14 +3375,21 @@ public class PointCloudEditor : MonoBehaviour
         measurePoint2 = hasMeasurePoint2 ? points[1] : Vector3.zero;
     }
 
-    public float GetMeasurementLength()
+    public float GetMeasurementLengthDataSpace()
     {
         if (measurementDraftActive) return measurementPath.GetLength();
         MeasurementRecord record = SelectedMeasurement;
         return record != null ? CreatePath(record).GetLength() : 0f;
     }
 
-    public float GetMeasurementChordLength()
+    public float GetMeasurementLengthMm()
+    {
+        return targetRenderer != null
+            ? targetRenderer.DataLengthToMillimeters(GetMeasurementLengthDataSpace())
+            : 0f;
+    }
+
+    public float GetMeasurementChordLengthDataSpace()
     {
         List<Vector3> points = measurementDraftActive
             ? measurementPath.Points
@@ -3391,7 +3398,14 @@ public class PointCloudEditor : MonoBehaviour
         return Vector3.Distance(points[0], points[points.Count - 1]);
     }
 
-    public bool TryGetSelectedMeasurementChordLength(out float chordLength)
+    public float GetMeasurementChordLengthMm()
+    {
+        return targetRenderer != null
+            ? targetRenderer.DataLengthToMillimeters(GetMeasurementChordLengthDataSpace())
+            : 0f;
+    }
+
+    public bool TryGetSelectedMeasurementChordLengthDataSpace(out float chordLength)
     {
         chordLength = 0f;
         MeasurementRecord record = SelectedMeasurement;
@@ -3402,6 +3416,74 @@ public class PointCloudEditor : MonoBehaviour
         if (float.IsNaN(distance) || float.IsInfinity(distance) || distance <= 0f) return false;
         chordLength = distance;
         return true;
+    }
+
+    public bool TryGetSelectedMeasurementChordLengthMm(out float chordLengthMm)
+    {
+        chordLengthMm = 0f;
+        if (!TryGetSelectedMeasurementChordLengthDataSpace(out float chordLengthDataSpace) || targetRenderer == null)
+            return false;
+
+        chordLengthMm = targetRenderer.DataLengthToMillimeters(chordLengthDataSpace);
+        return !float.IsNaN(chordLengthMm) && !float.IsInfinity(chordLengthMm) && chordLengthMm > 0f;
+    }
+
+    public MeasurementResult GetMeasurementResult(MeasurementRecord record)
+    {
+        if (record == null || targetRenderer == null || record.points == null || record.points.Count < 2) return null;
+
+        MeasurementPath path = CreatePath(record);
+        Vector3 first = record.points[0];
+        Vector3 last = record.points[record.points.Count - 1];
+        return new MeasurementResult
+        {
+            id = record.id,
+            name = record.name,
+            mode = GetMeasurementModeId(record.mode),
+            length_mm = targetRenderer.DataLengthToMillimeters(path.GetLength()),
+            chord_length_mm = targetRenderer.DataLengthToMillimeters(Vector3.Distance(first, last)),
+            point_count = record.points.Count
+        };
+    }
+
+    public List<MeasurementResult> GetMeasurementResults()
+    {
+        List<MeasurementResult> results = new List<MeasurementResult>();
+        if (measurementDocument == null) return results;
+        for (int i = 0; i < measurementDocument.measurements.Count; i++)
+        {
+            MeasurementResult result = GetMeasurementResult(measurementDocument.measurements[i]);
+            if (result != null) results.Add(result);
+        }
+        return results;
+    }
+
+    public string ExportMeasurementResultsCsv()
+    {
+        if (!measurementDocumentReady || measurementFingerprintMismatch)
+            throw new System.InvalidOperationException("点群と計測JSONの照合が完了していません。");
+        if (string.IsNullOrEmpty(measurementCloudPath))
+            throw new System.InvalidOperationException("現在の点群ファイルパスを取得できません。");
+
+        List<MeasurementResult> results = GetMeasurementResults();
+        if (results.Count == 0) throw new System.InvalidOperationException("CSVに出力できる計測結果がありません。");
+
+        string directory = Path.GetDirectoryName(measurementCloudPath);
+        string baseName = Path.GetFileNameWithoutExtension(measurementCloudPath);
+        string timestamp = System.DateTime.Now.ToString("yyyyMMdd_HHmmss", CultureInfo.InvariantCulture);
+        string outputPath = Path.Combine(directory, $"{baseName}_measurements_{timestamp}.csv");
+        for (int suffix = 2; File.Exists(outputPath); suffix++)
+            outputPath = Path.Combine(directory, $"{baseName}_measurements_{timestamp}_{suffix}.csv");
+
+        MeasurementResultCsv.Write(outputPath, results);
+        return outputPath;
+    }
+
+    private static string GetMeasurementModeId(int mode)
+    {
+        if (mode == (int)MeasurementMode.Polyline) return "polyline";
+        if (mode == (int)MeasurementMode.SmoothCurve) return "smooth_curve";
+        return "two_point";
     }
 
     public void UpdateMeasureVisuals()
@@ -3599,8 +3681,9 @@ public class PointCloudEditor : MonoBehaviour
         SyncLegacyMeasureFields();
         measurementVisualsDirty = true;
         UpdateMeasureVisuals();
-        string lengthText = $"{GetMeasurementLength():F1} mm";
-        string pointText = $"座標 ({localHit.x:F1}, {localHit.y:F1}, {localHit.z:F1}) mm";
+        Vector3 displayedPointMm = targetRenderer.DataPointToMillimeters(localHit);
+        string lengthText = $"{GetMeasurementLengthMm():F1} mm";
+        string pointText = $"座標 ({displayedPointMm.x:F1}, {displayedPointMm.y:F1}, {displayedPointMm.z:F1}) mm";
         Debug.Log($"[PointCloudEditor] 計測点{measurementPath.Points.Count}を設定: {pointText}, 線長: {lengthText}");
         if (measurementMode == MeasurementMode.TwoPoint && measurementPath.Points.Count == 2 && string.IsNullOrEmpty(editingMeasurementId))
         {

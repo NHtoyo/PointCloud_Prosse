@@ -14,6 +14,7 @@ namespace PointCloudWorkbench
         private Rect lastPanelRect;
         private string renameTargetId = "";
         private string renameText = "";
+        private string resultExportStatus = "";
         private GUIStyle panelStyle;
         private GUIStyle titleStyle;
         private GUIStyle labelStyle;
@@ -148,6 +149,7 @@ namespace PointCloudWorkbench
             }
 
             DrawMeasurementList();
+            DrawResultExportControl();
             DrawSelectedMeasurement();
             DrawCreationControls();
             DrawUndoControl();
@@ -155,6 +157,29 @@ namespace PointCloudWorkbench
             GUILayout.Space(5f);
             GUILayout.Label("点の追加・置換は中央クリックです。左クリックはカメラ操作のままです。", hintStyle);
             GUILayout.Label("距離と座標はmmで表示しています。", hintStyle);
+        }
+
+        private void DrawResultExportControl()
+        {
+            if (editor.MeasurementRecords.Count == 0) return;
+            GUILayout.BeginHorizontal();
+            if (GUILayout.Button("計測結果CSVを書き出し", buttonStyle, GUILayout.Height(30f)))
+            {
+                try
+                {
+                    string path = editor.ExportMeasurementResultsCsv();
+                    resultExportStatus = $"CSV保存: {System.IO.Path.GetFileName(path)}";
+                    Debug.Log($"[Measurement] 計測結果CSVを保存しました: {path}");
+                }
+                catch (System.Exception ex)
+                {
+                    resultExportStatus = $"CSV出力に失敗: {ex.Message}";
+                    Debug.LogError($"[Measurement] {resultExportStatus}");
+                }
+            }
+            if (!string.IsNullOrEmpty(resultExportStatus))
+                GUILayout.Label(resultExportStatus, hintStyle, GUILayout.ExpandWidth(true));
+            GUILayout.EndHorizontal();
         }
 
         private void DrawMeasurementList()
@@ -308,7 +333,9 @@ namespace PointCloudWorkbench
             pointScroll = GUILayout.BeginScrollView(pointScroll, GUILayout.Height(Mathf.Min(96f, 26f * editor.MeasurementPointCount)));
             for (int i = 0; i < editor.measurementPath.Points.Count; i++)
             {
-                Vector3 point = editor.measurementPath.Points[i];
+                Vector3 point = editor.targetRenderer != null
+                    ? editor.targetRenderer.DataPointToMillimeters(editor.measurementPath.Points[i])
+                    : editor.measurementPath.Points[i];
                 GUILayout.BeginHorizontal();
                 string pointText = $"点{i + 1}: {point.x:F1}, {point.y:F1}, {point.z:F1} mm";
                 GUILayout.Label(pointText, hintStyle, GUILayout.ExpandWidth(true));
@@ -328,20 +355,13 @@ namespace PointCloudWorkbench
 
         private string GetActiveLengthText()
         {
-            return FormatLength(editor.GetMeasurementLength());
+            return FormatLength(editor.GetMeasurementLengthMm());
         }
 
         private string GetLengthText(MeasurementRecord record)
         {
-            var path = new MeasurementPath();
-            path.SetMode(System.Enum.IsDefined(typeof(PointCloudEditor.MeasurementMode), record.mode)
-                ? (PointCloudEditor.MeasurementMode)record.mode
-                : PointCloudEditor.MeasurementMode.TwoPoint);
-            if (record.points != null)
-            {
-                for (int i = 0; i < record.points.Count; i++) path.AddPoint(record.points[i]);
-            }
-            return FormatLength(path.GetLength());
+            MeasurementResult result = editor.GetMeasurementResult(record);
+            return result != null ? FormatLength(result.length_mm) : "-- mm";
         }
 
         private string FormatLength(float length)

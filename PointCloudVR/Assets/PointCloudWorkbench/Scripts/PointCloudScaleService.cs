@@ -10,12 +10,12 @@ namespace PointCloudWorkbench
     {
         private const string CalibratedSuffix = "_calibrated_mm";
 
-        public static bool TryCalculateCoordinateCorrection(float realDiameterMm, string measuredLengths, out float correctionFactor)
+        public static bool TryCalculateCoordinateCorrectionFromMillimeters(float realDiameterMm, string measuredLengthsMm, out float correctionFactor)
         {
             correctionFactor = 0f;
             if (float.IsNaN(realDiameterMm) || float.IsInfinity(realDiameterMm) || realDiameterMm <= 0f ||
-                string.IsNullOrWhiteSpace(measuredLengths)) return false;
-            string[] values = measuredLengths.Split(',');
+                string.IsNullOrWhiteSpace(measuredLengthsMm)) return false;
+            string[] values = measuredLengthsMm.Split(',');
             float[] lengths = new float[values.Length];
             for (int i = 0; i < values.Length; i++)
             {
@@ -28,22 +28,22 @@ namespace PointCloudWorkbench
             double medianLength = lengths.Length % 2 == 0
                 ? ((double)lengths[lengths.Length / 2 - 1] + lengths[lengths.Length / 2]) * 0.5
                 : lengths[lengths.Length / 2];
-            return TryCalculateCoordinateCorrection(realDiameterMm, medianLength, out correctionFactor);
+            return TryCalculateCoordinateCorrectionFromMillimeters(realDiameterMm, medianLength, out correctionFactor);
         }
 
-        public static bool TryCalculateCoordinateCorrection(float realDiameterMm, float measuredLength, out float correctionFactor)
+        public static bool TryCalculateCoordinateCorrectionFromMillimeters(float realDiameterMm, float measuredLengthMm, out float correctionFactor)
         {
-            return TryCalculateCoordinateCorrection(realDiameterMm, (double)measuredLength, out correctionFactor);
+            return TryCalculateCoordinateCorrectionFromMillimeters(realDiameterMm, (double)measuredLengthMm, out correctionFactor);
         }
 
-        private static bool TryCalculateCoordinateCorrection(double realDiameterMm, double measuredLength, out float correctionFactor)
+        private static bool TryCalculateCoordinateCorrectionFromMillimeters(double realLengthMm, double measuredLengthMm, out float correctionFactor)
         {
             correctionFactor = 0f;
-            if (double.IsNaN(realDiameterMm) || double.IsInfinity(realDiameterMm) || realDiameterMm <= 0.0 ||
-                double.IsNaN(measuredLength) || double.IsInfinity(measuredLength) || measuredLength <= 0.0)
+            if (double.IsNaN(realLengthMm) || double.IsInfinity(realLengthMm) || realLengthMm <= 0.0 ||
+                double.IsNaN(measuredLengthMm) || double.IsInfinity(measuredLengthMm) || measuredLengthMm <= 0.0)
                 return false;
 
-            double factor = realDiameterMm / measuredLength;
+            double factor = realLengthMm / measuredLengthMm;
             if (double.IsNaN(factor) || double.IsInfinity(factor) || factor <= 0.0 || factor > float.MaxValue) return false;
             correctionFactor = (float)factor;
             return true;

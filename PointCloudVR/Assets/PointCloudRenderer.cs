@@ -70,6 +70,19 @@ public class PointCloudRenderer : MonoBehaviour
         }
     }
 
+    public float DisplayScale => Mathf.Max(0.001f, pointCloudDisplayScale);
+
+    // Measurement results interpret one data-space unit as DisplayScale millimeters.
+    public float DataLengthToMillimeters(float dataLength)
+    {
+        return dataLength * DisplayScale;
+    }
+
+    public Vector3 DataPointToMillimeters(Vector3 dataPoint)
+    {
+        return dataPoint * DisplayScale;
+    }
+
     void Awake()
     {
         EnsureDisplayTransform();
@@ -105,7 +118,7 @@ public class PointCloudRenderer : MonoBehaviour
 
         displayTransform.localPosition = Vector3.zero;
         displayTransform.localRotation = Quaternion.identity;
-        displayTransform.localScale = Vector3.one * Mathf.Max(0.001f, pointCloudDisplayScale);
+        displayTransform.localScale = Vector3.one * DisplayScale;
     }
 
     void Start()
