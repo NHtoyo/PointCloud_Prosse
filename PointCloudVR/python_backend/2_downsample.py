@@ -6,6 +6,7 @@ import csv
 import argparse
 import os
 import shutil
+import tempfile
 import open3d as o3d
 import open3d.core as o3c
 from coordinate_units import millimeters_to_data_length, validate_coordinate_scale_to_mm
@@ -55,23 +56,34 @@ def preserve_calibrated_metadata(source_path: Path, output_path: Path) -> None:
     if not has_calibrated_metadata(source_path) or has_calibrated_metadata(output_path):
         return
 
-    temporary_path = output_path.with_name(output_path.name + ".pcwb-meta.tmp")
+    temporary_path = None
     inserted = False
     try:
-        with source_path.open("rb") as source, temporary_path.open("wb") as destination:
-            for line in source:
-                if line.strip().lower() == b"end_header":
-                    destination.write(b"comment pcwb_scale_calibrated true\n")
-                    inserted = True
-                destination.write(line)
-                if line.strip().lower() == b"end_header":
-                    shutil.copyfileobj(source, destination, length=1024 * 1024)
-                    break
+        with tempfile.NamedTemporaryFile(
+            mode="wb",
+            prefix=f".{output_path.name}.",
+            suffix=".pcwb-meta.tmp",
+            dir=str(output_path.parent),
+            delete=False,
+        ) as destination:
+            temporary_path = Path(destination.name)
+            with output_path.open("rb") as output:
+                for line in output:
+                    if line.strip().lower() == b"end_header":
+                        destination.write(b"comment pcwb_scale_calibrated true\n")
+                        inserted = True
+                    destination.write(line)
+                    if inserted:
+                        shutil.copyfileobj(output, destination, length=1024 * 1024)
+                        break
             if not inserted:
-                raise ValueError(f"PLY header is incomplete: {source_path}")
+                raise ValueError(f"PLY header is incomplete: {output_path}")
+            destination.flush()
+            os.fsync(destination.fileno())
+
         os.replace(temporary_path, output_path)
     finally:
-        if temporary_path.exists():
+        if temporary_path is not None and temporary_path.exists():
             temporary_path.unlink()
 
 def main(argv=None):

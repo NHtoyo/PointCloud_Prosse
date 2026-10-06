@@ -2,6 +2,7 @@ import contextlib
 import importlib.util
 import io
 import json
+import struct
 import tempfile
 import unittest
 from pathlib import Path
@@ -27,11 +28,12 @@ def load_downsample_module():
     return module
 
 
-def write_calibrated_labeled_ply(path: Path) -> None:
+def write_labeled_ply(path: Path, calibrated: bool) -> None:
+    marker = "comment pcwb_scale_calibrated true\n" if calibrated else ""
     path.write_text(
         "ply\n"
         "format ascii 1.0\n"
-        "comment pcwb_scale_calibrated true\n"
+        f"{marker}"
         "element vertex 4\n"
         "property float x\n"
         "property float y\n"
@@ -156,32 +158,111 @@ class CoordinateBoundaryTests(unittest.TestCase):
         downsample = load_downsample_module()
         with tempfile.TemporaryDirectory(prefix="downsample-units-") as temp_dir:
             root = Path(temp_dir)
-            input_path = root / "source_labeled.ply"
-            output_path = root / "exact_result_ds5mm.ply"
+            calibrated_input = root / "source_calibrated.ply"
+            uncalibrated_input = root / "source_uncalibrated.ply"
+            calibrated_output = root / "calibrated_result_ds5mm.ply"
+            uncalibrated_output = root / "uncalibrated_result_ds5mm.ply"
             output_dir = root / "reports"
-            write_calibrated_labeled_ply(input_path)
+            write_labeled_ply(calibrated_input, calibrated=True)
+            write_labeled_ply(uncalibrated_input, calibrated=False)
 
-            with contextlib.redirect_stdout(io.StringIO()):
-                downsample.main([
-                    "--input", str(input_path),
-                    "--output", str(output_dir),
-                    "--mode", "1",
-                    "--voxel_size", "5",
-                    "--coordinate-scale-to-mm", "1200",
-                    "--merged-output", str(output_path),
-                ])
+            for input_path, output_path in (
+                (calibrated_input, calibrated_output),
+                (uncalibrated_input, uncalibrated_output),
+            ):
+                with contextlib.redirect_stdout(io.StringIO()):
+                    downsample.main([
+                        "--input", str(input_path),
+                        "--output", str(output_dir),
+                        "--mode", "1",
+                        "--voxel_size", "5",
+                        "--coordinate-scale-to-mm", "1200",
+                        "--merged-output", str(output_path),
+                    ])
 
-            self.assertTrue(output_path.is_file())
-            self.assertTrue(downsample.has_calibrated_metadata(output_path))
-            loaded = downsample.o3d.io.read_point_cloud(str(output_path))
-            output_points = np.asarray(loaded.points)
+            self.assertTrue(calibrated_output.is_file())
+            self.assertTrue(downsample.has_calibrated_metadata(calibrated_output))
+            self.assertEqual(calibrated_output.read_bytes().count(b"comment pcwb_scale_calibrated true"), 1)
+            self.assertFalse(downsample.has_calibrated_metadata(uncalibrated_output))
+            output_points = np.asarray(
+                downsample.o3d.t.io.read_point_cloud(str(calibrated_output)).point.positions.numpy()
+            )
+            uncalibrated_points = np.asarray(
+                downsample.o3d.t.io.read_point_cloud(str(uncalibrated_output)).point.positions.numpy()
+            )
+            self.assertLess(len(output_points), 4, "voxel downsampling must reduce the point count")
+            self.assertEqual(len(output_points), len(uncalibrated_points))
+            output_order = np.lexsort((output_points[:, 2], output_points[:, 1], output_points[:, 0]))
+            uncalibrated_order = np.lexsort((uncalibrated_points[:, 2], uncalibrated_points[:, 1], uncalibrated_points[:, 0]))
+            np.testing.assert_allclose(output_points[output_order], uncalibrated_points[uncalibrated_order], rtol=0, atol=1e-8)
             self.assertLess(float(np.max(np.abs(output_points))), 0.01)
             self.assertGreater(float(np.ptp(output_points[:, 0])), 0.0)
-            report_path = output_dir / "source_labeled_downsample_runlog.json"
+            self.assertGreaterEqual(float(np.min(output_points[:, 0])), 0.0)
+            self.assertLessEqual(float(np.max(output_points[:, 0])), 0.006 + 1e-7)
+            report_path = output_dir / "source_calibrated_downsample_runlog.json"
             report = json.loads(report_path.read_text(encoding="utf-8"))
             self.assertAlmostEqual(report["voxel"]["voxel_size_data"], 5.0 / 1200.0)
             self.assertEqual(report["voxel"]["coordinate_basis"], "data-space")
             self.assertTrue(report["voxel"]["source_scale_calibrated"])
+
+    def test_metadata_insertion_preserves_ascii_and_binary_payload_and_is_idempotent(self):
+        downsample = load_downsample_module()
+        marker = b"comment pcwb_scale_calibrated true\n"
+        payloads = {
+            "ascii": (
+                b"ply\nformat ascii 1.0\nelement vertex 1\n"
+                b"property float x\nproperty float y\nproperty float z\n"
+                b"property uchar red\nproperty uchar green\nproperty uchar blue\n"
+                b"property int label\nend_header\n",
+                b"1.25 -2.5 0.125 17 34 51 7\n",
+            ),
+            "binary": (
+                b"ply\nformat binary_little_endian 1.0\nelement vertex 1\n"
+                b"property float x\nproperty float y\nproperty float z\n"
+                b"property uchar red\nproperty uchar green\nproperty uchar blue\n"
+                b"property int label\nend_header\n",
+                struct.pack("<fffBBBi", 1.25, -2.5, 0.125, 17, 34, 51, 7),
+            ),
+        }
+
+        with tempfile.TemporaryDirectory(prefix="ply-metadata-") as temp_dir:
+            root = Path(temp_dir)
+            source_path = root / "calibrated_source.ply"
+            source_path.write_bytes(b"ply\ncomment pcwb_scale_calibrated true\nend_header\n")
+            for name, (header, payload) in payloads.items():
+                with self.subTest(format=name):
+                    output_path = root / f"{name}.ply"
+                    original = header + payload
+                    output_path.write_bytes(original)
+
+                    downsample.preserve_calibrated_metadata(source_path, output_path)
+                    expected = header.replace(b"end_header\n", marker + b"end_header\n", 1) + payload
+                    self.assertEqual(output_path.read_bytes(), expected)
+                    self.assertEqual(output_path.read_bytes().count(marker), 1)
+
+                    downsample.preserve_calibrated_metadata(source_path, output_path)
+                    self.assertEqual(output_path.read_bytes(), expected, "existing marker must be left untouched")
+
+    def test_metadata_replace_failure_preserves_existing_output_and_cleans_temp(self):
+        downsample = load_downsample_module()
+        with tempfile.TemporaryDirectory(prefix="ply-metadata-failure-") as temp_dir:
+            root = Path(temp_dir)
+            source_path = root / "calibrated_source.ply"
+            source_path.write_bytes(b"ply\ncomment pcwb_scale_calibrated true\nend_header\n")
+            output_path = root / "result.ply"
+            original = (
+                b"ply\nformat binary_little_endian 1.0\nelement vertex 1\n"
+                b"property float x\nproperty float y\nproperty float z\nend_header\n"
+                + struct.pack("<fff", 1.0, 2.0, 3.0)
+            )
+            output_path.write_bytes(original)
+
+            with patch.object(downsample.os, "replace", side_effect=OSError("injected replace failure")):
+                with self.assertRaisesRegex(OSError, "injected replace failure"):
+                    downsample.preserve_calibrated_metadata(source_path, output_path)
+
+            self.assertEqual(output_path.read_bytes(), original)
+            self.assertEqual(list(root.glob(f".{output_path.name}.*.pcwb-meta.tmp")), [])
 
 
 if __name__ == "__main__":
