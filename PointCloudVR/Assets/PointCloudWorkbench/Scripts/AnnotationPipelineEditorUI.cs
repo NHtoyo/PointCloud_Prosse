@@ -130,7 +130,7 @@ namespace PointCloudWorkbench
             Texture2D Tex(Color c) { var t = new Texture2D(1, 1); t.SetPixel(0, 0, c); t.Apply(); return t; }
 
             panelStyle = new GUIStyle(GUI.skin.box);
-            panelStyle.normal.background = Tex(new Color(0.09f, 0.11f, 0.15f, 0.97f));
+            panelStyle.normal.background = Tex(new Color(0.09f, 0.11f, 0.15f, 0.98f));
             panelStyle.border = new RectOffset(1, 1, 1, 1);
 
             titleStyle = new GUIStyle(GUI.skin.label) { fontSize = 17, fontStyle = FontStyle.Bold }; // 14 -> 17

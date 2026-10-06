@@ -13,6 +13,8 @@ public sealed class StemDiameterUI : MonoBehaviour
     private readonly StringBuilder errorOutput = new StringBuilder();
     private Rect panelRect;
     private Vector2 contentScroll;
+    private Texture2D panelBackgroundTexture;
+    private GUIStyle panelBackgroundStyle;
     private Process process;
     private volatile bool stdoutEnded;
     private volatile bool stderrEnded;
@@ -48,6 +50,7 @@ public sealed class StemDiameterUI : MonoBehaviour
     {
         if (loader != null) loader.PointCloudLoaded -= OnPointCloudLoaded;
         StopProcess();
+        if (panelBackgroundTexture != null) Destroy(panelBackgroundTexture);
     }
 
     private void Update()
@@ -135,7 +138,8 @@ public sealed class StemDiameterUI : MonoBehaviour
         float availableHeight = Mathf.Max(160f, Screen.height - currentY - 18f);
         float barHeight = Mathf.Min(preferredHeight, availableHeight);
         panelRect = new Rect(barX, currentY, barWidth, barHeight);
-        GUI.Box(panelRect, GUIContent.none);
+        EnsurePanelBackgroundStyle();
+        GUI.Box(panelRect, GUIContent.none, panelBackgroundStyle);
 
         Rect contentRect = new Rect(panelRect.x + 10f, panelRect.y + 7f, panelRect.width - 20f, panelRect.height - 14f);
         GUILayout.BeginArea(contentRect);
@@ -181,6 +185,19 @@ public sealed class StemDiameterUI : MonoBehaviour
         Event current = Event.current;
         if (current != null && current.type == EventType.ScrollWheel && panelRect.Contains(current.mousePosition))
             current.Use();
+    }
+
+    private void EnsurePanelBackgroundStyle()
+    {
+        if (panelBackgroundStyle != null) return;
+
+        panelBackgroundTexture = new Texture2D(1, 1);
+        panelBackgroundTexture.SetPixel(0, 0, new Color(0.09f, 0.11f, 0.15f, 0.98f));
+        panelBackgroundTexture.Apply();
+
+        panelBackgroundStyle = new GUIStyle(GUI.skin.box);
+        panelBackgroundStyle.normal.background = panelBackgroundTexture;
+        panelBackgroundStyle.border = new RectOffset(1, 1, 1, 1);
     }
 
     private void DrawMetricButtons()

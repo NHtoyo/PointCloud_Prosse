@@ -356,7 +356,7 @@ namespace PointCloudWorkbench
             if (legendStylesInitialized) return;
 
             legendBgTexture = new Texture2D(1, 1);
-            legendBgTexture.SetPixel(0, 0, new Color(0.12f, 0.12f, 0.16f, 0.85f)); // ダークインディゴ半透明
+            legendBgTexture.SetPixel(0, 0, new Color(0.12f, 0.12f, 0.16f, 0.98f)); // ダークインディゴ半透明
             legendBgTexture.Apply();
 
             colorTexture = new Texture2D(1, 1);

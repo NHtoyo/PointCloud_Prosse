@@ -221,7 +221,7 @@ public class PointCloudEditorUI : MonoBehaviour
         if (stylesInitialized) return;
 
         Texture2D bgTexture = new Texture2D(1, 1);
-        bgTexture.SetPixel(0, 0, new Color(0.08f, 0.1f, 0.12f, 0.96f)); // Sleek professional dark
+        bgTexture.SetPixel(0, 0, new Color(0.08f, 0.1f, 0.12f, 0.98f)); // Sleek professional dark
         bgTexture.Apply();
 
         windowStyle = new GUIStyle(GUI.skin.box);
