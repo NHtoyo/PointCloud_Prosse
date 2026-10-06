@@ -15,10 +15,26 @@ def _progress(value: float, message: str) -> None:
     print(f"[Progress] {value * 100.0:.1f} {message}", flush=True)
 
 
+def _convert_points_to_mm(points_raw: np.ndarray, coordinate_scale_to_mm: float) -> np.ndarray:
+    scale = float(coordinate_scale_to_mm)
+    if not np.isfinite(scale) or scale <= 0.0:
+        raise ValueError("coordinate_scale_to_mm must be a finite positive number.")
+    points_mm = np.asarray(points_raw, dtype=np.float64) * scale
+    if not np.all(np.isfinite(points_mm)):
+        raise ValueError("Converted point coordinates contain NaN or inf.")
+    return points_mm
+
+
+def _format_xyz(values: np.ndarray) -> str:
+    return "(" + ", ".join(f"{float(value):.6g}" for value in values) + ")"
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Estimate a plant main-stem diameter profile.")
     parser.add_argument("--input", required=True, help="Input PLY or NPZ point cloud")
     parser.add_argument("--output_dir", required=True, help="Directory for JSON, CSV and PNG outputs")
+    parser.add_argument("--coordinate-scale-to-mm", type=float, required=True,
+                        help="Multiply source coordinates by this factor to get millimeters")
     parser.add_argument("--measurement-interval-mm", type=float, default=10.0)
     parser.add_argument("--centerline-step-mm", type=float, default=5.0)
     parser.add_argument("--local-axis-radius-mm", type=float, default=15.0)
@@ -38,21 +54,22 @@ def main(argv=None) -> int:
 
         _progress(0.01, f"点群を読み込み中: {input_path}")
         if input_path.suffix.lower() == ".npz":
-            points, _ = pointcloud_io.load_npz(str(input_path))
+            loaded_points, _ = pointcloud_io.load_npz(str(input_path))
         else:
-            points, _ = pointcloud_io.load_ply(str(input_path))
-        points = np.asarray(points, dtype=np.float64)
-        if points.ndim != 2 or points.shape[1] != 3 or len(points) == 0:
-            raise ValueError(f"Input point coordinates must be a non-empty Nx3 array; shape={points.shape}")
-        xyz_min = np.min(points, axis=0)
-        xyz_max = np.max(points, axis=0)
-        xyz_span = xyz_max - xyz_min
-        print(f"[StemDiameter] points={len(points):,}", flush=True)
-        print(
-            "[StemDiameter] xyz_min=(%.6g, %.6g, %.6g) xyz_max=(%.6g, %.6g, %.6g) xyz_span=(%.6g, %.6g, %.6g)"
-            % (*xyz_min, *xyz_max, *xyz_span),
-            flush=True,
-        )
+            loaded_points, _ = pointcloud_io.load_ply(str(input_path))
+        points_raw = np.asarray(loaded_points, dtype=np.float64)
+        if points_raw.ndim != 2 or points_raw.shape[1] != 3 or len(points_raw) == 0:
+            raise ValueError(f"Input point coordinates must be a non-empty Nx3 array; shape={points_raw.shape}")
+        if not np.all(np.isfinite(points_raw)):
+            raise ValueError("Input point coordinates contain NaN or inf.")
+
+        raw_xyz_span = np.ptp(points_raw, axis=0)
+        points_mm = _convert_points_to_mm(points_raw, args.coordinate_scale_to_mm)
+        mm_xyz_span = np.ptp(points_mm, axis=0)
+        print(f"[StemDiameter] points={len(points_raw):,}", flush=True)
+        print(f"[StemDiameterInput] raw_xyz_span={_format_xyz(raw_xyz_span)}", flush=True)
+        print(f"[StemDiameterInput] coordinate_scale_to_mm={args.coordinate_scale_to_mm:.9g}", flush=True)
+        print(f"[StemDiameterInput] mm_xyz_span={_format_xyz(mm_xyz_span)}", flush=True)
 
         params = StemDiameterParams(
             measurement_interval_mm=args.measurement_interval_mm,
@@ -62,9 +79,9 @@ def main(argv=None) -> int:
             primary_slice_thickness_mm=args.primary_slice_thickness_mm,
             query_workers=args.query_workers,
         )
-        result = analyze_stem(points, params, _progress)
+        result = analyze_stem(points_mm, params, _progress)
         _progress(0.93, "JSON、CSV、品質グラフを書き出し中...")
-        write_stem_diameter_outputs(args.output_dir, result, str(input_path), len(points))
+        write_stem_diameter_outputs(args.output_dir, result, str(input_path), len(points_mm))
         valid = [s.equivalent_diameter_mm for s in result.sections if s.equivalent_diameter_mm is not None]
         print("================ Stem diameter result ================", flush=True)
         print(f"centerline_length_mm={result.centerline_length_mm:.3f}", flush=True)

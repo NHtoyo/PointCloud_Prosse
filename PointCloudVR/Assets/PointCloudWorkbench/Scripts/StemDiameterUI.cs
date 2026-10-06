@@ -402,6 +402,7 @@ public sealed class StemDiameterUI : MonoBehaviour
                 Arguments = string.Join(" ", new[]
                 {
                     Quote(script), "--input", Quote(inputPath), "--output_dir", Quote(outputDirectory),
+                    "--coordinate-scale-to-mm", targetRenderer.DisplayScale.ToString("R", CultureInfo.InvariantCulture),
                     "--query-workers", "-1"
                 }),
                 WorkingDirectory = backend,

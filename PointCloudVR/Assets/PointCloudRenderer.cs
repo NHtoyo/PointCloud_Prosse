@@ -83,6 +83,16 @@ public class PointCloudRenderer : MonoBehaviour
         return dataPoint * DisplayScale;
     }
 
+    public float MillimetersToDataLength(float lengthMillimeters)
+    {
+        return lengthMillimeters / DisplayScale;
+    }
+
+    public Vector3 MillimetersToDataPoint(Vector3 pointMillimeters)
+    {
+        return pointMillimeters / DisplayScale;
+    }
+
     void Awake()
     {
         EnsureDisplayTransform();

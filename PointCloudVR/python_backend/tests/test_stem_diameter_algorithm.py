@@ -55,7 +55,7 @@ class StemDiameterAlgorithmTests(unittest.TestCase):
 
     def test_algorithm_has_no_io_or_unity_dependencies(self):
         source = Path(inspect.getsourcefile(analyze_stem)).read_text(encoding="utf-8")
-        for forbidden in ("open3d", "matplotlib", "UnityEngine", "subprocess", "pointcloud_io"):
+        for forbidden in ("open3d", "matplotlib", "UnityEngine", "subprocess", "pointcloud_io", "1200"):
             self.assertNotIn(forbidden, source.lower())
 
     def test_known_diameter_and_tilt_invariance(self):

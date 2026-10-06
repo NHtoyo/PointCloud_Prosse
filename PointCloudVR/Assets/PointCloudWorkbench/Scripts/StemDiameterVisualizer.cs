@@ -38,7 +38,7 @@ namespace PointCloudWorkbench
             {
                 centerline.positionCount = line.Length;
                 for (int i = 0; i < line.Length; i++)
-                    centerline.SetPosition(i, line[i].ToUnity());
+                    centerline.SetPosition(i, targetRenderer.MillimetersToDataPoint(line[i].ToUnity()));
             }
             SetVisible(visible);
         }
@@ -78,12 +78,14 @@ namespace PointCloudWorkbench
             StemDiameterSection section = result.sections[selectedIndex];
             if (section.center_xyz_mm == null || section.local_axis_xyz == null) return;
 
-            Vector3 center = section.center_xyz_mm.ToUnity();
+            Vector3 centerMillimeters = section.center_xyz_mm.ToUnity();
+            Vector3 center = targetRenderer.MillimetersToDataPoint(centerMillimeters);
             Vector3 axis = section.local_axis_xyz.ToUnity().normalized;
             sectionAxis.positionCount = 2;
             const float axisHalfLengthMm = 10f;
-            sectionAxis.SetPosition(0, center - axis * axisHalfLengthMm);
-            sectionAxis.SetPosition(1, center + axis * axisHalfLengthMm);
+            float axisHalfLengthData = targetRenderer.MillimetersToDataLength(axisHalfLengthMm);
+            sectionAxis.SetPosition(0, center - axis * axisHalfLengthData);
+            sectionAxis.SetPosition(1, center + axis * axisHalfLengthData);
 
             StemDiameterSlice slice = null;
             if (section.slice_results != null)
@@ -108,7 +110,9 @@ namespace PointCloudWorkbench
             for (int i = 0; i < slice.contour_uv_mm.Length; i++)
             {
                 StemContourPoint point = slice.contour_uv_mm[i];
-                sectionContour.SetPosition(i, center + u * point.u_mm + v * point.v_mm);
+                sectionContour.SetPosition(i, center +
+                    u * targetRenderer.MillimetersToDataLength(point.u_mm) +
+                    v * targetRenderer.MillimetersToDataLength(point.v_mm));
             }
             sectionContour.SetPosition(slice.contour_uv_mm.Length, sectionContour.GetPosition(0));
         }

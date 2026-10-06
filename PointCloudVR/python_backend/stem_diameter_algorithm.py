@@ -348,21 +348,21 @@ def analyze_stem(
     params=None,
     progress_callback: Optional[Callable[[float, str], None]] = None,
 ):
-    """Analyze a stem point cloud while keeping all distances in physical millimeters.
+    """Analyze points_xyz, which must already be expressed in millimeters.
 
     The prototype's numerical sequence is retained. A single spatial tree limits
     each local PCA and slice to nearby points instead of rescanning the full cloud
-    for every section.
+    for every section. This function performs no coordinate-scale conversion.
     """
     if params is None:
         params = StemDiameterParams()
 
-    points_xyz = np.asarray(points_xyz, dtype=np.float64)
-    if points_xyz.ndim != 2 or points_xyz.shape[1] != 3:
-        raise ValueError("points_xyz must have shape (N, 3).")
-    if len(points_xyz) < 100:
+    points_mm = np.asarray(points_xyz, dtype=np.float64)
+    if points_mm.ndim != 2 or points_mm.shape[1] != 3:
+        raise ValueError("points_xyz must have shape (N, 3) and be in millimeters.")
+    if len(points_mm) < 100:
         raise ValueError("Too few points.")
-    if not np.all(np.isfinite(points_xyz)):
+    if not np.all(np.isfinite(points_mm)):
         raise ValueError("points_xyz contains NaN or inf.")
     if params.measurement_interval_mm <= 0 or params.centerline_step_mm <= 0:
         raise ValueError("measurement_interval_mm and centerline_step_mm must be > 0.")
@@ -391,8 +391,6 @@ def analyze_stem(
             progress_callback(float(value), message)
 
     report_progress(0.05, "主茎の大まかな軸と中心線支持点を推定中...")
-    points_mm = points_xyz
-    del points_xyz
     support_t, support_points_mm, _ = _build_centerline(points_mm, params)
     splines = _fit_centerline(support_t, support_points_mm, params)
     report_progress(0.12, "中心線を弧長パラメータ化中...")
