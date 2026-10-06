@@ -214,7 +214,7 @@ namespace PointCloudWorkbench
                 GUILayout.Label($"    近傍点数 (Density k): {Params.density.k}", textStyle);
                 Params.density.k = Mathf.RoundToInt(GUILayout.HorizontalSlider(Params.density.k, 3f, 32f));
 
-                GUILayout.Label($"    低密度閾値: {Params.density.threshold:F4}", textStyle);
+                GUILayout.Label($"    低密度閾値: {Params.density.threshold:F4} 1/mm", textStyle);
                 Params.density.threshold = GUILayout.HorizontalSlider(Params.density.threshold, 0.0f, 100.0f);
             }
             GUILayout.Space(5);
@@ -309,6 +309,7 @@ namespace PointCloudWorkbench
             pm.Start("空中モヤ・浮遊点ノイズ除去", "Pythonプロセスを準備中...");
 
             PointData[] points = editor.targetRenderer.GetPointData();
+            float coordinateScaleToMm = editor.targetRenderer.DisplayScale;
 
             // 非同期でPythonバッチ処理を起動
             Task.Run(async () =>
@@ -321,6 +322,7 @@ namespace PointCloudWorkbench
                         outputDir,
                         Params,
                         points,
+                        coordinateScaleToMm,
                         token
                     );
 

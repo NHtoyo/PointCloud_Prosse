@@ -46,7 +46,8 @@ def _clear_previous_outputs(output_dir: str):
             os.remove(path)
 
 def write_results(output_dir: str, results: dict, params: dict, mode: str, 
-                  original_count: int, analysis_count: int, voxel_size: float = None):
+                  original_count: int, analysis_count: int, voxel_size: float = None,
+                  coordinate_scale_to_mm: float = None):
     """
     点群処理結果をバイナリファイルおよびJSONレポート形式で保存します。
     
@@ -105,6 +106,15 @@ def write_results(output_dir: str, results: dict, params: dict, mode: str,
         "dbscan_voxel_size": results['dbscan_voxel_size'],
         "dbscan_analysis_count": results['dbscan_analysis_count'],
         "voxel_size": voxel_size,
+        "coordinate_unit": "mm",
+        "coordinate_scale_to_mm": coordinate_scale_to_mm,
+        "scalar_units": {
+            "sor_score": "mm",
+            "cc_noise_score": "mm",
+            "density_score": "1/mm",
+            "white_haze_score": "dimensionless",
+            "radius_neighbor_count": "count"
+        },
         "files": metadata_files,
         "parameters": params
     }
@@ -122,6 +132,8 @@ def write_results(output_dir: str, results: dict, params: dict, mode: str,
         "original_point_count": original_count,
         "analysis_point_count": analysis_count,
         "voxel_size": voxel_size,
+        "coordinate_unit": "mm",
+        "coordinate_scale_to_mm": coordinate_scale_to_mm,
         "downsample_ratio": float(analysis_count / original_count) if original_count > 0 else 0.0,
         "kept_point_count": kept_count,
         "removed_candidate_count": removed_count,

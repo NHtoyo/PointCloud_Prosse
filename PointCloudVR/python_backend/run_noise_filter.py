@@ -23,6 +23,11 @@ import pointcloud_io
 import noise_filters
 import result_writer
 from filter_pipeline import build_default_pipeline
+from coordinate_units import (
+    convert_points_from_mm_to_data,
+    convert_points_to_mm_in_place,
+    validate_coordinate_scale_to_mm,
+)
 
 def str_to_bool(value):
     if isinstance(value, bool):
@@ -40,6 +45,8 @@ def setup_argparser():
     # 基本の入力と出力
     parser.add_argument("--input", required=True, help="入力PLYファイルのパス")
     parser.add_argument("--output_dir", required=True, help="出力ディレクトリ（バイナリとJSONの保存先）")
+    parser.add_argument("--coordinate-scale-to-mm", type=float, required=True,
+                        help="PLY data-space座標をmmへ変換する倍率")
     parser.add_argument("--mode", choices=["full", "downsample"], default="full", 
                         help="実行モード: 'full' (フル解像度、DBSCANのみ自動ダウンサンプリング) "
                              "または 'downsample' (全フィルタをダウンサンプリングされた点群に適用)")
@@ -178,6 +185,7 @@ def build_pipeline_from_args(args):
 
 def run_downsample_mode(points, colors, params, enabled_filters, pipeline, args, original_count):
     print("Downsample Preview モードで処理を開始します...")
+    os.makedirs(args.output_dir, exist_ok=True)
     base_spacing = noise_filters.estimate_base_spacing(points)
     
     # ボクセルサイズの自動推定または設定値の採用
@@ -232,13 +240,15 @@ def run_downsample_mode(points, colors, params, enabled_filters, pipeline, args,
     
     # プレビュー表示用PLY保存
     preview_ply_path = os.path.join(args.output_dir, "preview.ply")
-    pointcloud_io.save_ply(preview_ply_path, points_ds, colors_ds)
+    points_ds_data = convert_points_from_mm_to_data(points_ds, args.coordinate_scale_to_mm)
+    pointcloud_io.save_ply(preview_ply_path, points_ds_data, colors_ds)
     print(f"プレビュー用点群ファイルを保存しました: {preview_ply_path}")
     
     # 結果の出力
     result_writer.write_results(
         args.output_dir, results, params, mode='downsample_preview',
-        original_count=original_count, analysis_count=analysis_count, voxel_size=v_size
+        original_count=original_count, analysis_count=analysis_count, voxel_size=v_size,
+        coordinate_scale_to_mm=args.coordinate_scale_to_mm
     )
     return results, analysis_count
 
@@ -265,7 +275,8 @@ def run_full_mode(points, colors, params, enabled_filters, pipeline, args, origi
         
     result_writer.write_results(
         args.output_dir, results, params, mode='full',
-        original_count=original_count, analysis_count=analysis_count, voxel_size=None
+        original_count=original_count, analysis_count=analysis_count, voxel_size=None,
+        coordinate_scale_to_mm=args.coordinate_scale_to_mm
     )
     return results, analysis_count
 
@@ -293,9 +304,9 @@ def print_summary(results, original_count, analysis_count, elapsed, args):
     print(f" 結果出力ディレクトリ: {args.output_dir}")
     print("======================================================")
 
-def main():
+def main(argv=None):
     parser = setup_argparser()
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
     
     start_time = time.time()
     print(
@@ -316,8 +327,14 @@ def main():
         print(f"[Error] 点群のロードに失敗しました: {e}", file=sys.stderr)
         sys.exit(1)
         
+    coordinate_scale_to_mm = validate_coordinate_scale_to_mm(args.coordinate_scale_to_mm)
+    raw_xyz_span = np.ptp(points, axis=0)
     original_count = len(points)
+    points = convert_points_to_mm_in_place(points, coordinate_scale_to_mm)
     print(f"点群ロード完了. 点数: {original_count:,}")
+    print(f"[NoiseFilterInput] raw_xyz_span={tuple(float(v) for v in raw_xyz_span)}")
+    print(f"[NoiseFilterInput] coordinate_scale_to_mm={coordinate_scale_to_mm:.9g}")
+    print(f"[NoiseFilterInput] mm_xyz_span={tuple(float(v) for v in np.ptp(points, axis=0))}")
     
     # 2. パイプラインの構築
     if args.config_json is not None:

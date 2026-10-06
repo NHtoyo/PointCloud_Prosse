@@ -5,6 +5,8 @@ from dataclasses import dataclass
 
 import numpy as np
 
+# Public algorithm contract: all coordinate lengths passed to this module are millimeters.
+
 
 @dataclass
 class SupportCylinderParams:
@@ -120,6 +122,7 @@ def extract_support_mask(
     seed_indices: np.ndarray,
     params: SupportCylinderParams,
 ) -> tuple[np.ndarray, dict]:
+    """Extract a seeded support cylinder from points expressed in millimeters."""
     start = time.time()
     n = len(points)
     mask = np.zeros(n, dtype=np.uint8)
@@ -178,6 +181,7 @@ def extract_support_mask(
     mask[final] = 1
 
     report = {
+        "length_unit": "mm",
         "point_count": int(n),
         "seed_count": int(seed_indices.size),
         "candidate_count": int(np.count_nonzero(candidate)),

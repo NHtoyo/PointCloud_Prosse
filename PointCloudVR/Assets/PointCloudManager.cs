@@ -219,11 +219,11 @@ public class PointCloudManager : MonoBehaviour
             return;
         }
 
-        // Calculate world space center of Reference Cloud
+        // Use rendered positions so the display-only scale is included in alignment.
         Vector3 refCenter = Vector3.zero;
         foreach (var p in refPos)
         {
-            refCenter += referenceCloud.transform.TransformPoint(p);
+            refCenter += referenceCloud.DisplayTransform.TransformPoint(p);
         }
         refCenter /= refPos.Length;
 
@@ -231,7 +231,7 @@ public class PointCloudManager : MonoBehaviour
         Vector3 alignCenter = Vector3.zero;
         foreach (var p in alignPos)
         {
-            alignCenter += alignedCloud.transform.TransformPoint(p);
+            alignCenter += alignedCloud.DisplayTransform.TransformPoint(p);
         }
         alignCenter /= alignPos.Length;
 
@@ -260,18 +260,18 @@ public class PointCloudManager : MonoBehaviour
         int nAlign = alignPos.Length;
         calculatedDistances = new float[nAlign];
 
-        // 1. Transform Reference points to World Space
+        // C2C distances are stored as millimeters; rendered point positions use DisplayScale.
         Vector3[] refWorld = new Vector3[nRef];
         for (int i = 0; i < nRef; i++)
         {
-            refWorld[i] = referenceCloud.transform.TransformPoint(refPos[i]);
+            refWorld[i] = referenceCloud.DisplayTransform.TransformPoint(refPos[i]);
         }
 
         // 2. Transform Aligned points to World Space
         Vector3[] alignWorld = new Vector3[nAlign];
         for (int i = 0; i < nAlign; i++)
         {
-            alignWorld[i] = alignedCloud.transform.TransformPoint(alignPos[i]);
+            alignWorld[i] = alignedCloud.DisplayTransform.TransformPoint(alignPos[i]);
         }
 
         // 3. Determine bounding box of Reference Cloud to auto-size grid cells
@@ -379,6 +379,7 @@ public class PointCloudManager : MonoBehaviour
 
         // Force colors update
         UpdateColors();
+        alignedCloud.ShowDistanceMap(calculatedDistances, maxDistanceThreshold);
     }
 
     public void UpdateColors()

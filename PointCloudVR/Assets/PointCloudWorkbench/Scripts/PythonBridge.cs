@@ -263,8 +263,13 @@ namespace PointCloudWorkbench
             string outputDir, 
             NoiseFilterParams filterParams,
             PointData[] points,
+            float coordinateScaleToMm,
             CancellationToken cancellationToken = default)
         {
+            if (float.IsNaN(coordinateScaleToMm) || float.IsInfinity(coordinateScaleToMm) || coordinateScaleToMm <= 0f)
+            {
+                throw new ArgumentOutOfRangeException(nameof(coordinateScaleToMm), "座標からmmへの倍率は正の有限値である必要があります。");
+            }
             await EnsureEnvironmentReadyAsync(cancellationToken);
 
             string pythonPath = GetPythonPath();
@@ -295,7 +300,7 @@ namespace PointCloudWorkbench
             }
 
             // 引数の構築
-            string arguments = BuildArguments(scriptPath, inputPlyPath, outputDir, filterParams, deletedMaskPath);
+            string arguments = BuildArguments(scriptPath, inputPlyPath, outputDir, filterParams, deletedMaskPath, coordinateScaleToMm);
 
             ProcessStartInfo psi = new ProcessStartInfo
             {
@@ -441,10 +446,16 @@ namespace PointCloudWorkbench
         public static async Task<bool> RunDownsamplingAsync(
             string inputDir,
             string outputDir,
+            float voxelSizeMm,
+            float coordinateScaleToMm,
+            string mergedOutputPath,
             int mode = 1,
-            float voxelSize = 5.0f,
             CancellationToken cancellationToken = default)
         {
+            if (float.IsNaN(coordinateScaleToMm) || float.IsInfinity(coordinateScaleToMm) || coordinateScaleToMm <= 0f)
+            {
+                throw new ArgumentOutOfRangeException(nameof(coordinateScaleToMm), "座標からmmへの倍率は正の有限値である必要があります。");
+            }
             string pythonPath = GetPythonPath();
             string scriptPath = GetDownsampleScriptPath();
             string projectRoot = GetProjectRootPath();
@@ -452,9 +463,13 @@ namespace PointCloudWorkbench
             {
                 throw new FileNotFoundException($"ダウンサンプリングスクリプトが見つかりません: {scriptPath}");
             }
+            if (string.IsNullOrWhiteSpace(mergedOutputPath))
+            {
+                throw new ArgumentException("統合PLYの出力先を指定してください。", nameof(mergedOutputPath));
+            }
 
             // 引数の構築
-            string arguments = $"-u \"{scriptPath}\" --input \"{inputDir}\" --output \"{outputDir}\" --mode {mode} --voxel_size {voxelSize.ToString(System.Globalization.CultureInfo.InvariantCulture)}";
+            string arguments = $"-u \"{scriptPath}\" --input \"{inputDir}\" --output \"{outputDir}\" --mode {mode} --voxel_size {voxelSizeMm.ToString(System.Globalization.CultureInfo.InvariantCulture)} --coordinate-scale-to-mm {coordinateScaleToMm.ToString(System.Globalization.CultureInfo.InvariantCulture)} --merged-output \"{mergedOutputPath}\"";
 
             ProcessStartInfo psi = new ProcessStartInfo
             {
@@ -566,7 +581,7 @@ namespace PointCloudWorkbench
         /// NoiseFilterParams オブジェクトから Python スクリプト実行用のコマンドライン引数を構築します。
         /// 同時に、順序と個別パラメータを含んだ JSON 構成ファイルを保存し、引数で渡します。
         /// </summary>
-        private static string BuildArguments(string scriptPath, string inputPlyPath, string outputDir, NoiseFilterParams p, string deletedMaskPath = null)
+        private static string BuildArguments(string scriptPath, string inputPlyPath, string outputDir, NoiseFilterParams p, string deletedMaskPath, float coordinateScaleToMm)
         {
             // パイプライン構成JSONの構築
             var pipelineSteps = p.GetPipeline();
@@ -654,6 +669,7 @@ namespace PointCloudWorkbench
             argsBuilder.Append($" --input \"{inputPlyPath}\"");
             argsBuilder.Append($" --output_dir \"{outputDir}\"");
             argsBuilder.Append($" --config_json \"{configJsonPath}\"");
+            argsBuilder.Append($" --coordinate-scale-to-mm {coordinateScaleToMm.ToString(System.Globalization.CultureInfo.InvariantCulture)}");
 
             if (!string.IsNullOrEmpty(deletedMaskPath) && File.Exists(deletedMaskPath))
             {

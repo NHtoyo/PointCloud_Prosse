@@ -4,9 +4,9 @@ Shader "PointCloudWorkbench/PointCloudShader"
     {
         _PointSize ("Point Size", Float) = 2.0
         _ColorMode ("Color Mode (0:RGB, 1:Height, 2:Label, 3:Distance)", Int) = 0
-        _MinHeight ("Min Height (for HeightMap)", Float) = -2.0
-        _MaxHeight ("Max Height (for HeightMap)", Float) = 2.0
-        _MaxDistanceThreshold ("Max Distance Threshold (for C2C)", Float) = 1.0
+        _MinHeight ("Min Height (data-space; set from mm in C#)", Float) = -2.0
+        _MaxHeight ("Max Height (data-space; set from mm in C#)", Float) = 2.0
+        _MaxDistanceThreshold ("Max C2C Distance Threshold (mm)", Float) = 1.0
     }
 
     SubShader
@@ -31,7 +31,7 @@ Shader "PointCloudWorkbench/PointCloudShader"
                 float3 position;
                 uint originalColor;  // Packed Color32 (RGBA)
                 int label;           // lower 16 bits = classId, bit 16 = selected, bit 17 = deleted
-                float distance;
+                float distance; // C2C distance in millimeters
             };
 
             // Compute Buffer

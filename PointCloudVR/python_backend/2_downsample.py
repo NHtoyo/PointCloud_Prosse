@@ -4,20 +4,27 @@ import numpy as np
 import json
 import csv
 import argparse
+import os
+import shutil
 import open3d as o3d
 import open3d.core as o3c
+from coordinate_units import millimeters_to_data_length, validate_coordinate_scale_to_mm
 
 # ==========================================
 # Parameters Setup via argparse
 # ==========================================
-def parse_arguments():
+def parse_arguments(argv=None):
     parser = argparse.ArgumentParser(description="Label-aware Downsampling Script (CLI version)")
     parser.add_argument("--input", type=str, required=True, help="Input PLY file path (or folder containing PLY)")
     parser.add_argument("--output", type=str, required=True, help="Output directory for downsampled point clouds")
     parser.add_argument("--mode", type=int, choices=[1, 2, 3], default=1, 
                         help="1: Overall merge downsampling only, 2: Per-organ downsampling only, 3: Both")
     parser.add_argument("--voxel_size", type=float, default=5.0, help="Voxel size in mm (real scale)")
-    return parser.parse_args()
+    parser.add_argument("--coordinate-scale-to-mm", type=float, required=True,
+                        help="Multiply source data-space coordinates by this factor to get millimeters")
+    parser.add_argument("--merged-output", type=str, default=None,
+                        help="Exact output path for the merged PLY")
+    return parser.parse_args(argv)
 
 # Label mapping (Unity annotation categories)
 LABEL_NAMES = {
@@ -32,12 +39,48 @@ LABEL_NAMES = {
 def ensure_output_dir(path: str):
     Path(path).mkdir(parents=True, exist_ok=True)
 
-def main():
-    args = parse_arguments()
+
+def has_calibrated_metadata(path: Path) -> bool:
+    marker = b"comment pcwb_scale_calibrated true"
+    with path.open("rb") as source:
+        for line in source:
+            if line.strip().lower() == b"end_header":
+                break
+            if line.strip().lower() == marker:
+                return True
+    return False
+
+
+def preserve_calibrated_metadata(source_path: Path, output_path: Path) -> None:
+    if not has_calibrated_metadata(source_path) or has_calibrated_metadata(output_path):
+        return
+
+    temporary_path = output_path.with_name(output_path.name + ".pcwb-meta.tmp")
+    inserted = False
+    try:
+        with source_path.open("rb") as source, temporary_path.open("wb") as destination:
+            for line in source:
+                if line.strip().lower() == b"end_header":
+                    destination.write(b"comment pcwb_scale_calibrated true\n")
+                    inserted = True
+                destination.write(line)
+                if line.strip().lower() == b"end_header":
+                    shutil.copyfileobj(source, destination, length=1024 * 1024)
+                    break
+            if not inserted:
+                raise ValueError(f"PLY header is incomplete: {source_path}")
+        os.replace(temporary_path, output_path)
+    finally:
+        if temporary_path.exists():
+            temporary_path.unlink()
+
+def main(argv=None):
+    args = parse_arguments(argv)
 
     INPUT_PATH = Path(args.input).resolve()
     OUTPUT_DIR = Path(args.output).resolve()
-    voxel_real_mm = args.voxel_size
+    voxel_size_mm = args.voxel_size
+    coordinate_scale_to_mm = args.coordinate_scale_to_mm
 
     # Resolve input PLY file
     input_file = None
@@ -57,10 +100,11 @@ def main():
     ensure_output_dir(str(OUTPUT_DIR))
     ensure_output_dir(str(OUTPUT_DIR / "by_organ"))
 
-    if not np.isfinite(voxel_real_mm) or voxel_real_mm <= 0:
+    if not np.isfinite(voxel_size_mm) or voxel_size_mm <= 0:
         raise ValueError("voxel_size must be a finite positive number in mm")
-    voxel_mm = voxel_real_mm
-    print(f"Voxel size: {voxel_real_mm:.2f} mm")
+    coordinate_scale_to_mm = validate_coordinate_scale_to_mm(coordinate_scale_to_mm)
+    voxel_size_data = millimeters_to_data_length(voxel_size_mm, coordinate_scale_to_mm)
+    print(f"Voxel size: {voxel_size_mm:.2f} mm ({voxel_size_data:.9g} data-space)")
 
     # Load point cloud with attributes using Open3D Tensor API
     print(f"[Progress] 10.0 Loading point cloud: {input_file.name}...", flush=True)
@@ -84,6 +128,7 @@ def main():
     unique_labels = np.unique(labels)
     print(f"Found labels in cloud: {unique_labels} ({[LABEL_NAMES.get(l, f'label_{l}') for l in unique_labels]})")
 
+    source_is_calibrated = has_calibrated_metadata(input_file)
     merged_ds_n = 0
     final_output_path = None
 
@@ -91,14 +136,19 @@ def main():
     if args.mode in [1, 3]:
         print("[Progress] 40.0 Downsampling entire point cloud...", flush=True)
         # Tensor voxel downsample automatically downsamples custom attributes (like label)
-        merged_ds = pcd.voxel_down_sample(voxel_size=voxel_mm)
+        merged_ds = pcd.voxel_down_sample(voxel_size=voxel_size_data)
         merged_ds_n = merged_ds.point.positions.shape[0]
         
-        output_filename = f"{input_file.stem}_downsampled.ply"
-        final_output_path = OUTPUT_DIR / output_filename
+        if args.merged_output:
+            final_output_path = Path(args.merged_output).expanduser().resolve()
+        else:
+            final_output_path = OUTPUT_DIR / f"{input_file.stem}_downsampled.ply"
+        ensure_output_dir(str(final_output_path.parent))
         
         print(f"[Progress] 60.0 Saving overall merged file...", flush=True)
         o3d.t.io.write_point_cloud(str(final_output_path), merged_ds)
+        if source_is_calibrated:
+            preserve_calibrated_metadata(input_file, final_output_path)
         print(f"Saved merged PLY: {final_output_path.name} ({total_pre:,} -> {merged_ds_n:,} points)")
 
     # Mode 2: Per-organ downsampling based on label attributes
@@ -124,11 +174,13 @@ def main():
             part_pre_n = len(indices)
             
             # Apply downsampling on the sub-cloud
-            part_ds = part_pcd.voxel_down_sample(voxel_size=voxel_mm)
+            part_ds = part_pcd.voxel_down_sample(voxel_size=voxel_size_data)
             part_post_n = part_ds.point.positions.shape[0]
             
             out_org = OUTPUT_DIR / "by_organ" / f"{input_file.stem}_{label_name}_downsampled.ply"
             o3d.t.io.write_point_cloud(str(out_org), part_ds)
+            if source_is_calibrated:
+                preserve_calibrated_metadata(input_file, out_org)
             
             organ_summary.append({
                 "label_id": int(label_val),
@@ -158,8 +210,11 @@ def main():
     runlog = {
         "source_file": str(input_file),
         "voxel": {
-            "voxel_size_mm": float(voxel_real_mm),
-            "coordinate_basis": "mm"
+            "voxel_size_mm": float(voxel_size_mm),
+            "voxel_size_data": float(voxel_size_data),
+            "coordinate_scale_to_mm": float(coordinate_scale_to_mm),
+            "coordinate_basis": "data-space",
+            "source_scale_calibrated": source_is_calibrated
         },
         "counts": {
             "total_pre": int(total_pre),

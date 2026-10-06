@@ -167,7 +167,8 @@ public class PointCloudEditorUI : MonoBehaviour
                 var loader = editor.targetRenderer.GetComponent<PointCloudLoader>();
                 if (loader != null)
                 {
-                    DownsamplePaths paths = PointCloudDownsampleService.BuildPaths(loader.GetFilePath(), lastDownsampleVoxelSize);
+                    string sourcePath = string.IsNullOrEmpty(loader.CurrentFilePath) ? loader.GetFilePath() : loader.CurrentFilePath;
+                    DownsamplePaths paths = PointCloudDownsampleService.BuildPaths(sourcePath, lastDownsampleVoxelSize);
                     string downsampledPath = paths.CombinedOutputPath;
 
                     if (System.IO.File.Exists(downsampledPath))
@@ -1178,6 +1179,7 @@ public class PointCloudEditorUI : MonoBehaviour
 
         lastDownsampleVoxelSize = parsedVoxelSize;
         DownsamplePaths paths = PointCloudDownsampleService.BuildPaths(loadedPath, parsedVoxelSize);
+        float coordinateScaleToMm = editor.targetRenderer.DisplayScale;
         MeasurementDocument measurementSnapshot = editor.CreateMeasurementSnapshotForExport();
 
         var pm = PointCloudProgressManager.Instance;
@@ -1200,8 +1202,10 @@ public class PointCloudEditorUI : MonoBehaviour
                 bool success = await PythonBridge.RunDownsamplingAsync(
                     paths.TemporaryLabeledPath,
                     paths.OutputDirectory,
-                    downsampleMode,
                     parsedVoxelSize,
+                    coordinateScaleToMm,
+                    paths.CombinedOutputPath,
+                    downsampleMode,
                     token
                 );
 

@@ -133,12 +133,12 @@ public class PointCloudEditor : MonoBehaviour
     private int[] connCellZ = null;
     private int[] connCellPointHead = null;
     private int[] connPointNextInCell = null;
-    private int[] connCellQueue = null;
-    private bool[] connCellVisited = null;
+    private bool[] connPointVisited = null;
 
     [Header("Pick Settings")]
     public bool pickDensityEnabled = true;
     public int pickDensityMinCount = 3;
+    private const float PickDensityNeighborRadiusMillimeters = 5f;
 
     private readonly List<int> neighborIndicesCache = new List<int>();
     private readonly List<PickCandidate> pickCandidates = new List<PickCandidate>();
@@ -446,11 +446,6 @@ public class PointCloudEditor : MonoBehaviour
 
         if (hit)
         {
-            brushVisual.SetActive(true);
-            brushVisual.transform.position = hitPoint;
-            brushVisual.transform.localScale = Vector3.one * (brushRadius * 2f * targetRenderer.DisplayTransform.lossyScale.x);
-
-            // Adjust brush radius with Alt + Mouse Scroll
             if (Input.GetKey(KeyCode.LeftAlt) || Input.GetKey(KeyCode.RightAlt))
             {
                 float scroll = Input.GetAxis("Mouse ScrollWheel");
@@ -459,6 +454,17 @@ public class PointCloudEditor : MonoBehaviour
                     brushRadius = Mathf.Clamp(brushRadius + scroll * 20f, 20f, 200f);
                 }
             }
+
+            Transform display = targetRenderer.DisplayTransform;
+            Vector3 localBrushCenter = display.InverseTransformPoint(hitPoint);
+            float localBrushRadius = targetRenderer.MillimetersToDataLength(brushRadius);
+            Vector3 worldCenter = display.TransformPoint(localBrushCenter);
+            Vector3 worldEdge = display.TransformPoint(localBrushCenter + Vector3.right * localBrushRadius);
+            float worldRadius = Vector3.Distance(worldCenter, worldEdge);
+
+            brushVisual.SetActive(true);
+            brushVisual.transform.position = worldCenter;
+            brushVisual.transform.localScale = Vector3.one * (worldRadius * 2f);
 
             // Perform selection when Middle Mouse (Wheel press) is dragged
             if (Input.GetMouseButton(2))
@@ -620,7 +626,7 @@ public class PointCloudEditor : MonoBehaviour
         // Sort candidates by distance from camera (proj)
         pickCandidates.Sort((a, b) => a.proj.CompareTo(b.proj));
 
-        float pickRadiusLocal = 5f / targetRenderer.DisplayTransform.lossyScale.x;
+        float pickRadiusLocal = targetRenderer.MillimetersToDataLength(PickDensityNeighborRadiusMillimeters);
 
         for (int i = 0; i < pickCandidates.Count; i++)
         {
@@ -851,7 +857,7 @@ public class PointCloudEditor : MonoBehaviour
         if (points == null || points.Length == 0) return;
 
         Vector3 localBrushCenter = targetRenderer.DisplayTransform.InverseTransformPoint(brushCenterWorld);
-        float localBrushRadius = brushRadius;
+        float localBrushRadius = targetRenderer.MillimetersToDataLength(brushRadius);
         float radiusSq = localBrushRadius * localBrushRadius;
 
         bool selecting = brushSelectMode;
@@ -2047,7 +2053,7 @@ public class PointCloudEditor : MonoBehaviour
         // Sort candidates by distance from camera (proj)
         pickCandidates.Sort((a, b) => a.proj.CompareTo(b.proj));
 
-        float pickRadiusLocal = 5f / targetRenderer.DisplayTransform.lossyScale.x;
+        float pickRadiusLocal = targetRenderer.MillimetersToDataLength(PickDensityNeighborRadiusMillimeters);
 
         for (int i = 0; i < pickCandidates.Count; i++)
         {
@@ -2127,7 +2133,10 @@ public class PointCloudEditor : MonoBehaviour
         PointData[] points = targetRenderer.GetPointData();
         if (points == null || points.Length == 0) return;
 
-        float localRadius = connectionRadius;
+        if (startIdx < 0 || startIdx >= points.Length || maxConnectionPoints <= 0) return;
+
+        float localRadius = targetRenderer.MillimetersToDataLength(connectionRadius);
+        if (float.IsNaN(localRadius) || float.IsInfinity(localRadius) || localRadius <= 0f) return;
         int maxLimit = maxConnectionPoints;
         bool selecting = brushSelectMode;
 
@@ -2148,8 +2157,8 @@ public class PointCloudEditor : MonoBehaviour
                 pm.Update(0f, "セル接続グリッド構築中...");
 
                 float cellSize = localRadius;
-                if (cellSize < 0.0001f) cellSize = 0.0001f;
                 float invCellSize = 1f / cellSize;
+                float radiusSquared = localRadius * localRadius;
 
                 lock (this)
                 {
@@ -2164,7 +2173,7 @@ public class PointCloudEditor : MonoBehaviour
                     if (connCellNext == null || connCellNext.Length < numPoints ||
                         connCellX == null || connCellY == null || connCellZ == null ||
                         connCellPointHead == null || connPointNextInCell == null ||
-                        connCellQueue == null || connCellVisited == null)
+                        connPointVisited == null || connPointVisited.Length < numPoints)
                     {
                         connCellNext = new int[numPoints];
                         connCellX = new int[numPoints];
@@ -2172,8 +2181,7 @@ public class PointCloudEditor : MonoBehaviour
                         connCellZ = new int[numPoints];
                         connCellPointHead = new int[numPoints];
                         connPointNextInCell = new int[numPoints];
-                        connCellQueue = new int[numPoints];
-                        connCellVisited = new bool[numPoints];
+                        connPointVisited = new bool[numPoints];
                     }
                 }
 
@@ -2181,7 +2189,7 @@ public class PointCloudEditor : MonoBehaviour
                 System.Array.Fill(connCellNext, -1, 0, numPoints);
                 System.Array.Fill(connCellPointHead, -1, 0, numPoints);
                 System.Array.Fill(connPointNextInCell, -1, 0, numPoints);
-                System.Array.Clear(connCellVisited, 0, numPoints);
+                System.Array.Clear(connPointVisited, 0, numPoints);
 
                 int cellCount = 0;
                 int startCell = -1;
@@ -2230,51 +2238,46 @@ public class PointCloudEditor : MonoBehaviour
 
                 pm.Update(0.1f, "セル接続探索中...");
 
-                int cellHead = 0;
-                int cellTail = 0;
+                int queueHead = 0;
                 int qTail = 0;
-                long visitedCells = 0;
                 long lastProgressUpdate = 0;
 
-                connCellQueue[cellTail++] = startCell;
-                connCellVisited[startCell] = true;
+                connQueue[qTail++] = startIdx;
+                connPointVisited[startIdx] = true;
 
-                while (cellHead < cellTail && qTail < maxLimit)
+                while (queueHead < qTail && qTail < maxLimit)
                 {
                     if (token.IsCancellationRequested) break;
 
-                    int cell = connCellQueue[cellHead++];
-                    visitedCells++;
-
-                    for (int pointIdx = connCellPointHead[cell]; pointIdx != -1 && qTail < maxLimit; pointIdx = connPointNextInCell[pointIdx])
-                    {
-                        connQueue[qTail++] = pointIdx;
-                    }
-
-                    int cx = connCellX[cell];
-                    int cy = connCellY[cell];
-                    int cz = connCellZ[cell];
+                    int currentIdx = connQueue[queueHead++];
+                    Vector3 current = positions[currentIdx];
+                    int cx = Mathf.FloorToInt(current.x * invCellSize);
+                    int cy = Mathf.FloorToInt(current.y * invCellSize);
+                    int cz = Mathf.FloorToInt(current.z * invCellSize);
 
                     for (int dx = -1; dx <= 1; dx++)
                     for (int dy = -1; dy <= 1; dy++)
                     for (int dz = -1; dz <= 1; dz++)
                     {
-                        if (dx == 0 && dy == 0 && dz == 0) continue;
-
                         int h = GetVoxelHash(cx + dx, cy + dy, cz + dz, numBuckets);
-                        int neighbor = connCellBucketHead[h];
-                        while (neighbor != -1)
+                        int neighborCell = connCellBucketHead[h];
+                        while (neighborCell != -1)
                         {
-                            if (!connCellVisited[neighbor] &&
-                                connCellX[neighbor] == cx + dx &&
-                                connCellY[neighbor] == cy + dy &&
-                                connCellZ[neighbor] == cz + dz)
+                            if (connCellX[neighborCell] == cx + dx &&
+                                connCellY[neighborCell] == cy + dy &&
+                                connCellZ[neighborCell] == cz + dz)
                             {
-                                connCellVisited[neighbor] = true;
-                                connCellQueue[cellTail++] = neighbor;
-                                break;
+                                for (int candidateIdx = connCellPointHead[neighborCell];
+                                     candidateIdx != -1 && qTail < maxLimit;
+                                     candidateIdx = connPointNextInCell[candidateIdx])
+                                {
+                                    if (connPointVisited[candidateIdx]) continue;
+                                    if ((positions[candidateIdx] - current).sqrMagnitude > radiusSquared) continue;
+                                    connPointVisited[candidateIdx] = true;
+                                    connQueue[qTail++] = candidateIdx;
+                                }
                             }
-                            neighbor = connCellNext[neighbor];
+                            neighborCell = connCellNext[neighborCell];
                         }
                     }
 
@@ -2283,7 +2286,7 @@ public class PointCloudEditor : MonoBehaviour
                     {
                         lastProgressUpdate = elapsed;
                         float progress = 0.1f + 0.8f * ((float)qTail / maxLimit);
-                        pm.Update(progress, $"セル接続探索中... 選択候補: {qTail:N0} / {maxLimit:N0} 点, セル: {visitedCells:N0}");
+                        pm.Update(progress, $"実距離による接続探索中... 対象点: {qTail:N0} / {maxLimit:N0} 点");
                     }
                 }
 
@@ -2299,7 +2302,7 @@ public class PointCloudEditor : MonoBehaviour
                         else label &= ~0x10000;
                         points[idx].label = label;
                     }
-                    Debug.Log($"[PointCloudEditor] Cell connection selection completed. Found {qTail} points in {visitedCells} cells. Elapsed: {sw.ElapsedMilliseconds} ms.");
+                    Debug.Log($"[PointCloudEditor] Euclidean connection selection completed. Found {qTail} points. Elapsed: {sw.ElapsedMilliseconds} ms.");
                 }
             }
             catch (System.Exception ex)
@@ -2328,7 +2331,9 @@ public class PointCloudEditor : MonoBehaviour
         if (positions == null || positions.Length == 0) return;
 
         Transform trans = targetRenderer.transform;
-        float localTolerance = ransacTolerance;
+        float localTolerance = targetRenderer.MillimetersToDataLength(ransacTolerance);
+        float fallbackRadiusLocal = targetRenderer.MillimetersToDataLength(10f);
+        float minimumRadiusLocal = targetRenderer.MillimetersToDataLength(0.1f);
         float colorTol = ransacColorTolerance;
         RansacType type = ransacType;
         bool selecting = brushSelectMode;
@@ -2383,7 +2388,7 @@ public class PointCloudEditor : MonoBehaviour
                 Vector3 pcaUp = localUp;
                 Color32 targetAvgColor = new Color32(0, 0, 0, 0);
                 bool hasColorConstraint = false;
-                float rEst = 10f;
+                float rEst = fallbackRadiusLocal;
 
                 if (isSelectedPointFit)
                 {
@@ -2452,7 +2457,7 @@ public class PointCloudEditor : MonoBehaviour
                         totalDist += Vector2.Distance(proj, meanProj);
                     }
                     rEst = totalDist / selectedIndices.Count;
-                    if (rEst < 0.1f) rEst = 10f;
+                    if (rEst < minimumRadiusLocal) rEst = fallbackRadiusLocal;
                 }
 
                 object locker = new object();
@@ -2756,6 +2761,7 @@ public class PointCloudEditor : MonoBehaviour
         float tubeMultiplier = supportTubeMultiplier;
         float colorTolerance = supportColorTolerance;
         float heightBinMultiplier = supportHeightBinMultiplier;
+        float coordinateScaleToMm = targetRenderer.DisplayScale;
         int maxEmptyBins = supportMaxEmptyBins;
         string backendDir = Path.GetFullPath(Path.Combine(Application.dataPath, "../python_backend"));
         string outputDir = Path.Combine(backendDir, "output_support");
@@ -2785,6 +2791,7 @@ public class PointCloudEditor : MonoBehaviour
                     $" --input \"{inputPath}\"" +
                     $" --seed_indices \"{seedPath}\"" +
                     $" --output_dir \"{outputDir}\"" +
+                    $" --coordinate-scale-to-mm {coordinateScaleToMm.ToString(CultureInfo.InvariantCulture)}" +
                     $" --tube_multiplier {tubeMultiplier.ToString(CultureInfo.InvariantCulture)}" +
                     $" --color_tolerance {colorTolerance.ToString(CultureInfo.InvariantCulture)}" +
                     $" --height_bin_multiplier {heightBinMultiplier.ToString(CultureInfo.InvariantCulture)}" +
@@ -2889,6 +2896,13 @@ public class PointCloudEditor : MonoBehaviour
         if (points == null || points.Length == 0) return;
 
         bool selecting = brushSelectMode;
+        float localFilterMin = filterMin;
+        float localFilterMax = filterMax;
+        if (filterType == FilterType.Height)
+        {
+            localFilterMin = targetRenderer.MillimetersToDataLength(filterMin);
+            localFilterMax = targetRenderer.MillimetersToDataLength(filterMax);
+        }
         Parallel.For(0, points.Length, i =>
         {
             int label = points[i].label;
@@ -2900,12 +2914,12 @@ public class PointCloudEditor : MonoBehaviour
             if (filterType == FilterType.Height)
             {
                 val = points[i].position.y;
-                pass = (val >= filterMin && val <= filterMax);
+                pass = (val >= localFilterMin && val <= localFilterMax);
             }
             else if (filterType == FilterType.Distance)
             {
                 val = points[i].distance;
-                pass = (val >= filterMin && val <= filterMax);
+                pass = (val >= localFilterMin && val <= localFilterMax);
             }
             else if (filterType == FilterType.Redness)
             {

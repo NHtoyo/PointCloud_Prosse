@@ -16,8 +16,11 @@ public class PointCloudRenderer : MonoBehaviour
     [Header("Scalar Fields Mode")]
     [Range(0, 3)]
     public int colorMode = 0; // 0: RGB, 1: Height, 2: Label, 3: Distance
+    [Tooltip("Height-map limits in millimeters; point coordinates remain in data-space.")]
     public float minHeight = -2000f;
+    [Tooltip("Height-map limits in millimeters; point coordinates remain in data-space.")]
     public float maxHeight = 2000f;
+    [Tooltip("C2C distance threshold in millimeters. PointData.distance also stores millimeters.")]
     public float maxDistanceThreshold = 1000f;
 
     [Header("LOD & Culling Settings")]
@@ -619,6 +622,7 @@ public class PointCloudRenderer : MonoBehaviour
 
     public void ShowHeightMap(float minH, float maxH)
     {
+        // Public limits are millimeters; the shader receives data-space values below.
         colorMode = 1;
         minHeight = minH;
         maxHeight = maxH;
@@ -626,6 +630,7 @@ public class PointCloudRenderer : MonoBehaviour
 
     public void ShowDistanceMap(float[] distances, float maxDistThreshold)
     {
+        // Contract: producer distances and threshold are both millimeters.
         colorMode = 3;
         maxDistanceThreshold = maxDistThreshold;
 
@@ -735,8 +740,8 @@ public class PointCloudRenderer : MonoBehaviour
 
         pointMaterial.SetFloat("_PointSize", pointSize);
         pointMaterial.SetInt("_ColorMode", colorMode);
-        pointMaterial.SetFloat("_MinHeight", minHeight);
-        pointMaterial.SetFloat("_MaxHeight", maxHeight);
+        pointMaterial.SetFloat("_MinHeight", MillimetersToDataLength(minHeight));
+        pointMaterial.SetFloat("_MaxHeight", MillimetersToDataLength(maxHeight));
         pointMaterial.SetFloat("_MaxDistanceThreshold", maxDistanceThreshold);
         pointMaterial.SetMatrix("_LocalToWorld", display.localToWorldMatrix);
 

@@ -79,7 +79,7 @@ namespace PointCloudWorkbench
     public class DensityConfig : FilterStepConfig
     {
         public int k = 8;
-        public float threshold = 0.0f;
+        public float threshold = 0.0f; // density score threshold in 1/mm
         public float percentile = 3.0f;
 
         public DensityConfig()

@@ -27,8 +27,7 @@ namespace PointCloudWorkbench
                 Vector3 localDir = worldToLocal.MultiplyVector(worldRay.direction).normalized;
                 Ray localRay = new Ray(localOrigin, localDir);
 
-                float scaleX = display.lossyScale.x;
-                float localThreshold = pickingRadius / (scaleX > 0.001f ? scaleX : 1f);
+                float localThreshold = renderer.MillimetersToDataLength(pickingRadius);
 
                 for (int i = 0; i < points.Length; i++)
                 {

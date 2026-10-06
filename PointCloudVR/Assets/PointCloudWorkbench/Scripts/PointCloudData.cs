@@ -10,7 +10,7 @@ namespace PointCloudWorkbench
         public Vector3 position;
         public uint originalColor; // Packed Color32 (RGBA)
         public int label;
-        public float distance;
+        public float distance; // C2C scalar field in millimeters
 
         public PointData(Vector3 pos, Color32 col, int lbl = 0, float dist = 0f)
         {
