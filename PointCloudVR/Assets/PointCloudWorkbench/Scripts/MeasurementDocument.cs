@@ -12,6 +12,7 @@ namespace PointCloudWorkbench
     {
         public int schemaVersion = 1;
         public string coordinateSpace = "pointcloud_local";
+        public float pointCoordinateScale = 1f;
         public string cloudId;
         public string sourceFileName;
         public string sourceSha256;
@@ -110,6 +111,32 @@ namespace PointCloudWorkbench
             return JsonUtility.FromJson<MeasurementDocument>(JsonUtility.ToJson(document));
         }
 
+        public static bool NormalizeLegacyCoordinates(MeasurementDocument document)
+        {
+            if (document == null) throw new ArgumentNullException(nameof(document));
+
+            float sourceScale = document.pointCoordinateScale;
+            bool metadataChanged = float.IsNaN(sourceScale) || float.IsInfinity(sourceScale) || sourceScale <= 0f ||
+                                  !Mathf.Approximately(sourceScale, 1f);
+            if (float.IsNaN(sourceScale) || float.IsInfinity(sourceScale) || sourceScale <= 0f)
+                sourceScale = 1f;
+
+            if (!Mathf.Approximately(sourceScale, 1f))
+            {
+                float ratio = 1f / sourceScale;
+                for (int i = 0; i < document.measurements.Count; i++)
+                {
+                    MeasurementRecord record = document.measurements[i];
+                    if (record == null || record.points == null) continue;
+                    for (int p = 0; p < record.points.Count; p++)
+                        record.points[p] *= ratio;
+                }
+            }
+
+            document.pointCoordinateScale = 1f;
+            return metadataChanged;
+        }
+
         public static string ComputeSha256(string filePath)
         {
             using (var stream = new FileStream(filePath, FileMode.Open, FileAccess.Read, FileShare.Read, 1024 * 1024, FileOptions.SequentialScan))
@@ -126,6 +153,7 @@ namespace PointCloudWorkbench
         {
             if (document == null) throw new ArgumentNullException(nameof(document));
             document.schemaVersion = CurrentSchemaVersion;
+            document.pointCoordinateScale = 1f;
             document.sourceFileName = Path.GetFileName(pointCloudPath);
             document.savedUtc = DateTime.UtcNow.ToString("o");
             WriteAtomic(GetSidecarPath(pointCloudPath), JsonUtility.ToJson(document, true));
@@ -139,6 +167,7 @@ namespace PointCloudWorkbench
             derived.cloudId = Guid.NewGuid().ToString("N");
             derived.sourceFileName = Path.GetFileName(outputPath);
             derived.sourceSha256 = string.Empty;
+            derived.pointCoordinateScale = 1f;
             derived.savedUtc = DateTime.UtcNow.ToString("o");
             return derived;
         }

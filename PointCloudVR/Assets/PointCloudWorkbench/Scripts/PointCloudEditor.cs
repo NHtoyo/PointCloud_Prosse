@@ -2973,6 +2973,7 @@ public class PointCloudEditor : MonoBehaviour
         try
         {
             measurementDocument = MeasurementDocumentStore.LoadOrCreate(measurementCloudPath, out measurementSidecarExisted);
+            measurementDocumentDirty = MeasurementDocumentStore.NormalizeLegacyCoordinates(measurementDocument);
             measurementExpectedHash = measurementDocument.sourceSha256 ?? "";
             measurementFingerprintPending = true;
             measurementStatus = "点群ファイルを照合中...";
