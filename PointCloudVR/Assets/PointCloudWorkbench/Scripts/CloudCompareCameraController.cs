@@ -88,7 +88,8 @@ public class CloudCompareCameraController : MonoBehaviour
         }
 
         Vector3 localCenter = (localMin + localMax) * 0.5f;
-        Vector3 worldCenter = renderer.transform.TransformPoint(localCenter);
+        Transform display = renderer.DisplayTransform;
+        Vector3 worldCenter = display.TransformPoint(localCenter);
         float cloudRadius = 0f;
         for (int cornerIndex = 0; cornerIndex < 8; cornerIndex++)
         {
@@ -96,7 +97,7 @@ public class CloudCompareCameraController : MonoBehaviour
                 (cornerIndex & 1) == 0 ? localMin.x : localMax.x,
                 (cornerIndex & 2) == 0 ? localMin.y : localMax.y,
                 (cornerIndex & 4) == 0 ? localMin.z : localMax.z);
-            Vector3 worldCorner = renderer.transform.TransformPoint(localCorner);
+            Vector3 worldCorner = display.TransformPoint(localCorner);
             cloudRadius = Mathf.Max(cloudRadius, Vector3.Distance(worldCenter, worldCorner));
         }
         cloudRadius = Mathf.Max(cloudRadius, 0.000001f);

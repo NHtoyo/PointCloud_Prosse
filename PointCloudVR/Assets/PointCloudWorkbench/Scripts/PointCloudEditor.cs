@@ -182,17 +182,15 @@ public class PointCloudEditor : MonoBehaviour
         return snapshot;
     }
 
-    private string GetCoordinatePlyMetadata()
+    private string GetCalibrationPlyMetadata()
     {
         PointCloudLoader loader = targetRenderer != null ? targetRenderer.GetComponent<PointCloudLoader>() : pointCloudLoader;
-        if (loader == null || !loader.CurrentPointCloudCoordinatesAreMillimeters) return string.Empty;
-
-        string metadata = "comment pcwb_coordinate_basis mm\n";
-        if (loader.CurrentPointCloudScaleIsCalibrated) metadata += "comment pcwb_scale_calibrated true\n";
-        return metadata;
+        return loader != null && loader.CurrentPointCloudScaleIsCalibrated
+            ? "comment pcwb_scale_calibrated true\n"
+            : string.Empty;
     }
 
-    private static void WriteCoordinatePlyMetadata(StreamWriter writer, string metadata)
+    private static void WriteCalibrationPlyMetadata(StreamWriter writer, string metadata)
     {
         if (string.IsNullOrEmpty(metadata)) return;
         string[] lines = metadata.Split('\n');
@@ -231,8 +229,6 @@ public class PointCloudEditor : MonoBehaviour
         if (string.IsNullOrEmpty(sourcePath)) throw new System.IO.IOException("現在の点群ファイルパスを取得できません。");
         string outputPath = PointCloudScaleService.BuildCalibratedOutputPath(sourcePath, outputDirectory);
         PointData[] points = targetRenderer.GetPointData();
-        PointCloudLoader loader = targetRenderer.GetComponent<PointCloudLoader>();
-        bool sourceCoordinatesAreMillimeters = loader != null && loader.CurrentPointCloudCoordinatesAreMillimeters;
         MeasurementDocument calibratedMeasurements = MeasurementDocumentStore.Clone(measurementDocument);
         for (int i = 0; i < calibratedMeasurements.measurements.Count; i++)
         {
@@ -244,7 +240,6 @@ public class PointCloudEditor : MonoBehaviour
         {
             throw new System.InvalidOperationException("補正後の点座標を適用できませんでした。");
         }
-        targetRenderer.SetCoordinateDisplayBasis(true);
 
         bool outputWritten = false;
         try
@@ -264,7 +259,6 @@ public class PointCloudEditor : MonoBehaviour
         catch
         {
             PointCloudScaleService.ApplyPointCoordinateCorrection(targetRenderer, 1f / correctionFactor);
-            targetRenderer.SetCoordinateDisplayBasis(sourceCoordinatesAreMillimeters);
             measurementVisualsDirty = true;
             UpdateMeasureVisuals();
             if (outputWritten)
@@ -454,7 +448,7 @@ public class PointCloudEditor : MonoBehaviour
         {
             brushVisual.SetActive(true);
             brushVisual.transform.position = hitPoint;
-            brushVisual.transform.localScale = Vector3.one * (brushRadius * 2f);
+            brushVisual.transform.localScale = Vector3.one * (brushRadius * 2f * targetRenderer.DisplayTransform.lossyScale.x);
 
             // Adjust brush radius with Alt + Mouse Scroll
             if (Input.GetKey(KeyCode.LeftAlt) || Input.GetKey(KeyCode.RightAlt))
@@ -514,13 +508,13 @@ public class PointCloudEditor : MonoBehaviour
         if (points == null || points.Length == 0) return false;
         Vector3[] positions = targetRenderer.GetPositions();
 
-        Matrix4x4 worldToLocal = targetRenderer.transform.worldToLocalMatrix;
+        Matrix4x4 worldToLocal = targetRenderer.DisplayTransform.worldToLocalMatrix;
         Vector3 localOrigin = worldToLocal.MultiplyPoint(worldRay.origin);
         Vector3 localDir = worldToLocal.MultiplyVector(worldRay.direction).normalized;
         Ray localRay = new Ray(localOrigin, localDir);
 
         float localConeAngle = 0.01f; 
-        float localCylinderRadius = 10f / targetRenderer.transform.lossyScale.x;
+        float localCylinderRadius = 10f / targetRenderer.DisplayTransform.lossyScale.x;
 
         if (Camera.main != null)
         {
@@ -528,7 +522,7 @@ public class PointCloudEditor : MonoBehaviour
             {
                 float orthoSize = Camera.main.orthographicSize;
                 localCylinderRadius = (orthoSize / Mathf.Max(1f, Screen.height * 0.5f)) * 10f;
-                localCylinderRadius /= targetRenderer.transform.lossyScale.x;
+                localCylinderRadius /= targetRenderer.DisplayTransform.lossyScale.x;
                 localConeAngle = 0f;
             }
             else
@@ -582,7 +576,7 @@ public class PointCloudEditor : MonoBehaviour
 
             if (found)
             {
-                hitWorldPoint = targetRenderer.transform.TransformPoint(bestLocalPoint);
+                hitWorldPoint = targetRenderer.DisplayTransform.TransformPoint(bestLocalPoint);
                 return true;
             }
             return false;
@@ -626,7 +620,7 @@ public class PointCloudEditor : MonoBehaviour
         // Sort candidates by distance from camera (proj)
         pickCandidates.Sort((a, b) => a.proj.CompareTo(b.proj));
 
-        float pickRadiusLocal = 5f / targetRenderer.transform.lossyScale.x;
+        float pickRadiusLocal = 5f / targetRenderer.DisplayTransform.lossyScale.x;
 
         for (int i = 0; i < pickCandidates.Count; i++)
         {
@@ -634,13 +628,13 @@ public class PointCloudEditor : MonoBehaviour
             int neighbors = CountNeighborsInRadius(cand.index, cand.position, pickRadiusLocal, points, positions);
             if (neighbors >= pickDensityMinCount)
             {
-                hitWorldPoint = targetRenderer.transform.TransformPoint(cand.position);
+                hitWorldPoint = targetRenderer.DisplayTransform.TransformPoint(cand.position);
                 return true;
             }
         }
 
         // Fallback: if all candidate points fail the density filter, pick the frontmost one
-        hitWorldPoint = targetRenderer.transform.TransformPoint(pickCandidates[0].position);
+        hitWorldPoint = targetRenderer.DisplayTransform.TransformPoint(pickCandidates[0].position);
         return true;
     }
 
@@ -856,8 +850,8 @@ public class PointCloudEditor : MonoBehaviour
         PointData[] points = targetRenderer.GetPointData();
         if (points == null || points.Length == 0) return;
 
-        Vector3 localBrushCenter = targetRenderer.transform.InverseTransformPoint(brushCenterWorld);
-        float localBrushRadius = brushRadius / targetRenderer.transform.lossyScale.x;
+        Vector3 localBrushCenter = targetRenderer.DisplayTransform.InverseTransformPoint(brushCenterWorld);
+        float localBrushRadius = brushRadius;
         float radiusSq = localBrushRadius * localBrushRadius;
 
         bool selecting = brushSelectMode;
@@ -951,7 +945,7 @@ public class PointCloudEditor : MonoBehaviour
             (max.y - min.y) / Screen.height
         );
 
-        Matrix4x4 localToScreen = Camera.main.projectionMatrix * Camera.main.worldToCameraMatrix * targetRenderer.transform.localToWorldMatrix;
+        Matrix4x4 localToScreen = Camera.main.projectionMatrix * Camera.main.worldToCameraMatrix * targetRenderer.DisplayTransform.localToWorldMatrix;
         bool selecting = brushSelectMode;
 
         var octree = targetRenderer.Octree;
@@ -1330,7 +1324,7 @@ public class PointCloudEditor : MonoBehaviour
         {
             throw new System.Exception("No points to export!");
         }
-        string coordinateMetadata = GetCoordinatePlyMetadata();
+        string calibrationMetadata = GetCalibrationPlyMetadata();
 
         await Task.Run(() =>
         {
@@ -1409,7 +1403,7 @@ public class PointCloudEditor : MonoBehaviour
                     // PLY ASCII Header
                     writer.WriteLine("ply");
                     writer.WriteLine("format ascii 1.0");
-                    WriteCoordinatePlyMetadata(writer, coordinateMetadata);
+                    WriteCalibrationPlyMetadata(writer, calibrationMetadata);
                     writer.WriteLine($"element vertex {nonDeletedCount}");
                     writer.WriteLine("property float x");
                     writer.WriteLine("property float y");
@@ -1499,7 +1493,7 @@ public class PointCloudEditor : MonoBehaviour
             Debug.LogError("[PointCloudEditor] No points to export!");
             return;
         }
-        string coordinateMetadata = GetCoordinatePlyMetadata();
+        string calibrationMetadata = GetCalibrationPlyMetadata();
 
         string inputPath = GetLoadedPointCloudPath();
         string directory = Path.GetDirectoryName(inputPath);
@@ -1536,7 +1530,7 @@ public class PointCloudEditor : MonoBehaviour
                     // PLY ASCII Header
                     writer.WriteLine("ply");
                     writer.WriteLine("format ascii 1.0");
-                    WriteCoordinatePlyMetadata(writer, coordinateMetadata);
+                    WriteCalibrationPlyMetadata(writer, calibrationMetadata);
                     writer.WriteLine($"element vertex {remainingCount}");
                     writer.WriteLine("property float x");
                     writer.WriteLine("property float y");
@@ -1614,7 +1608,7 @@ public class PointCloudEditor : MonoBehaviour
         {
             throw new System.Exception("No points to export!");
         }
-        string coordinateMetadata = GetCoordinatePlyMetadata();
+        string calibrationMetadata = GetCalibrationPlyMetadata();
 
         await Task.Run(() =>
         {
@@ -1704,7 +1698,7 @@ public class PointCloudEditor : MonoBehaviour
                     // PLY ASCII Header
                     writer.WriteLine("ply");
                     writer.WriteLine("format ascii 1.0");
-                    WriteCoordinatePlyMetadata(writer, coordinateMetadata);
+                    WriteCalibrationPlyMetadata(writer, calibrationMetadata);
                     writer.WriteLine($"element vertex {selectedCount}");
                     writer.WriteLine("property float x");
                     writer.WriteLine("property float y");
@@ -1839,7 +1833,7 @@ public class PointCloudEditor : MonoBehaviour
 
         Rect polygonScreenRect = Rect.MinMaxRect(minX, minY, maxX, maxY);
 
-        Matrix4x4 localToScreen = Camera.main.projectionMatrix * Camera.main.worldToCameraMatrix * targetRenderer.transform.localToWorldMatrix;
+        Matrix4x4 localToScreen = Camera.main.projectionMatrix * Camera.main.worldToCameraMatrix * targetRenderer.DisplayTransform.localToWorldMatrix;
         bool selecting = brushSelectMode;
 
         var octree = targetRenderer.Octree;
@@ -1943,13 +1937,13 @@ public class PointCloudEditor : MonoBehaviour
         if (points == null || points.Length == 0) return false;
         Vector3[] positions = targetRenderer.GetPositions();
 
-        Matrix4x4 worldToLocal = targetRenderer.transform.worldToLocalMatrix;
+        Matrix4x4 worldToLocal = targetRenderer.DisplayTransform.worldToLocalMatrix;
         Vector3 localOrigin = worldToLocal.MultiplyPoint(worldRay.origin);
         Vector3 localDir = worldToLocal.MultiplyVector(worldRay.direction).normalized;
         Ray localRay = new Ray(localOrigin, localDir);
 
         float localConeAngle = 0.01f; 
-        float localCylinderRadius = 10f / targetRenderer.transform.lossyScale.x;
+        float localCylinderRadius = 10f / targetRenderer.DisplayTransform.lossyScale.x;
 
         if (Camera.main != null)
         {
@@ -1957,7 +1951,7 @@ public class PointCloudEditor : MonoBehaviour
             {
                 float orthoSize = Camera.main.orthographicSize;
                 localCylinderRadius = (orthoSize / Mathf.Max(1f, Screen.height * 0.5f)) * 10f;
-                localCylinderRadius /= targetRenderer.transform.lossyScale.x;
+                localCylinderRadius /= targetRenderer.DisplayTransform.lossyScale.x;
                 localConeAngle = 0f;
             }
             else
@@ -2009,7 +2003,7 @@ public class PointCloudEditor : MonoBehaviour
             if (found)
             {
                 hitIndex = bestIndex;
-                hitWorldPoint = targetRenderer.transform.TransformPoint(points[bestIndex].position);
+                hitWorldPoint = targetRenderer.DisplayTransform.TransformPoint(points[bestIndex].position);
                 return true;
             }
             return false;
@@ -2053,7 +2047,7 @@ public class PointCloudEditor : MonoBehaviour
         // Sort candidates by distance from camera (proj)
         pickCandidates.Sort((a, b) => a.proj.CompareTo(b.proj));
 
-        float pickRadiusLocal = 5f / targetRenderer.transform.lossyScale.x;
+        float pickRadiusLocal = 5f / targetRenderer.DisplayTransform.lossyScale.x;
 
         for (int i = 0; i < pickCandidates.Count; i++)
         {
@@ -2062,14 +2056,14 @@ public class PointCloudEditor : MonoBehaviour
             if (neighbors >= pickDensityMinCount)
             {
                 hitIndex = cand.index;
-                hitWorldPoint = targetRenderer.transform.TransformPoint(cand.position);
+                hitWorldPoint = targetRenderer.DisplayTransform.TransformPoint(cand.position);
                 return true;
             }
         }
 
         // Fallback: pick the frontmost one
         hitIndex = pickCandidates[0].index;
-        hitWorldPoint = targetRenderer.transform.TransformPoint(pickCandidates[0].position);
+        hitWorldPoint = targetRenderer.DisplayTransform.TransformPoint(pickCandidates[0].position);
         return true;
     }
 
@@ -2133,7 +2127,7 @@ public class PointCloudEditor : MonoBehaviour
         PointData[] points = targetRenderer.GetPointData();
         if (points == null || points.Length == 0) return;
 
-        float localRadius = connectionRadius / targetRenderer.transform.lossyScale.x;
+        float localRadius = connectionRadius;
         int maxLimit = maxConnectionPoints;
         bool selecting = brushSelectMode;
 
@@ -2334,8 +2328,7 @@ public class PointCloudEditor : MonoBehaviour
         if (positions == null || positions.Length == 0) return;
 
         Transform trans = targetRenderer.transform;
-        float scaleX = targetRenderer != null ? trans.lossyScale.x : 1.0f;
-        float localTolerance = ransacTolerance / scaleX;
+        float localTolerance = ransacTolerance;
         float colorTol = ransacColorTolerance;
         RansacType type = ransacType;
         bool selecting = brushSelectMode;
@@ -2390,7 +2383,7 @@ public class PointCloudEditor : MonoBehaviour
                 Vector3 pcaUp = localUp;
                 Color32 targetAvgColor = new Color32(0, 0, 0, 0);
                 bool hasColorConstraint = false;
-                float rEst = 10f / scaleX;
+                float rEst = 10f;
 
                 if (isSelectedPointFit)
                 {
@@ -2459,7 +2452,7 @@ public class PointCloudEditor : MonoBehaviour
                         totalDist += Vector2.Distance(proj, meanProj);
                     }
                     rEst = totalDist / selectedIndices.Count;
-                    if (rEst < 0.1f) rEst = 10f / scaleX;
+                    if (rEst < 0.1f) rEst = 10f;
                 }
 
                 object locker = new object();
@@ -2896,8 +2889,6 @@ public class PointCloudEditor : MonoBehaviour
         if (points == null || points.Length == 0) return;
 
         bool selecting = brushSelectMode;
-        float scaleY = targetRenderer != null ? targetRenderer.transform.lossyScale.y : 1.0f;
-
         Parallel.For(0, points.Length, i =>
         {
             int label = points[i].label;
@@ -2908,7 +2899,7 @@ public class PointCloudEditor : MonoBehaviour
 
             if (filterType == FilterType.Height)
             {
-                val = points[i].position.y * scaleY;
+                val = points[i].position.y;
                 pass = (val >= filterMin && val <= filterMax);
             }
             else if (filterType == FilterType.Distance)
@@ -2982,7 +2973,6 @@ public class PointCloudEditor : MonoBehaviour
         try
         {
             measurementDocument = MeasurementDocumentStore.LoadOrCreate(measurementCloudPath, out measurementSidecarExisted);
-            MeasurementDocumentStore.ConvertCoordinatesToScale(measurementDocument, 1f);
             measurementExpectedHash = measurementDocument.sourceSha256 ?? "";
             measurementFingerprintPending = true;
             measurementStatus = "点群ファイルを照合中...";
@@ -3483,7 +3473,7 @@ public class PointCloudEditor : MonoBehaviour
     {
         var visual = new MeasurementVisual { sourceId = id };
         visual.root = new GameObject("Measurement_" + id);
-        visual.root.transform.SetParent(targetRenderer.transform, false);
+        visual.root.transform.SetParent(targetRenderer.DisplayTransform, false);
         var lineObject = new GameObject("Line");
         lineObject.transform.SetParent(visual.root.transform, false);
         visual.line = lineObject.AddComponent<LineRenderer>();
@@ -3540,7 +3530,7 @@ public class PointCloudEditor : MonoBehaviour
     {
         const float markerScreenPx = 6f;
         const float lineScreenPx = 1.5f;
-        float lossyScale = Mathf.Max(targetRenderer.transform.lossyScale.x, 0.0001f);
+        float lossyScale = Mathf.Max(targetRenderer.DisplayTransform.lossyScale.x, 0.0001f);
         foreach (MeasurementVisual visual in measurementVisuals.Values) UpdateOneVisualSize(visual, markerScreenPx, lineScreenPx, lossyScale);
         if (draftVisual != null) UpdateOneVisualSize(draftVisual, markerScreenPx, lineScreenPx, lossyScale);
     }
@@ -3558,7 +3548,7 @@ public class PointCloudEditor : MonoBehaviour
         if (visual.line.positionCount > 0)
         {
             int mid = visual.line.positionCount / 2;
-            Vector3 worldMid = targetRenderer.transform.TransformPoint(visual.line.GetPosition(mid));
+            Vector3 worldMid = targetRenderer.DisplayTransform.TransformPoint(visual.line.GetPosition(mid));
             float width = CalcConstantScreenSizeWorld(worldMid, lineScreenPx) / lossyScale;
             bool selected = visual.sourceId == selectedMeasurementId;
             visual.line.startWidth = width * (selected ? 1.35f : 1f);
@@ -3593,7 +3583,7 @@ public class PointCloudEditor : MonoBehaviour
 
         Ray ray = Camera.main.ScreenPointToRay(Input.mousePosition);
         if (!FindClosestPointOnRay(ray, out Vector3 hitPoint)) return;
-        Vector3 localHit = targetRenderer.transform.InverseTransformPoint(hitPoint);
+        Vector3 localHit = targetRenderer.DisplayTransform.InverseTransformPoint(hitPoint);
         if (replaceMeasurementPointIndex >= 0 && replaceMeasurementPointIndex < measurementPath.Points.Count)
         {
             measurementPath.Points[replaceMeasurementPointIndex] = localHit;

@@ -33,8 +33,6 @@ public class PointCloudRenderer : MonoBehaviour
     private Material pointMaterial;
     private Bounds localBounds;
     private bool isInitialized = false;
-    private Vector3 unscaledLocalScale = Vector3.one;
-    private bool hasCapturedLocalScale;
 
 
     // Dynamic label colors
@@ -61,11 +59,20 @@ public class PointCloudRenderer : MonoBehaviour
     private readonly object octreeLock = new object();
     private PointCloudOctree pendingOctree;
     private bool hasPendingOctree = false;
+    private Transform displayTransform;
+
+    public Transform DisplayTransform
+    {
+        get
+        {
+            EnsureDisplayTransform();
+            return displayTransform;
+        }
+    }
 
     void Awake()
     {
-        unscaledLocalScale = transform.localScale;
-        hasCapturedLocalScale = true;
+        EnsureDisplayTransform();
 
         // 謎のパーティクルを消すため、同じGameObjectにあるParticleSystemとParticleSystemRendererを破壊する
         var ps = GetComponent<ParticleSystem>();
@@ -82,17 +89,23 @@ public class PointCloudRenderer : MonoBehaviour
         }
     }
 
-    public void SetCoordinateDisplayBasis(bool coordinatesAreMillimeters)
+    private void EnsureDisplayTransform()
     {
-        if (!hasCapturedLocalScale)
+        // Keep the display-only scale off PointData and the renderer root used by data-space operations.
+        if (displayTransform == null)
         {
-            unscaledLocalScale = transform.localScale;
-            hasCapturedLocalScale = true;
+            displayTransform = transform.Find("PointCloudDisplayScale");
+            if (displayTransform == null)
+            {
+                GameObject displayObject = new GameObject("PointCloudDisplayScale");
+                displayTransform = displayObject.transform;
+                displayTransform.SetParent(transform, false);
+            }
         }
 
-        float displayScale = coordinatesAreMillimeters ? 1f : Mathf.Max(0.001f, pointCloudDisplayScale);
-        // This affects only the rendered/world-space layer; PointData remains in file coordinates.
-        transform.localScale = unscaledLocalScale * displayScale;
+        displayTransform.localPosition = Vector3.zero;
+        displayTransform.localRotation = Quaternion.identity;
+        displayTransform.localScale = Vector3.one * Mathf.Max(0.001f, pointCloudDisplayScale);
     }
 
     void Start()
@@ -660,15 +673,17 @@ public class PointCloudRenderer : MonoBehaviour
 
         bool useLOD = enableLOD && isOctreeReady && cam != null;
         int drawCount = pointData.Length;
+        Transform display = DisplayTransform;
+        Vector3 displayScale = display.lossyScale;
 
         if (useLOD)
         {
             visibleIndices.Clear();
             Plane[] planes = GeometryUtility.CalculateFrustumPlanes(cam);
             Vector3 camPos = cam.transform.position;
-            float scale = Mathf.Max(transform.lossyScale.x, Mathf.Max(transform.lossyScale.y, transform.lossyScale.z));
+            float scale = Mathf.Max(Mathf.Abs(displayScale.x), Mathf.Max(Mathf.Abs(displayScale.y), Mathf.Abs(displayScale.z)));
 
-            TraverseOctree(octree.root, planes, camPos, scale, lodThreshold, visibleIndices);
+            TraverseOctree(octree.root, display, planes, camPos, scale, lodThreshold, visibleIndices);
             drawCount = visibleIndices.Count;
 
             if (drawCount > 0)
@@ -700,12 +715,12 @@ public class PointCloudRenderer : MonoBehaviour
         pointMaterial.SetFloat("_MinHeight", minHeight);
         pointMaterial.SetFloat("_MaxHeight", maxHeight);
         pointMaterial.SetFloat("_MaxDistanceThreshold", maxDistanceThreshold);
-        pointMaterial.SetMatrix("_LocalToWorld", transform.localToWorldMatrix);
+        pointMaterial.SetMatrix("_LocalToWorld", display.localToWorldMatrix);
 
         // Transform local bounds to world space for camera culling
         Bounds worldBounds = new Bounds(
-            transform.TransformPoint(localBounds.center), 
-            Vector3.Scale(localBounds.size, transform.lossyScale)
+            display.TransformPoint(localBounds.center),
+            Vector3.Scale(localBounds.size, new Vector3(Mathf.Abs(displayScale.x), Mathf.Abs(displayScale.y), Mathf.Abs(displayScale.z)))
         );
 
         activeDrawCount = drawCount;
@@ -716,12 +731,12 @@ public class PointCloudRenderer : MonoBehaviour
         }
     }
 
-    private void TraverseOctree(PointCloudOctree.Node node, Plane[] planes, Vector3 camPos, float scale, float currentThreshold, List<int> outIndices)
+    private void TraverseOctree(PointCloudOctree.Node node, Transform display, Plane[] planes, Vector3 camPos, float scale, float currentThreshold, List<int> outIndices)
     {
         if (node == null) return;
 
         // 1. Transform bounds sphere to world space
-        Vector3 worldCenter = transform.TransformPoint(node.center);
+        Vector3 worldCenter = display.TransformPoint(node.center);
         float worldRadius = node.radius * scale;
 
         // 2. Frustum culling check
@@ -752,7 +767,7 @@ public class PointCloudRenderer : MonoBehaviour
         {
             if (node.children[i] != null)
             {
-                TraverseOctree(node.children[i], planes, camPos, scale, currentThreshold, outIndices);
+                TraverseOctree(node.children[i], display, planes, camPos, scale, currentThreshold, outIndices);
             }
         }
     }

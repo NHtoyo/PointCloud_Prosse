@@ -12,7 +12,6 @@ namespace PointCloudWorkbench
     {
         public int schemaVersion = 1;
         public string coordinateSpace = "pointcloud_local";
-        public float pointCoordinateScale = 1f;
         public string cloudId;
         public string sourceFileName;
         public string sourceSha256;
@@ -111,33 +110,6 @@ namespace PointCloudWorkbench
             return JsonUtility.FromJson<MeasurementDocument>(JsonUtility.ToJson(document));
         }
 
-        public static bool ConvertCoordinatesToScale(MeasurementDocument document, float targetScale)
-        {
-            if (document == null) throw new ArgumentNullException(nameof(document));
-            if (float.IsNaN(targetScale) || float.IsInfinity(targetScale) || targetScale <= 0f)
-                throw new ArgumentOutOfRangeException(nameof(targetScale));
-
-            float sourceScale = document.pointCoordinateScale;
-            if (float.IsNaN(sourceScale) || float.IsInfinity(sourceScale) || sourceScale <= 0f)
-                sourceScale = 1f;
-            if (Mathf.Approximately(sourceScale, targetScale))
-            {
-                document.pointCoordinateScale = targetScale;
-                return false;
-            }
-
-            float ratio = targetScale / sourceScale;
-            for (int i = 0; i < document.measurements.Count; i++)
-            {
-                MeasurementRecord record = document.measurements[i];
-                if (record == null || record.points == null) continue;
-                for (int p = 0; p < record.points.Count; p++)
-                    record.points[p] *= ratio;
-            }
-            document.pointCoordinateScale = targetScale;
-            return true;
-        }
-
         public static string ComputeSha256(string filePath)
         {
             using (var stream = new FileStream(filePath, FileMode.Open, FileAccess.Read, FileShare.Read, 1024 * 1024, FileOptions.SequentialScan))
@@ -167,7 +139,6 @@ namespace PointCloudWorkbench
             derived.cloudId = Guid.NewGuid().ToString("N");
             derived.sourceFileName = Path.GetFileName(outputPath);
             derived.sourceSha256 = string.Empty;
-            derived.pointCoordinateScale = 1f;
             derived.savedUtc = DateTime.UtcNow.ToString("o");
             return derived;
         }

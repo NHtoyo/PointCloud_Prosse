@@ -1,6 +1,8 @@
+import io
 import json
 import tempfile
 import unittest
+from contextlib import redirect_stdout
 from pathlib import Path
 
 import numpy as np
@@ -25,13 +27,17 @@ class StemDiameterCliTests(unittest.TestCase):
             keep_file = output_dir / "user-notes.txt"
             keep_file.write_text("preserve this file", encoding="utf-8")
 
-            code = main([
-                "--input", str(input_path),
-                "--output_dir", str(output_dir),
-                "--query-workers", "1",
-            ])
+            output = io.StringIO()
+            with redirect_stdout(output):
+                code = main([
+                    "--input", str(input_path),
+                    "--output_dir", str(output_dir),
+                    "--query-workers", "1",
+                ])
 
             self.assertEqual(code, 0)
+            self.assertIn("[StemDiameter] xyz_min=", output.getvalue())
+            self.assertIn("xyz_span=", output.getvalue())
             expected = {
                 "stem_diameter.json", "stem_diameter.csv",
                 "diameter_profile.png", "quality_profile.png", "user-notes.txt",

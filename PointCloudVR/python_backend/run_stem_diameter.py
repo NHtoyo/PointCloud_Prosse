@@ -36,13 +36,23 @@ def main(argv=None) -> int:
         if not input_path.is_file():
             raise FileNotFoundError(f"Input point cloud not found: {input_path}")
 
-        _progress(0.01, f"点群を読み込み中: {input_path.name}")
+        _progress(0.01, f"点群を読み込み中: {input_path}")
         if input_path.suffix.lower() == ".npz":
             points, _ = pointcloud_io.load_npz(str(input_path))
         else:
             points, _ = pointcloud_io.load_ply(str(input_path))
         points = np.asarray(points, dtype=np.float64)
+        if points.ndim != 2 or points.shape[1] != 3 or len(points) == 0:
+            raise ValueError(f"Input point coordinates must be a non-empty Nx3 array; shape={points.shape}")
+        xyz_min = np.min(points, axis=0)
+        xyz_max = np.max(points, axis=0)
+        xyz_span = xyz_max - xyz_min
         print(f"[StemDiameter] points={len(points):,}", flush=True)
+        print(
+            "[StemDiameter] xyz_min=(%.6g, %.6g, %.6g) xyz_max=(%.6g, %.6g, %.6g) xyz_span=(%.6g, %.6g, %.6g)"
+            % (*xyz_min, *xyz_max, *xyz_span),
+            flush=True,
+        )
 
         params = StemDiameterParams(
             measurement_interval_mm=args.measurement_interval_mm,

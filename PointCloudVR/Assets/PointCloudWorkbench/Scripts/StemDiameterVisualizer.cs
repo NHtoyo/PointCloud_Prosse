@@ -26,7 +26,7 @@ namespace PointCloudWorkbench
             result = value;
             selectedIndex = -1;
             overlayRoot = new GameObject("StemDiameterOverlays").transform;
-            overlayRoot.SetParent(targetRenderer.transform, false);
+            overlayRoot.SetParent(targetRenderer.DisplayTransform, false);
             centerlineMaterial = CreateMaterial(new Color(0.15f, 0.85f, 1f, 1f));
             sectionMaterial = CreateMaterial(new Color(1f, 0.58f, 0.12f, 1f));
             centerline = CreateLine("Stem centerline", centerlineMaterial, OverlayWidth);

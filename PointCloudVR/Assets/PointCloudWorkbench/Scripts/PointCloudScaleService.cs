@@ -124,7 +124,6 @@ namespace PointCloudWorkbench
                 {
                     string header = "ply\n" +
                                     "format binary_little_endian 1.0\n" +
-                                    "comment pcwb_coordinate_basis mm\n" +
                                     "comment pcwb_scale_calibrated true\n" +
                                     $"element vertex {points.Length}\n" +
                                     "property float x\n" +

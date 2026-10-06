@@ -19,7 +19,6 @@ public class PointCloudLoader : MonoBehaviour
     public bool useExternalPath = true;
     public string externalFolderPath = "";
     public string CurrentFilePath { get; private set; } = "";
-    public bool CurrentPointCloudCoordinatesAreMillimeters { get; private set; }
     public bool CurrentPointCloudScaleIsCalibrated { get; private set; }
     public int SuccessfulLoadRevision { get; private set; }
     public event System.Func<string, bool> PointCloudChanging;
@@ -38,7 +37,6 @@ public class PointCloudLoader : MonoBehaviour
     }
 
     private bool parsedCoordinatesAreScaleCalibrated;
-    private bool parsedCoordinatesAreMillimeters;
 
     void Awake()
     {
@@ -175,10 +173,8 @@ public class PointCloudLoader : MonoBehaviour
         if (!CanChangePointCloud(fullPath)) return false;
 
         CurrentFilePath = fullPath;
-        CurrentPointCloudCoordinatesAreMillimeters = true;
         CurrentPointCloudScaleIsCalibrated = true;
         if (targetRenderer == null) targetRenderer = GetComponent<PointCloudRenderer>();
-        if (targetRenderer != null) targetRenderer.SetCoordinateDisplayBasis(true);
         fileName = Path.GetFileName(fullPath);
         useExternalPath = true;
         externalFolderPath = Path.GetDirectoryName(fullPath);
@@ -212,7 +208,6 @@ public class PointCloudLoader : MonoBehaviour
 
         PointData[] loadedPoints = null;
         parsedCoordinatesAreScaleCalibrated = false;
-        parsedCoordinatesAreMillimeters = false;
 
         if (extension == ".ply")
         {
@@ -224,8 +219,6 @@ public class PointCloudLoader : MonoBehaviour
         }
 
         bool sourceScaleIsCalibrated = parsedCoordinatesAreScaleCalibrated || PointCloudScaleService.IsCalibratedPointCloud(filePath);
-        // Only a tagged calibrated-mm file has known physical millimeter coordinates.
-        bool sourceCoordinatesAreMillimeters = parsedCoordinatesAreMillimeters && parsedCoordinatesAreScaleCalibrated;
 
         stopwatch.Stop();
 
@@ -241,9 +234,7 @@ public class PointCloudLoader : MonoBehaviour
                 }
 
                 CurrentFilePath = Path.GetFullPath(filePath);
-                CurrentPointCloudCoordinatesAreMillimeters = sourceCoordinatesAreMillimeters;
                 CurrentPointCloudScaleIsCalibrated = sourceScaleIsCalibrated;
-                targetRenderer.SetCoordinateDisplayBasis(sourceCoordinatesAreMillimeters);
                 targetRenderer.SetPointCloudData(loadedPoints);
                 fileName = Path.GetFileName(CurrentFilePath);
                 if (useExternalPath) externalFolderPath = Path.GetDirectoryName(CurrentFilePath);
@@ -351,12 +342,6 @@ public class PointCloudLoader : MonoBehaviour
                 tokens[2].Equals("true", System.StringComparison.OrdinalIgnoreCase))
             {
                 parsedCoordinatesAreScaleCalibrated = true;
-            }
-            else if (tokens[0].Equals("comment", System.StringComparison.OrdinalIgnoreCase) && tokens.Length >= 3 &&
-                tokens[1].Equals("pcwb_coordinate_basis", System.StringComparison.OrdinalIgnoreCase) &&
-                tokens[2].Equals("mm", System.StringComparison.OrdinalIgnoreCase))
-            {
-                parsedCoordinatesAreMillimeters = true;
             }
             else if (tokens[0] == "format")
             {

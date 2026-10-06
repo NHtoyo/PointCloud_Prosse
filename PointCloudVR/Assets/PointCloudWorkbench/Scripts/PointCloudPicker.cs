@@ -21,12 +21,13 @@ namespace PointCloudWorkbench
                 PointData[] points = renderer.GetPointData();
                 if (points == null || points.Length == 0) continue;
 
-                Matrix4x4 worldToLocal = renderer.transform.worldToLocalMatrix;
+                Transform display = renderer.DisplayTransform;
+                Matrix4x4 worldToLocal = display.worldToLocalMatrix;
                 Vector3 localOrigin = worldToLocal.MultiplyPoint(worldRay.origin);
                 Vector3 localDir = worldToLocal.MultiplyVector(worldRay.direction).normalized;
                 Ray localRay = new Ray(localOrigin, localDir);
 
-                float scaleX = renderer.transform.lossyScale.x;
+                float scaleX = display.lossyScale.x;
                 float localThreshold = pickingRadius / (scaleX > 0.001f ? scaleX : 1f);
 
                 for (int i = 0; i < points.Length; i++)
@@ -43,7 +44,7 @@ namespace PointCloudWorkbench
                         if (proj < minCameraDist)
                         {
                             minCameraDist = proj;
-                            pickedPoint = renderer.transform.TransformPoint(p);
+                            pickedPoint = display.TransformPoint(p);
                             found = true;
                         }
                     }
