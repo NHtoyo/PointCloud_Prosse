@@ -95,7 +95,9 @@ namespace PointCloudWorkbench
             }
             catch (System.Exception ex)
             {
-                Debug.LogError($"[AnnotationPresetManager] Failed to load presets: {ex.Message}");
+                const string message = "注釈プリセットを読み込めませんでした。既定のプリセットを使用します。";
+                PointCloudProgressManager.Instance.ShowError("注釈プリセット", message);
+                Debug.LogWarning($"[RecoverableOperationError] {message}{System.Environment.NewLine}{ex}");
                 var wrapper = new AnnotationPresetListWrapper();
                 wrapper.presets.Add(CreateDefaultPreset());
                 return wrapper;
@@ -112,7 +114,9 @@ namespace PointCloudWorkbench
             }
             catch (System.Exception ex)
             {
-                Debug.LogError($"[AnnotationPresetManager] Failed to save presets: {ex.Message}");
+                const string message = "注釈プリセットを保存できませんでした。";
+                PointCloudProgressManager.Instance.ShowError("注釈プリセット", message);
+                Debug.LogWarning($"[RecoverableOperationError] {message}{System.Environment.NewLine}{ex}");
             }
         }
 

@@ -205,7 +205,13 @@ namespace PointCloudWorkbench
             document.pointCoordinateScale = 1f;
             document.sourceFileName = Path.GetFileName(pointCloudPath);
             document.savedUtc = DateTime.UtcNow.ToString("o");
-            WriteAtomic(GetSidecarPath(pointCloudPath), JsonUtility.ToJson(document, true));
+            WriteSerializedAtomic(GetSidecarPath(pointCloudPath), Serialize(document));
+        }
+
+        public static string Serialize(MeasurementDocument document)
+        {
+            if (document == null) throw new ArgumentNullException(nameof(document));
+            return JsonUtility.ToJson(document, true);
         }
 
         public static MeasurementDocument CreateDerivedDocument(MeasurementDocument source, string outputPath)
@@ -221,46 +227,34 @@ namespace PointCloudWorkbench
             return derived;
         }
 
-        public static void WriteDerivedSidecar(string outputPath, MeasurementDocument snapshot)
+        public static void WriteSerializedAtomic(string path, string contents)
         {
-            MeasurementDocument derived = CreateDerivedDocument(snapshot, outputPath);
-            if (derived == null) return;
-            derived.sourceSha256 = ComputeSha256(outputPath);
-            Save(outputPath, derived);
-        }
-
-        private static void WriteAtomic(string path, string contents)
-        {
-            string directory = Path.GetDirectoryName(path);
+            if (string.IsNullOrWhiteSpace(path)) throw new ArgumentException("JSON保存先がありません。", nameof(path));
+            if (contents == null) throw new ArgumentNullException(nameof(contents));
+            string fullPath = Path.GetFullPath(path);
+            string directory = Path.GetDirectoryName(fullPath);
             if (string.IsNullOrEmpty(directory)) throw new IOException("計測JSONの保存先フォルダがありません。");
             Directory.CreateDirectory(directory);
 
-            string temporaryPath = path + ".tmp";
+            string temporaryPath = fullPath + "." + Guid.NewGuid().ToString("N") + ".tmp";
             try
             {
                 File.WriteAllText(temporaryPath, contents, new UTF8Encoding(false));
-                if (File.Exists(path))
-                {
-                    try
-                    {
-                        File.Replace(temporaryPath, path, null);
-                    }
-                    catch (PlatformNotSupportedException)
-                    {
-                        string backupPath = path + "." + DateTime.UtcNow.Ticks + ".bak";
-                        File.Copy(path, backupPath, false);
-                        File.Copy(temporaryPath, path, true);
-                        File.Delete(temporaryPath);
-                    }
-                }
+                if (File.Exists(fullPath)) File.Replace(temporaryPath, fullPath, null);
                 else
-                {
-                    File.Move(temporaryPath, path);
-                }
+                    File.Move(temporaryPath, fullPath);
             }
-            finally
+            catch (Exception writeException)
             {
-                if (File.Exists(temporaryPath)) File.Delete(temporaryPath);
+                try
+                {
+                    if (File.Exists(temporaryPath)) File.Delete(temporaryPath);
+                }
+                catch (Exception cleanupException)
+                {
+                    throw new AggregateException("計測JSONの保存に失敗し、一時ファイルも削除できませんでした。", writeException, cleanupException);
+                }
+                throw;
             }
         }
     }

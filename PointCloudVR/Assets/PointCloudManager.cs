@@ -252,7 +252,9 @@ public class PointCloudManager : MonoBehaviour
 
         if (refPos == null || alignPos == null || refPos.Length == 0 || alignPos.Length == 0)
         {
-            Debug.LogError("[PointCloudManager] Missing points data for C2C comparison.");
+            const string message = "C2C比較には基準点群と位置合わせ済み点群の両方が必要です。";
+            PointCloudProgressManager.Instance.ShowError("C2C比較", message);
+            Debug.LogWarning($"[RecoverableOperationError] {message}");
             return;
         }
 

@@ -61,6 +61,7 @@ public class PointCloudRenderer : MonoBehaviour
     // Lock and variables for background construction thread
     private readonly object octreeLock = new object();
     private PointCloudOctree pendingOctree;
+    private System.Exception pendingOctreeError;
     private bool hasPendingOctree = false;
     private Transform displayTransform;
 
@@ -438,6 +439,7 @@ public class PointCloudRenderer : MonoBehaviour
             isOctreeBuilding = true;
             hasPendingOctree = false;
             pendingOctree = null;
+            pendingOctreeError = null;
             octreeBuildVersion++;
             currentVersion = octreeBuildVersion;
         }
@@ -466,11 +468,11 @@ public class PointCloudRenderer : MonoBehaviour
             }
             catch (System.Exception ex)
             {
-                Debug.LogError($"[PointCloudRenderer] Failed to build Octree in background: {ex.Message}");
                 lock (octreeLock)
                 {
                     if (currentVersion == octreeBuildVersion)
                     {
+                        pendingOctreeError = ex;
                         isOctreeBuilding = false;
                     }
                 }
@@ -497,6 +499,18 @@ public class PointCloudRenderer : MonoBehaviour
 
     void Update()
     {
+        System.Exception octreeError = null;
+        lock (octreeLock)
+        {
+            if (pendingOctreeError != null)
+            {
+                octreeError = pendingOctreeError;
+                pendingOctreeError = null;
+            }
+        }
+        if (octreeError != null)
+            Debug.LogWarning($"[RecoverableOperationError] Octree構築に失敗しました。線形検索で続行します。\n{octreeError}");
+
         // Check if background octree building task is completed
         if (isOctreeBuilding && hasPendingOctree)
         {
@@ -573,7 +587,7 @@ public class PointCloudRenderer : MonoBehaviour
             }
             catch (System.Exception ex)
             {
-                Debug.LogError($"[PointCloudRenderer] Failed to read back GPU buffer: {ex.Message}");
+                Debug.LogWarning($"[RecoverableOperationError] GPUバッファの読み戻し検査に失敗しました。\n{ex}");
             }
         }
         else

@@ -1,3 +1,4 @@
+using System;
 using UnityEngine;
 using System.IO;
 using System.Threading;
@@ -117,7 +118,20 @@ public class PointCloudEditor : MonoBehaviour
     // Asynchronous background task execution flags
     private volatile bool finishedConnectionFlag = false;
     private volatile bool finishedRansacFlag = false;
-    private volatile bool finishedExportFlag = false;
+    private BackgroundSelectionResult connectionResult;
+    private BackgroundSelectionResult ransacResult;
+
+    private sealed class BackgroundSelectionResult
+    {
+        public int[] Indices;
+        public bool[] Mask;
+        public PointData[] SourcePoints;
+        public bool Selecting;
+        public bool SelectOnlyUnclassified;
+        public bool Cancelled;
+        public Exception Error;
+        public string OperationTitle;
+    }
 
     // UI Component Reference
     private PointCloudEditorUI editorUI;
@@ -190,19 +204,14 @@ public class PointCloudEditor : MonoBehaviour
             : string.Empty;
     }
 
-    private static void WriteCalibrationPlyMetadata(StreamWriter writer, string metadata)
-    {
-        if (string.IsNullOrEmpty(metadata)) return;
-        string[] lines = metadata.Split('\n');
-        for (int i = 0; i < lines.Length; i++)
-            if (!string.IsNullOrEmpty(lines[i])) writer.WriteLine(lines[i]);
-    }
+    public string LastCalibrationSidecarWarning { get; private set; } = string.Empty;
 
     public async Task<string> ApplyScaleCalibrationAndSaveAsync(
         float correctionFactor,
         string outputDirectory,
         CancellationToken cancellationToken)
     {
+        LastCalibrationSidecarWarning = string.Empty;
         if (!measurementDocumentReady || measurementDocument == null || measurementFingerprintMismatch)
         {
             throw new System.InvalidOperationException("点群と計測JSONの照合が完了していません。照合後にもう一度実行してください。");
@@ -251,7 +260,18 @@ public class PointCloudEditor : MonoBehaviour
             outputWritten = true;
             if (calibratedMeasurements.measurements.Count > 0)
             {
-                MeasurementDocumentStore.WriteDerivedSidecar(outputPath, calibratedMeasurements);
+                try
+                {
+                    MeasurementDocument derived = MeasurementDocumentStore.CreateDerivedDocument(calibratedMeasurements, outputPath);
+                    derived.sourceSha256 = await Task.Run(() => MeasurementDocumentStore.ComputeSha256(outputPath));
+                    string json = MeasurementDocumentStore.Serialize(derived);
+                    await Task.Run(() => MeasurementDocumentStore.WriteSerializedAtomic(
+                        MeasurementDocumentStore.GetSidecarPath(outputPath), json));
+                }
+                catch (Exception ex)
+                {
+                    LastCalibrationSidecarWarning = ex.ToString();
+                }
             }
             measurementStatus = $"補正済み点群を保存しました: {Path.GetFileName(outputPath)}";
             return outputPath;
@@ -352,37 +372,113 @@ public class PointCloudEditor : MonoBehaviour
         brushVisual.SetActive(false);
     }
 
+    private void ApplyBackgroundSelectionResult(BackgroundSelectionResult result)
+    {
+        PointCloudProgressManager pm = PointCloudProgressManager.Instance;
+        if (result == null) return;
+        if (result.Error != null)
+        {
+            pm.Fail(result.OperationTitle, "選択処理に失敗しました。点群の選択状態は変更していません。", result.Error.ToString());
+            Debug.LogWarning($"[RecoverableOperationError] {result.OperationTitle}: {result.Error}");
+            return;
+        }
+        if (result.Cancelled)
+        {
+            pm.CompleteCancelled("キャンセルしました。選択状態は変更していません。");
+            return;
+        }
+
+        PointData[] points = targetRenderer != null ? targetRenderer.GetPointData() : null;
+        if (points == null)
+        {
+            var error = new InvalidOperationException("結果を反映する点群がありません。");
+            pm.Fail(result.OperationTitle, "選択結果を反映できませんでした。", error.ToString());
+            Debug.LogWarning($"[RecoverableOperationError] {result.OperationTitle}: {error}");
+            return;
+        }
+        if (result.SourcePoints != null && !ReferenceEquals(result.SourcePoints, points))
+        {
+            pm.CompleteCancelled("処理中に点群が切り替わったため、古い選択結果は適用しませんでした。");
+            return;
+        }
+
+        var changedIndices = new List<int>();
+        var previousLabels = new List<int>();
+        try
+        {
+            if (result.Indices != null)
+            {
+                for (int i = 0; i < result.Indices.Length; i++)
+                {
+                    int index = result.Indices[i];
+                    if (index < 0 || index >= points.Length) continue;
+                    int label = points[index].label;
+                    if (result.Selecting && result.SelectOnlyUnclassified && (label & 0xff) != 0) continue;
+                    int nextLabel = result.Selecting ? label | 0x10000 : label & ~0x10000;
+                    if (nextLabel == label) continue;
+                    changedIndices.Add(index);
+                    previousLabels.Add(label);
+                    PointData point = points[index];
+                    point.label = nextLabel;
+                    points[index] = point;
+                }
+            }
+            else if (result.Mask != null)
+            {
+                int count = Math.Min(result.Mask.Length, points.Length);
+                for (int index = 0; index < count; index++)
+                {
+                    if (!result.Mask[index]) continue;
+                    int label = points[index].label;
+                    int nextLabel = result.Selecting ? label | 0x10000 : label & ~0x10000;
+                    if (nextLabel == label) continue;
+                    changedIndices.Add(index);
+                    previousLabels.Add(label);
+                    PointData point = points[index];
+                    point.label = nextLabel;
+                    points[index] = point;
+                }
+            }
+
+            targetRenderer.UpdatePointBuffer();
+            statsDirty = true;
+            pm.Complete();
+            Debug.Log($"[{result.OperationTitle}] 選択結果を反映しました ({changedIndices.Count:N0} 点)。");
+        }
+        catch (Exception ex)
+        {
+            for (int i = 0; i < changedIndices.Count; i++)
+            {
+                PointData point = points[changedIndices[i]];
+                point.label = previousLabels[i];
+                points[changedIndices[i]] = point;
+            }
+            try { targetRenderer.UpdatePointBuffer(); }
+            catch (Exception rollbackException)
+            {
+                ex = new AggregateException("選択結果の反映と表示復元に失敗しました。", ex, rollbackException);
+            }
+            pm.Fail(result.OperationTitle, "選択結果を反映できませんでした。元の選択状態へ戻しました。", ex.ToString());
+            Debug.LogWarning($"[RecoverableOperationError] {result.OperationTitle}: {ex}");
+        }
+    }
+
     void Update()
     {
         if (targetRenderer == null) return;
         PollMeasurementFingerprint();
 
-        // Process asynchronous background task completion in main thread
         if (finishedConnectionFlag)
         {
             finishedConnectionFlag = false;
-            try
-            {
-                targetRenderer.UpdatePointBuffer();
-            }
-            catch (System.Exception ex)
-            {
-                Debug.LogError($"[PointCloudEditor] UpdatePointBuffer failed: {ex.Message}");
-            }
-            statsDirty = true;
-            PointCloudProgressManager.Instance.Complete();
+            ApplyBackgroundSelectionResult(connectionResult);
+            connectionResult = null;
         }
         if (finishedRansacFlag)
         {
             finishedRansacFlag = false;
-            targetRenderer.UpdatePointBuffer();
-            statsDirty = true;
-            PointCloudProgressManager.Instance.Complete();
-        }
-        if (finishedExportFlag)
-        {
-            finishedExportFlag = false;
-            PointCloudProgressManager.Instance.Complete();
+            ApplyBackgroundSelectionResult(ransacResult);
+            ransacResult = null;
         }
 
         // Lock interactions if a background task is running (modal progress dialog)
@@ -1326,463 +1422,124 @@ public class PointCloudEditor : MonoBehaviour
     public async Task ExportLabeledPointsAsync(string exportPath, bool asBinary = false, CancellationToken token = default)
     {
         PointData[] points = targetRenderer.GetPointData();
-        if (points == null || points.Length == 0)
-        {
-            throw new System.Exception("No points to export!");
-        }
-        string calibrationMetadata = GetCalibrationPlyMetadata();
-
-        await Task.Run(() =>
-        {
-            int nonDeletedCount = 0;
-            
-            // Count non-deleted points
-            for (int i = 0; i < points.Length; i++)
-            {
-                if (token.IsCancellationRequested) return;
-                if ((points[i].label & 0x20000) == 0 && (points[i].label & 0x80000) == 0) nonDeletedCount++;
-            }
-
-            if (asBinary)
-            {
-                using (FileStream fs = new FileStream(exportPath, FileMode.Create, FileAccess.Write))
-                using (BinaryWriter binWriter = new BinaryWriter(fs))
-                {
-                    // PLY Header (ASCII characters)
-                    string header = "ply\n" +
-                                    "format binary_little_endian 1.0\n" +
-                                    calibrationMetadata +
-                                    $"element vertex {nonDeletedCount}\n" +
-                                    "property float x\n" +
-                                    "property float y\n" +
-                                    "property float z\n" +
-                                    "property uchar red\n" +
-                                    "property uchar green\n" +
-                                    "property uchar blue\n" +
-                                    "property int label\n" +
-                                    "end_header\n";
-                    
-                    byte[] headerBytes = System.Text.Encoding.ASCII.GetBytes(header);
-                    binWriter.Write(headerBytes);
-
-                    int written = 0;
-                    int progressInterval = Mathf.Max(1000, nonDeletedCount / 100);
-
-                    for (int i = 0; i < points.Length; i++)
-                    {
-                        if (token.IsCancellationRequested)
-                        {
-                            binWriter.Close();
-                            if (File.Exists(exportPath)) File.Delete(exportPath);
-                            return;
-                        }
-
-                        int labelVal = points[i].label;
-                        bool isDeleted = (labelVal & 0x20000) != 0;
-                        bool isNoiseHidden = (labelVal & 0x80000) != 0;
-                        if (isDeleted || isNoiseHidden) continue; // skip noise
-
-                        Vector3 pos = points[i].position;
-                        Color32 col = PointData.UnpackColor(points[i].originalColor);
-                        int classId = labelVal & 0xFF;
-
-                        binWriter.Write(pos.x);
-                        binWriter.Write(pos.y);
-                        binWriter.Write(pos.z);
-                        binWriter.Write(col.r);
-                        binWriter.Write(col.g);
-                        binWriter.Write(col.b);
-                        binWriter.Write(classId);
-
-                        written++;
-                        if (written % progressInterval == 0)
-                        {
-                            PointCloudProgressManager.Instance.Update((float)written / nonDeletedCount, $"データを書き出し中... ({written:N0} / {nonDeletedCount:N0} 点)");
-                        }
-                    }
-                }
-            }
-            else
-            {
-                using (StreamWriter writer = new StreamWriter(exportPath))
-                {
-                    // PLY ASCII Header
-                    writer.WriteLine("ply");
-                    writer.WriteLine("format ascii 1.0");
-                    WriteCalibrationPlyMetadata(writer, calibrationMetadata);
-                    writer.WriteLine($"element vertex {nonDeletedCount}");
-                    writer.WriteLine("property float x");
-                    writer.WriteLine("property float y");
-                    writer.WriteLine("property float z");
-                    writer.WriteLine("property uchar red");
-                    writer.WriteLine("property uchar green");
-                    writer.WriteLine("property uchar blue");
-                    writer.WriteLine("property int label");
-                    writer.WriteLine("end_header");
-
-                    int written = 0;
-                    int progressInterval = Mathf.Max(1000, nonDeletedCount / 100);
-
-                    for (int i = 0; i < points.Length; i++)
-                    {
-                        if (token.IsCancellationRequested)
-                        {
-                            writer.Close();
-                            if (File.Exists(exportPath)) File.Delete(exportPath);
-                            return;
-                        }
-
-                        int labelVal = points[i].label;
-                        bool isDeleted = (labelVal & 0x20000) != 0;
-                        bool isNoiseHidden = (labelVal & 0x80000) != 0;
-                        if (isDeleted || isNoiseHidden) continue; // skip noise
-
-                        Vector3 pos = points[i].position;
-                        Color32 col = PointData.UnpackColor(points[i].originalColor);
-                        int classId = labelVal & 0xFF;
-
-                        writer.WriteLine($"{pos.x.ToString(CultureInfo.InvariantCulture)} {pos.y.ToString(CultureInfo.InvariantCulture)} {pos.z.ToString(CultureInfo.InvariantCulture)} {col.r} {col.g} {col.b} {classId}");
-                        
-                        written++;
-                        if (written % progressInterval == 0)
-                        {
-                            PointCloudProgressManager.Instance.Update((float)written / nonDeletedCount, $"データを書き出し中... ({written:N0} / {nonDeletedCount:N0} 点)");
-                        }
-                    }
-                }
-            }
-        }, token);
+        bool calibrated = !string.IsNullOrEmpty(GetCalibrationPlyMetadata());
+        var request = new PlyExportRequest(points, exportPath, asBinary, calibrated, ExportPointMode.AllVisible);
+        await Task.Run(() => PlyExportService.Write(request, token,
+            (progress, message) => PointCloudProgressManager.Instance.Update(progress, message)), token);
     }
 
     public void ExportLabeledPoints(bool asBinary = false)
     {
-        string inputPath = GetLoadedPointCloudPath();
-        string directory = Path.GetDirectoryName(inputPath);
-        string fileNameWithoutExt = Path.GetFileNameWithoutExtension(inputPath);
-        string exportPath = Path.Combine(directory, $"{fileNameWithoutExt}_labeled.ply");
-        MeasurementDocument measurementSnapshot = CreateMeasurementSnapshotForExport();
-
-        var pm = PointCloudProgressManager.Instance;
-        pm.Start("PLYファイル書き出し", "書き出しデータ準備中...");
-
-        Debug.Log($"[PointCloudEditor] Starting background export to: {exportPath} (Binary: {asBinary})");
-
-        Task.Run(async () =>
-        {
-            try
-            {
-                await ExportLabeledPointsAsync(exportPath, asBinary, pm.CancellationToken);
-                if (measurementSnapshot != null && File.Exists(exportPath))
-                {
-                    MeasurementDocumentStore.WriteDerivedSidecar(exportPath, measurementSnapshot);
-                }
-                Debug.Log($"[PointCloudEditor] Successfully exported labeled PLY to: {exportPath}");
-            }
-            catch (System.Exception ex)
-            {
-                Debug.LogError($"[PointCloudEditor] Export failed: {ex.Message}");
-            }
-            finally
-            {
-                finishedExportFlag = true;
-            }
-        });
+        _ = RunPointCloudExportAsync("_labeled", ExportPointMode.AllVisible, asBinary,
+            "PLYファイル書き出し", null);
     }
 
-
-    // ノイズ除去（確定非表示）済みの点群を物理的に除外したPLYファイルを非同期エクスポート
     public void ExportCleanedPoints()
     {
-        PointData[] points = targetRenderer.GetPointData();
-        if (points == null || points.Length == 0)
-        {
-            Debug.LogError("[PointCloudEditor] No points to export!");
-            return;
-        }
-        string calibrationMetadata = GetCalibrationPlyMetadata();
-
-        string inputPath = GetLoadedPointCloudPath();
-        string directory = Path.GetDirectoryName(inputPath);
-        string fileNameWithoutExt = Path.GetFileNameWithoutExtension(inputPath);
-        string exportPath = Path.Combine(directory, $"{fileNameWithoutExt}_cleaned.ply");
-        MeasurementDocument measurementSnapshot = CreateMeasurementSnapshotForExport();
-
-        var pm = PointCloudProgressManager.Instance;
-        pm.Start("クリーンアップ済PLYエクスポート", "書き出しデータ準備中...");
-
-        Debug.Log($"[PointCloudEditor] Starting background cleaned PLY export to: {exportPath}");
-
-        Task.Run(() =>
-        {
-            try
-            {
-                var token = pm.CancellationToken;
-                int remainingCount = 0;
-                
-                // 物理非表示（Deleted or NoiseHidden）以外の有効な点をカウント
-                for (int i = 0; i < points.Length; i++)
-                {
-                    if (token.IsCancellationRequested) return;
-                    
-                    int labelVal = points[i].label;
-                    bool isDeleted = (labelVal & 0x20000) != 0;
-                    bool isNoiseHidden = (labelVal & NoiseFilterManager.NOISE_HIDDEN_BIT) != 0;
-                    
-                    if (!isDeleted && !isNoiseHidden) remainingCount++;
-                }
-
-                using (StreamWriter writer = new StreamWriter(exportPath))
-                {
-                    // PLY ASCII Header
-                    writer.WriteLine("ply");
-                    writer.WriteLine("format ascii 1.0");
-                    WriteCalibrationPlyMetadata(writer, calibrationMetadata);
-                    writer.WriteLine($"element vertex {remainingCount}");
-                    writer.WriteLine("property float x");
-                    writer.WriteLine("property float y");
-                    writer.WriteLine("property float z");
-                    writer.WriteLine("property uchar red");
-                    writer.WriteLine("property uchar green");
-                    writer.WriteLine("property uchar blue");
-                    writer.WriteLine("property int label");
-                    writer.WriteLine("end_header");
-
-                    int written = 0;
-                    int progressInterval = Mathf.Max(1000, remainingCount / 100);
-
-                    for (int i = 0; i < points.Length; i++)
-                    {
-                        if (token.IsCancellationRequested)
-                        {
-                            writer.Close();
-                            if (File.Exists(exportPath)) File.Delete(exportPath);
-                            return;
-                        }
-
-                        int labelVal = points[i].label;
-                        bool isDeleted = (labelVal & 0x20000) != 0;
-                        bool isNoiseHidden = (labelVal & NoiseFilterManager.NOISE_HIDDEN_BIT) != 0;
-                        
-                        if (isDeleted || isNoiseHidden) continue; // 物理除外
-
-                        Vector3 pos = points[i].position;
-                        Color32 col = PointData.UnpackColor(points[i].originalColor);
-                        int classId = labelVal & 0xFF; // クラスIDはそのまま書き出す
-
-                        writer.WriteLine($"{pos.x.ToString(CultureInfo.InvariantCulture)} {pos.y.ToString(CultureInfo.InvariantCulture)} {pos.z.ToString(CultureInfo.InvariantCulture)} {col.r} {col.g} {col.b} {classId}");
-                        
-                        written++;
-                        if (written % progressInterval == 0)
-                        {
-                            pm.Update((float)written / remainingCount, $"データを書き出し中... ({written:N0} / {remainingCount:N0} 点)");
-                        }
-                    }
-                }
-
-                if (measurementSnapshot != null && File.Exists(exportPath))
-                {
-                    MeasurementDocumentStore.WriteDerivedSidecar(exportPath, measurementSnapshot);
-                }
-                
-                // 同時に、Python側が出力した removal_report.json があればエクスポートフォルダにコピーする
-                string reportSrc = Path.Combine(Application.dataPath, "../python_backend/output/removal_report.json");
-                string reportDest = Path.Combine(directory, $"{fileNameWithoutExt}_removal_report.json");
-                if (File.Exists(reportSrc))
-                {
-                    File.Copy(reportSrc, reportDest, true);
-                    Debug.Log($"[PointCloudEditor] Copied removal report to: {reportDest}");
-                }
-
-                Debug.Log($"[PointCloudEditor] Successfully exported cleaned PLY with {remainingCount} points to: {exportPath}");
-            }
-            catch (System.Exception ex)
-            {
-                Debug.LogError($"[PointCloudEditor] Cleaned export failed: {ex.Message}");
-            }
-            finally
-            {
-                finishedExportFlag = true;
-            }
-        });
+        string reportSource = Path.GetFullPath(Path.Combine(Application.dataPath, "../python_backend/output/removal_report.json"));
+        _ = RunPointCloudExportAsync("_cleaned", ExportPointMode.CleanedVisible, false,
+            "クリーンアップ済PLYエクスポート", reportSource);
     }
 
-    // 選択されている点群（labelに0x10000ビットが立っている点）のみを物理的に抽出したPLYファイルを非同期エクスポート
     public async Task ExportSelectedPointsAsync(string exportPath, bool asBinary = false, CancellationToken token = default)
     {
         PointData[] points = targetRenderer.GetPointData();
-        if (points == null || points.Length == 0)
-        {
-            throw new System.Exception("No points to export!");
-        }
-        string calibrationMetadata = GetCalibrationPlyMetadata();
-
-        await Task.Run(() =>
-        {
-            int selectedCount = 0;
-            
-            // Count selected points
-            for (int i = 0; i < points.Length; i++)
-            {
-                if (token.IsCancellationRequested) return;
-                bool isSelected = (points[i].label & 0x10000) != 0;
-                // 削除済み、またはノイズ非表示の点は除外する（選択されていても）
-                bool isDeleted = (points[i].label & 0x20000) != 0;
-                bool isNoiseHidden = (points[i].label & 0x80000) != 0;
-                
-                if (isSelected && !isDeleted && !isNoiseHidden) selectedCount++;
-            }
-
-            if (selectedCount == 0)
-            {
-                throw new System.Exception("エクスポート対象の選択された点が存在しません。");
-            }
-
-            if (asBinary)
-            {
-                using (FileStream fs = new FileStream(exportPath, FileMode.Create, FileAccess.Write))
-                using (BinaryWriter binWriter = new BinaryWriter(fs))
-                {
-                    // PLY Header (ASCII characters)
-                    string header = "ply\n" +
-                                    "format binary_little_endian 1.0\n" +
-                                    calibrationMetadata +
-                                    $"element vertex {selectedCount}\n" +
-                                    "property float x\n" +
-                                    "property float y\n" +
-                                    "property float z\n" +
-                                    "property uchar red\n" +
-                                    "property uchar green\n" +
-                                    "property uchar blue\n" +
-                                    "property int label\n" +
-                                    "end_header\n";
-                    
-                    byte[] headerBytes = System.Text.Encoding.ASCII.GetBytes(header);
-                    binWriter.Write(headerBytes);
-
-                    int written = 0;
-                    int progressInterval = Mathf.Max(1000, selectedCount / 100);
-
-                    for (int i = 0; i < points.Length; i++)
-                    {
-                        if (token.IsCancellationRequested)
-                        {
-                            binWriter.Close();
-                            if (File.Exists(exportPath)) File.Delete(exportPath);
-                            return;
-                        }
-
-                        int labelVal = points[i].label;
-                        bool isSelected = (labelVal & 0x10000) != 0;
-                        bool isDeleted = (labelVal & 0x20000) != 0;
-                        bool isNoiseHidden = (labelVal & 0x80000) != 0;
-                        if (!isSelected || isDeleted || isNoiseHidden) continue; // skip unselected or noise
-
-                        Vector3 pos = points[i].position;
-                        Color32 col = PointData.UnpackColor(points[i].originalColor);
-                        int classId = labelVal & 0xFF;
-
-                        binWriter.Write(pos.x);
-                        binWriter.Write(pos.y);
-                        binWriter.Write(pos.z);
-                        binWriter.Write(col.r);
-                        binWriter.Write(col.g);
-                        binWriter.Write(col.b);
-                        binWriter.Write(classId);
-
-                        written++;
-                        if (written % progressInterval == 0)
-                        {
-                            PointCloudProgressManager.Instance.Update((float)written / selectedCount, $"選択データを書き出し中... ({written:N0} / {selectedCount:N0} 点)");
-                        }
-                    }
-                }
-            }
-            else
-            {
-                using (StreamWriter writer = new StreamWriter(exportPath))
-                {
-                    // PLY ASCII Header
-                    writer.WriteLine("ply");
-                    writer.WriteLine("format ascii 1.0");
-                    WriteCalibrationPlyMetadata(writer, calibrationMetadata);
-                    writer.WriteLine($"element vertex {selectedCount}");
-                    writer.WriteLine("property float x");
-                    writer.WriteLine("property float y");
-                    writer.WriteLine("property float z");
-                    writer.WriteLine("property uchar red");
-                    writer.WriteLine("property uchar green");
-                    writer.WriteLine("property uchar blue");
-                    writer.WriteLine("property int label");
-                    writer.WriteLine("end_header");
-
-                    int written = 0;
-                    int progressInterval = Mathf.Max(1000, selectedCount / 100);
-
-                    for (int i = 0; i < points.Length; i++)
-                    {
-                        if (token.IsCancellationRequested)
-                        {
-                            writer.Close();
-                            if (File.Exists(exportPath)) File.Delete(exportPath);
-                            return;
-                        }
-
-                        int labelVal = points[i].label;
-                        bool isSelected = (labelVal & 0x10000) != 0;
-                        bool isDeleted = (labelVal & 0x20000) != 0;
-                        bool isNoiseHidden = (labelVal & 0x80000) != 0;
-                        if (!isSelected || isDeleted || isNoiseHidden) continue; // skip
-
-                        Vector3 pos = points[i].position;
-                        Color32 col = PointData.UnpackColor(points[i].originalColor);
-                        int classId = labelVal & 0xFF;
-
-                        writer.WriteLine($"{pos.x.ToString(CultureInfo.InvariantCulture)} {pos.y.ToString(CultureInfo.InvariantCulture)} {pos.z.ToString(CultureInfo.InvariantCulture)} {col.r} {col.g} {col.b} {classId}");
-                        
-                        written++;
-                        if (written % progressInterval == 0)
-                        {
-                            PointCloudProgressManager.Instance.Update((float)written / selectedCount, $"選択データを書き出し中... ({written:N0} / {selectedCount:N0} 点)");
-                        }
-                    }
-                }
-            }
-        }, token);
+        bool calibrated = !string.IsNullOrEmpty(GetCalibrationPlyMetadata());
+        var request = new PlyExportRequest(points, exportPath, asBinary, calibrated, ExportPointMode.SelectedVisible);
+        await Task.Run(() => PlyExportService.Write(request, token,
+            (progress, message) => PointCloudProgressManager.Instance.Update(progress, message)), token);
     }
 
     public void ExportSelectedPoints(bool asBinary = false)
     {
-        string inputPath = GetLoadedPointCloudPath();
-        string directory = Path.GetDirectoryName(inputPath);
-        string fileNameWithoutExt = Path.GetFileNameWithoutExtension(inputPath);
-        string exportPath = Path.Combine(directory, $"{fileNameWithoutExt}_selected.ply");
-        MeasurementDocument measurementSnapshot = CreateMeasurementSnapshotForExport();
+        _ = RunPointCloudExportAsync("_selected", ExportPointMode.SelectedVisible, asBinary,
+            "選択点PLYファイル書き出し", null);
+    }
 
-        var pm = PointCloudProgressManager.Instance;
-        pm.Start("選択点PLYファイル書き出し", "書き出しデータ準備中...");
+    private async Task RunPointCloudExportAsync(string suffix, ExportPointMode mode, bool asBinary,
+        string operationTitle, string removalReportSource)
+    {
+        PointCloudProgressManager pm = PointCloudProgressManager.Instance;
+        if (!pm.Start(operationTitle, "書き出しデータ準備中...")) return;
 
-        Debug.Log($"[PointCloudEditor] Starting background selected export to: {exportPath} (Binary: {asBinary})");
-
-        Task.Run(async () =>
+        try
         {
-            try
+            string inputPath = GetLoadedPointCloudPath();
+            if (string.IsNullOrWhiteSpace(inputPath)) throw new IOException("ロード中の点群ファイルパスがありません。");
+            string directory = Path.GetDirectoryName(Path.GetFullPath(inputPath));
+            string outputPath = Path.Combine(directory, Path.GetFileNameWithoutExtension(inputPath) + suffix + ".ply");
+            PointData[] points = targetRenderer != null ? targetRenderer.GetPointData() : null;
+            bool calibrated = !string.IsNullOrEmpty(GetCalibrationPlyMetadata());
+            MeasurementDocument measurementSnapshot = CreateMeasurementSnapshotForExport();
+            var request = new PlyExportRequest(points, outputPath, asBinary, calibrated, mode);
+            CancellationToken token = pm.CancellationToken;
+
+            PlyExportResult result = await Task.Run(
+                () => PlyExportService.Write(request, token, (progress, message) => pm.Update(progress, message)), token);
+
+            var warnings = new StringBuilder();
+            var warningDetails = new StringBuilder();
+            if (measurementSnapshot != null)
             {
-                await ExportSelectedPointsAsync(exportPath, asBinary, pm.CancellationToken);
-                if (measurementSnapshot != null && File.Exists(exportPath))
+                try
                 {
-                    MeasurementDocumentStore.WriteDerivedSidecar(exportPath, measurementSnapshot);
+                    await SaveDerivedMeasurementSidecarAsync(result.OutputPath, measurementSnapshot);
                 }
-                Debug.Log($"[PointCloudEditor] Successfully exported selected PLY to: {exportPath}");
+                catch (Exception ex)
+                {
+                    warnings.AppendLine("計測JSONを保存できませんでした。");
+                    warningDetails.AppendLine(ex.ToString());
+                }
             }
-            catch (System.Exception ex)
+
+            if (!string.IsNullOrEmpty(removalReportSource))
             {
-                Debug.LogError($"[PointCloudEditor] Export failed: {ex.Message}");
+                try
+                {
+                    string reportDestination = Path.Combine(directory, Path.GetFileNameWithoutExtension(inputPath) + "_removal_report.json");
+                    await Task.Run(() =>
+                    {
+                        if (File.Exists(removalReportSource)) File.Copy(removalReportSource, reportDestination, true);
+                    });
+                }
+                catch (Exception ex)
+                {
+                    warnings.AppendLine("除去レポートをコピーできませんでした。");
+                    warningDetails.AppendLine(ex.ToString());
+                }
             }
-            finally
+
+            if (warnings.Length > 0)
             {
-                finishedExportFlag = true;
+                string message = "PLY本体は保存済みです。" + Environment.NewLine + warnings.ToString().Trim();
+                string detail = warningDetails.ToString();
+                pm.CompleteWithWarning(message, detail);
+                Debug.LogWarning($"[RecoverableOperationError] {operationTitle}: {message}{Environment.NewLine}{detail}");
+                return;
             }
-        });
+
+            pm.Complete();
+            Debug.Log($"[{operationTitle}] {result.VertexCount:N0} 点を保存しました: {result.OutputPath}");
+        }
+        catch (OperationCanceledException)
+        {
+            pm.CompleteCancelled();
+            Debug.LogWarning($"[{operationTitle}] キャンセルされました。");
+        }
+        catch (Exception ex)
+        {
+            pm.Fail(operationTitle, "PLYを書き出せませんでした。詳細を確認してください。", ex.ToString());
+            Debug.LogWarning($"[RecoverableOperationError] {operationTitle}: {ex}");
+        }
+    }
+
+    private static async Task SaveDerivedMeasurementSidecarAsync(string outputPath, MeasurementDocument snapshot)
+    {
+        MeasurementDocument derived = MeasurementDocumentStore.CreateDerivedDocument(snapshot, outputPath);
+        derived.sourceSha256 = await Task.Run(() => MeasurementDocumentStore.ComputeSha256(outputPath));
+        string json = MeasurementDocumentStore.Serialize(derived);
+        string sidecarPath = MeasurementDocumentStore.GetSidecarPath(outputPath);
+        await Task.Run(() => MeasurementDocumentStore.WriteSerializedAtomic(sidecarPath, json));
     }
 
     // --- ADVANCED SELECTION IMPLEMENTATIONS ---
@@ -2131,45 +1888,37 @@ public class PointCloudEditor : MonoBehaviour
     void ApplyConnectionSelection(int startIdx)
     {
         PointData[] points = targetRenderer.GetPointData();
-        if (points == null || points.Length == 0) return;
-
-        if (startIdx < 0 || startIdx >= points.Length || maxConnectionPoints <= 0) return;
+        if (points == null || points.Length == 0 || startIdx < 0 || startIdx >= points.Length || maxConnectionPoints <= 0) return;
 
         float localRadius = targetRenderer.MillimetersToDataLength(connectionRadius);
         if (float.IsNaN(localRadius) || float.IsInfinity(localRadius) || localRadius <= 0f) return;
-        int maxLimit = maxConnectionPoints;
-        bool selecting = brushSelectMode;
-
         Vector3[] positions = targetRenderer.GetPositions();
+        if (positions == null || positions.Length != points.Length) return;
 
-        var pm = PointCloudProgressManager.Instance;
-        pm.Start("空間近接接続探索", "探索開始...");
+        bool selecting = brushSelectMode;
+        bool onlyUnclassified = selectOnlyUnclassified;
+        int maxLimit = maxConnectionPoints;
+        PointCloudProgressManager pm = PointCloudProgressManager.Instance;
+        if (!pm.Start("空間近接接続探索", "探索開始...")) return;
+        CancellationToken token = pm.CancellationToken;
 
         Task.Run(() =>
         {
+            int[] resultIndices = null;
+            Exception error = null;
             try
             {
-                var token = pm.CancellationToken;
                 int numPoints = points.Length;
                 int numBuckets = numPoints;
-
                 var sw = System.Diagnostics.Stopwatch.StartNew();
                 pm.Update(0f, "セル接続グリッド構築中...");
 
-                float cellSize = localRadius;
-                float invCellSize = 1f / cellSize;
+                float invCellSize = 1f / localRadius;
                 float radiusSquared = localRadius * localRadius;
-
                 lock (this)
                 {
-                    if (connQueue == null || connQueue.Length < numPoints)
-                    {
-                        connQueue = new int[numPoints];
-                    }
-                    if (connCellBucketHead == null || connCellBucketHead.Length < numBuckets)
-                    {
-                        connCellBucketHead = new int[numBuckets];
-                    }
+                    if (connQueue == null || connQueue.Length < numPoints) connQueue = new int[numPoints];
+                    if (connCellBucketHead == null || connCellBucketHead.Length < numBuckets) connCellBucketHead = new int[numBuckets];
                     if (connCellNext == null || connCellNext.Length < numPoints ||
                         connCellX == null || connCellY == null || connCellZ == null ||
                         connCellPointHead == null || connPointNextInCell == null ||
@@ -2185,132 +1934,104 @@ public class PointCloudEditor : MonoBehaviour
                     }
                 }
 
-                System.Array.Fill(connCellBucketHead, -1, 0, numBuckets);
-                System.Array.Fill(connCellNext, -1, 0, numPoints);
-                System.Array.Fill(connCellPointHead, -1, 0, numPoints);
-                System.Array.Fill(connPointNextInCell, -1, 0, numPoints);
-                System.Array.Clear(connPointVisited, 0, numPoints);
+                Array.Fill(connCellBucketHead, -1, 0, numBuckets);
+                Array.Fill(connCellNext, -1, 0, numPoints);
+                Array.Fill(connCellPointHead, -1, 0, numPoints);
+                Array.Fill(connPointNextInCell, -1, 0, numPoints);
+                Array.Clear(connPointVisited, 0, numPoints);
 
                 int cellCount = 0;
                 int startCell = -1;
-
                 for (int i = 0; i < numPoints; i++)
                 {
-                    if (token.IsCancellationRequested) break;
+                    if ((i & 4095) == 0) token.ThrowIfCancellationRequested();
                     if ((points[i].label & 0x20000) != 0) continue;
-
                     Vector3 pos = positions[i];
-                    int vx = Mathf.FloorToInt(pos.x * invCellSize);
-                    int vy = Mathf.FloorToInt(pos.y * invCellSize);
-                    int vz = Mathf.FloorToInt(pos.z * invCellSize);
-                    int h = GetVoxelHash(vx, vy, vz, numBuckets);
-
-                    int cell = connCellBucketHead[h];
-                    while (cell != -1)
-                    {
-                        if (connCellX[cell] == vx && connCellY[cell] == vy && connCellZ[cell] == vz)
-                        {
-                            break;
-                        }
+                    int vx = (int)Math.Floor(pos.x * invCellSize);
+                    int vy = (int)Math.Floor(pos.y * invCellSize);
+                    int vz = (int)Math.Floor(pos.z * invCellSize);
+                    int hash = GetVoxelHash(vx, vy, vz, numBuckets);
+                    int cell = connCellBucketHead[hash];
+                    while (cell != -1 && (connCellX[cell] != vx || connCellY[cell] != vy || connCellZ[cell] != vz))
                         cell = connCellNext[cell];
-                    }
-
                     if (cell == -1)
                     {
                         cell = cellCount++;
-                        connCellX[cell] = vx;
-                        connCellY[cell] = vy;
-                        connCellZ[cell] = vz;
-                        connCellNext[cell] = connCellBucketHead[h];
-                        connCellBucketHead[h] = cell;
+                        connCellX[cell] = vx; connCellY[cell] = vy; connCellZ[cell] = vz;
+                        connCellNext[cell] = connCellBucketHead[hash];
+                        connCellBucketHead[hash] = cell;
                     }
-
                     connPointNextInCell[i] = connCellPointHead[cell];
                     connCellPointHead[cell] = i;
-
-                    if (i == startIdx)
-                    {
-                        startCell = cell;
-                    }
+                    if (i == startIdx) startCell = cell;
                 }
 
-                if (token.IsCancellationRequested || startCell < 0) return;
-
-                pm.Update(0.1f, "セル接続探索中...");
-
-                int queueHead = 0;
-                int qTail = 0;
-                long lastProgressUpdate = 0;
-
-                connQueue[qTail++] = startIdx;
-                connPointVisited[startIdx] = true;
-
-                while (queueHead < qTail && qTail < maxLimit)
+                token.ThrowIfCancellationRequested();
+                if (startCell >= 0)
                 {
-                    if (token.IsCancellationRequested) break;
-
-                    int currentIdx = connQueue[queueHead++];
-                    Vector3 current = positions[currentIdx];
-                    int cx = Mathf.FloorToInt(current.x * invCellSize);
-                    int cy = Mathf.FloorToInt(current.y * invCellSize);
-                    int cz = Mathf.FloorToInt(current.z * invCellSize);
-
-                    for (int dx = -1; dx <= 1; dx++)
-                    for (int dy = -1; dy <= 1; dy++)
-                    for (int dz = -1; dz <= 1; dz++)
+                    pm.Update(0.1f, "セル接続探索中...");
+                    int queueHead = 0;
+                    int qTail = 0;
+                    long lastProgressUpdate = 0;
+                    connQueue[qTail++] = startIdx;
+                    connPointVisited[startIdx] = true;
+                    while (queueHead < qTail && qTail < maxLimit)
                     {
-                        int h = GetVoxelHash(cx + dx, cy + dy, cz + dz, numBuckets);
-                        int neighborCell = connCellBucketHead[h];
-                        while (neighborCell != -1)
+                        token.ThrowIfCancellationRequested();
+                        int currentIdx = connQueue[queueHead++];
+                        Vector3 current = positions[currentIdx];
+                        int cx = (int)Math.Floor(current.x * invCellSize);
+                        int cy = (int)Math.Floor(current.y * invCellSize);
+                        int cz = (int)Math.Floor(current.z * invCellSize);
+                        for (int dx = -1; dx <= 1; dx++)
+                        for (int dy = -1; dy <= 1; dy++)
+                        for (int dz = -1; dz <= 1; dz++)
                         {
-                            if (connCellX[neighborCell] == cx + dx &&
-                                connCellY[neighborCell] == cy + dy &&
-                                connCellZ[neighborCell] == cz + dz)
+                            int hash = GetVoxelHash(cx + dx, cy + dy, cz + dz, numBuckets);
+                            int neighborCell = connCellBucketHead[hash];
+                            while (neighborCell != -1)
                             {
-                                for (int candidateIdx = connCellPointHead[neighborCell];
-                                     candidateIdx != -1 && qTail < maxLimit;
-                                     candidateIdx = connPointNextInCell[candidateIdx])
+                                if (connCellX[neighborCell] == cx + dx && connCellY[neighborCell] == cy + dy && connCellZ[neighborCell] == cz + dz)
                                 {
-                                    if (connPointVisited[candidateIdx]) continue;
-                                    if ((positions[candidateIdx] - current).sqrMagnitude > radiusSquared) continue;
-                                    connPointVisited[candidateIdx] = true;
-                                    connQueue[qTail++] = candidateIdx;
+                                    for (int candidate = connCellPointHead[neighborCell]; candidate != -1 && qTail < maxLimit;
+                                         candidate = connPointNextInCell[candidate])
+                                    {
+                                        if (connPointVisited[candidate]) continue;
+                                        if ((positions[candidate] - current).sqrMagnitude > radiusSquared) continue;
+                                        connPointVisited[candidate] = true;
+                                        connQueue[qTail++] = candidate;
+                                    }
                                 }
+                                neighborCell = connCellNext[neighborCell];
                             }
-                            neighborCell = connCellNext[neighborCell];
+                        }
+                        long elapsed = sw.ElapsedMilliseconds;
+                        if (elapsed - lastProgressUpdate > 100)
+                        {
+                            lastProgressUpdate = elapsed;
+                            pm.Update(0.1f + 0.8f * ((float)qTail / maxLimit),
+                                $"実距離による接続探索中... 対象点: {qTail:N0} / {maxLimit:N0} 点");
                         }
                     }
-
-                    long elapsed = sw.ElapsedMilliseconds;
-                    if (elapsed - lastProgressUpdate > 100)
-                    {
-                        lastProgressUpdate = elapsed;
-                        float progress = 0.1f + 0.8f * ((float)qTail / maxLimit);
-                        pm.Update(progress, $"実距離による接続探索中... 対象点: {qTail:N0} / {maxLimit:N0} 点");
-                    }
-                }
-
-                if (!token.IsCancellationRequested && qTail > 0)
-                {
-                    pm.Update(0.95f, "選択データを点群に適用中...");
-                    for (int i = 0; i < qTail; i++)
-                    {
-                        int idx = connQueue[i];
-                        int label = points[idx].label;
-                        if (selecting && selectOnlyUnclassified && (label & 0xFF) != 0) continue;
-                        if (selecting) label |= 0x10000;
-                        else label &= ~0x10000;
-                        points[idx].label = label;
-                    }
-                    Debug.Log($"[PointCloudEditor] Euclidean connection selection completed. Found {qTail} points. Elapsed: {sw.ElapsedMilliseconds} ms.");
+                    token.ThrowIfCancellationRequested();
+                    resultIndices = new int[qTail];
+                    Array.Copy(connQueue, resultIndices, qTail);
                 }
             }
-            catch (System.Exception ex)
-            {
-                Debug.LogError($"[PointCloudEditor] Connection selection failed: {ex.Message}");
-            }
+            catch (OperationCanceledException) { }
+            catch (Exception ex) { error = ex; }
             finally
             {
+                connectionResult = new BackgroundSelectionResult
+                {
+                    Indices = resultIndices,
+                    SourcePoints = points,
+                    Selecting = selecting,
+                    SelectOnlyUnclassified = onlyUnclassified,
+                    Cancelled = token.IsCancellationRequested,
+                    Error = error,
+                    OperationTitle = "空間近接接続探索"
+                };
                 finishedConnectionFlag = true;
             }
         });
@@ -2349,14 +2070,15 @@ public class PointCloudEditor : MonoBehaviour
         Vector3 localForward = trans.InverseTransformDirection(camForwardWorld).normalized;
 
         var pm = PointCloudProgressManager.Instance;
-        pm.Start($"RANSAC検出 ({type})", "点群データを解析中...");
+        if (!pm.Start($"RANSAC検出 ({type})", "点群データを解析中...")) return;
+        CancellationToken token = pm.CancellationToken;
+        bool[] resultMask = null;
+        Exception operationError = null;
 
         Task.Run(() =>
         {
             try
             {
-                var token = pm.CancellationToken;
-
                 List<int> activeIndices = new List<int>(points.Length / 2);
                 List<int> selectedIndices = new List<int>(points.Length / 100);
 
@@ -2377,8 +2099,7 @@ public class PointCloudEditor : MonoBehaviour
 
                 if (activeIndices.Count < 3)
                 {
-                    pm.Complete();
-                    return;
+                    throw new InvalidOperationException("RANSACには3点以上の有効な点が必要です。");
                 }
 
                 bool isSelectedPointFit = (selectedIndices.Count >= 3);
@@ -2446,7 +2167,7 @@ public class PointCloudEditor : MonoBehaviour
                     pcaUp = v.normalized;
 
                     // 4. 選択された点群からPCA軸までの平均距離 (rEst) を算出（座標系のスケールを自動抽出）
-                    Vector3 rAxis = Vector3.Cross(pcaUp, Mathf.Abs(pcaUp.y) > 0.9f ? Vector3.right : Vector3.up).normalized;
+                    Vector3 rAxis = Vector3.Cross(pcaUp, Math.Abs(pcaUp.y) > 0.9f ? Vector3.right : Vector3.up).normalized;
                     Vector3 fAxis = Vector3.Cross(rAxis, pcaUp).normalized;
                     float totalDist = 0f;
                     Vector2 meanProj = new Vector2(Vector3.Dot(mean, rAxis), Vector3.Dot(mean, fAxis));
@@ -2469,7 +2190,7 @@ public class PointCloudEditor : MonoBehaviour
                 Vector2 bestCylinderCenter = Vector2.zero;
                 float bestCylinderRadius = 0f;
                 Vector3 bestCylinderUp = pcaUp;
-                Vector3 bestCylinderRight = Vector3.Cross(pcaUp, Mathf.Abs(pcaUp.y) > 0.9f ? Vector3.right : Vector3.up).normalized;
+                Vector3 bestCylinderRight = Vector3.Cross(pcaUp, Math.Abs(pcaUp.y) > 0.9f ? Vector3.right : Vector3.up).normalized;
                 Vector3 bestCylinderForward = Vector3.Cross(bestCylinderRight, pcaUp).normalized;
 
                 int iterations = 250;
@@ -2526,7 +2247,7 @@ public class PointCloudEditor : MonoBehaviour
                         {
                             int idx = activeIndices[i];
                             Vector3 p = positions[idx];
-                            float dist = Mathf.Abs(planeEq.x * p.x + planeEq.y * p.y + planeEq.z * p.z + planeEq.w);
+                            float dist = (float)Math.Abs(planeEq.x * p.x + planeEq.y * p.y + planeEq.z * p.z + planeEq.w);
                             if (dist < localTolerance)
                             {
                                 currentInlierCount++;
@@ -2546,7 +2267,7 @@ public class PointCloudEditor : MonoBehaviour
                 else
                 {
                     // PCA軸に直交する基底を作る
-                    Vector3 uAxis = Vector3.Cross(pcaUp, Mathf.Abs(pcaUp.y) > 0.9f ? Vector3.right : Vector3.up).normalized;
+                    Vector3 uAxis = Vector3.Cross(pcaUp, Math.Abs(pcaUp.y) > 0.9f ? Vector3.right : Vector3.up).normalized;
                     Vector3 vAxis = Vector3.Cross(pcaUp, uAxis).normalized;
 
                     Parallel.For(0, iterations, (iter, state) =>
@@ -2575,12 +2296,12 @@ public class PointCloudEditor : MonoBehaviour
                         var rand = new System.Random(System.Guid.NewGuid().GetHashCode() + iter);
 
                         // PCA軸からの揺らぎ（最大5度）を考慮した localUp_iter の生成
-                        float maxAngleRad = 5f * Mathf.Deg2Rad;
+                        float maxAngleRad = (float)(5.0 * Math.PI / 180.0);
                         float theta = (float)(rand.NextDouble() * maxAngleRad);
-                        float phi = (float)(rand.NextDouble() * 2.0 * Mathf.PI);
+                        float phi = (float)(rand.NextDouble() * 2.0 * Math.PI);
 
                         // 傾斜した軸ベクトル
-                        Vector3 localUp_iter = (pcaUp * Mathf.Cos(theta) + (uAxis * Mathf.Cos(phi) + vAxis * Mathf.Sin(phi)) * Mathf.Sin(theta)).normalized;
+                        Vector3 localUp_iter = (pcaUp * (float)Math.Cos(theta) + (uAxis * (float)Math.Cos(phi) + vAxis * (float)Math.Sin(phi)) * (float)Math.Sin(theta)).normalized;
 
                         // localUp_iter に直交する直交座標系 (localRight_iter, localForward_iter) を構築
                         Vector3 localRight_iter = Vector3.Cross(localUp_iter, localForward).normalized;
@@ -2612,7 +2333,7 @@ public class PointCloudEditor : MonoBehaviour
                             Vector2.SqrMagnitude(c - a) < minDistSqr) return;
 
                         float dVal = 2f * (a.x * (b.y - c.y) + b.x * (c.y - a.y) + c.x * (a.y - b.y));
-                        if (Mathf.Abs(dVal) < 0.0001f) return;
+                        if (Math.Abs(dVal) < 0.0001f) return;
 
                         float xc = ((a.x * a.x + a.y * a.y) * (b.y - c.y) + (b.x * b.x + b.y * b.y) * (c.y - a.y) + (c.x * c.x + c.y * c.y) * (a.y - b.y)) / dVal;
                         float zc = ((a.x * a.x + a.y * a.y) * (c.x - b.x) + (b.x * b.x + b.y * b.y) * (a.x - c.x) + (c.x * c.x + c.y * c.y) * (b.x - a.x)) / dVal;
@@ -2624,7 +2345,7 @@ public class PointCloudEditor : MonoBehaviour
                         if (radius < rEst * 0.4f || radius > rEst * 2.0f) return;
 
                         // インライア判定の誤差許容度（REstの0.5倍以下に動的制限し、植物侵入を排除）
-                        float toleranceWithSlack = Mathf.Min(localTolerance * 1.5f, rEst * 0.5f);
+                        float toleranceWithSlack = Math.Min(localTolerance * 1.5f, rEst * 0.5f);
 
                         // 母集団 fitSourceIndices に対してインライア数を数える
                         int currentInlierCount = 0;
@@ -2634,7 +2355,7 @@ public class PointCloudEditor : MonoBehaviour
                             Vector3 p = positions[idx];
                             Vector2 projP = new Vector2(Vector3.Dot(p, localRight_iter), Vector3.Dot(p, localForward_iter));
                             float distFromCenter = Vector2.Distance(projP, center);
-                            float error = Mathf.Abs(distFromCenter - radius);
+                            float error = (float)Math.Abs(distFromCenter - radius);
 
                             if (error < toleranceWithSlack)
                             {
@@ -2645,7 +2366,7 @@ public class PointCloudEditor : MonoBehaviour
                                     float rDiff = (float)col.r - targetAvgColor.r;
                                     float gDiff = (float)col.g - targetAvgColor.g;
                                     float bDiff = (float)col.b - targetAvgColor.b;
-                                    float colorDist = Mathf.Sqrt(rDiff * rDiff + gDiff * gDiff + bDiff * bDiff);
+                                    float colorDist = (float)Math.Sqrt(rDiff * rDiff + gDiff * gDiff + bDiff * bDiff);
                                     if (colorDist > colorTol) continue;
                                 }
                                 currentInlierCount++;
@@ -2672,9 +2393,9 @@ public class PointCloudEditor : MonoBehaviour
                     pm.Update(0.95f, "適合データを点群に適用中...");
                     
                     // 円柱時の許容誤差を rEst * 0.5f に自動的に引き締め
-                    float toleranceWithSlack = (type == RansacType.Plane) ? localTolerance * 1.5f : Mathf.Min(localTolerance * 1.5f, rEst * 0.5f);
+                    float toleranceWithSlack = (type == RansacType.Plane) ? localTolerance * 1.5f : Math.Min(localTolerance * 1.5f, rEst * 0.5f);
 
-                    // Final extraction of best model's inliers in parallel (点群全体 activeIndices に適用)
+                    resultMask = new bool[points.Length];
                     Parallel.For(0, activeIndices.Count, i =>
                     {
                         int idx = activeIndices[i];
@@ -2683,13 +2404,13 @@ public class PointCloudEditor : MonoBehaviour
 
                         if (type == RansacType.Plane)
                         {
-                            dist = Mathf.Abs(bestPlaneEq.x * p.x + bestPlaneEq.y * p.y + bestPlaneEq.z * p.z + bestPlaneEq.w);
+                            dist = (float)Math.Abs(bestPlaneEq.x * p.x + bestPlaneEq.y * p.y + bestPlaneEq.z * p.z + bestPlaneEq.w);
                         }
                         else
                         {
                             Vector2 projP = new Vector2(Vector3.Dot(p, bestCylinderRight), Vector3.Dot(p, bestCylinderForward));
                             float distFromCenter = Vector2.Distance(projP, bestCylinderCenter);
-                            dist = Mathf.Abs(distFromCenter - bestCylinderRadius);
+                            dist = (float)Math.Abs(distFromCenter - bestCylinderRadius);
                         }
 
                         float allowedTolerance = (type == RansacType.Plane) ? localTolerance : toleranceWithSlack;
@@ -2703,25 +2424,33 @@ public class PointCloudEditor : MonoBehaviour
                                 float rDiff = (float)col.r - targetAvgColor.r;
                                 float gDiff = (float)col.g - targetAvgColor.g;
                                 float bDiff = (float)col.b - targetAvgColor.b;
-                                float colorDist = Mathf.Sqrt(rDiff * rDiff + gDiff * gDiff + bDiff * bDiff);
+                                float colorDist = (float)Math.Sqrt(rDiff * rDiff + gDiff * gDiff + bDiff * bDiff);
                                 if (colorDist > colorTol) return;
                             }
 
-                            int label = points[idx].label;
-                            if (selecting) label |= 0x10000;
-                            else label &= ~0x10000;
-                            points[idx].label = label;
+                            resultMask[idx] = true;
                         }
                     });
-                    Debug.Log($"[RANSAC] Finished RANSAC detection ({type}). Fitted {bestInlierCount} points.");
                 }
             }
-            catch (System.Exception ex)
+            catch (OperationCanceledException)
             {
-                Debug.LogError($"[PointCloudEditor] RANSAC failed: {ex.Message}");
+            }
+            catch (Exception ex)
+            {
+                operationError = ex;
             }
             finally
             {
+                ransacResult = new BackgroundSelectionResult
+                {
+                    Mask = resultMask,
+                    SourcePoints = points,
+                    Selecting = selecting,
+                    Cancelled = token.IsCancellationRequested,
+                    Error = operationError,
+                    OperationTitle = $"RANSAC検出 ({type})"
+                };
                 finishedRansacFlag = true;
             }
         });
@@ -2736,24 +2465,20 @@ public class PointCloudEditor : MonoBehaviour
         for (int i = 0; i < points.Length; i++)
         {
             int label = points[i].label;
-            if ((label & 0x20000) != 0) continue;
-            if ((label & 0x10000) != 0)
-            {
-                selectedIndices.Add(i);
-            }
+            if ((label & 0x20000) == 0 && (label & 0x10000) != 0) selectedIndices.Add(i);
         }
-
         if (selectedIndices.Count < 12)
         {
-            Debug.LogWarning("[SupportCylinder] 先に支柱の一部だけを12点以上選択してください。");
+            PointCloudProgressManager.Instance.ShowError("支柱抽出", "先に支柱の一部を12点以上選択してください。");
             return;
         }
 
         string inputPath = GetLoadedPointCloudPath();
-
         if (string.IsNullOrEmpty(inputPath) || !File.Exists(inputPath))
         {
-            Debug.LogError($"[SupportCylinder] 現在ロード中のPLYファイルが見つかりません: {inputPath}");
+            var error = new FileNotFoundException("現在ロード中のPLYファイルが見つかりません。", inputPath);
+            PointCloudProgressManager.Instance.Fail("支柱抽出", error.Message, error.ToString());
+            Debug.LogWarning($"[RecoverableOperationError] 支柱抽出: {error}");
             return;
         }
 
@@ -2766,38 +2491,43 @@ public class PointCloudEditor : MonoBehaviour
         string backendDir = Path.GetFullPath(Path.Combine(Application.dataPath, "../python_backend"));
         string outputDir = Path.Combine(backendDir, "output_support");
         string seedPath = Path.Combine(outputDir, "support_seed_indices.bin");
+        string maskPath = Path.Combine(outputDir, "support_mask.bin");
         string scriptPath = Path.Combine(backendDir, "run_support_cylinder.py");
         string pythonPath = Path.Combine(backendDir, ".venv/Scripts/python.exe");
         if (!File.Exists(pythonPath)) pythonPath = "python";
 
-        Directory.CreateDirectory(outputDir);
-        using (BinaryWriter writer = new BinaryWriter(File.Open(seedPath, FileMode.Create, FileAccess.Write)))
+        PointCloudProgressManager pm = PointCloudProgressManager.Instance;
+        if (!pm.Start("支柱抽出 Python", "Pythonバックエンドを起動中...")) return;
+        CancellationToken token = pm.CancellationToken;
+        _ = RunSupportCylinderAsync(points, selectedIndices.ToArray(), inputPath, seedPath, maskPath,
+            outputDir, scriptPath, pythonPath, coordinateScaleToMm, tubeMultiplier, colorTolerance,
+            heightBinMultiplier, maxEmptyBins, selecting, token);
+    }
+
+    private async Task RunSupportCylinderAsync(PointData[] points, int[] seedIndices, string inputPath,
+        string seedPath, string maskPath, string outputDir, string scriptPath, string pythonPath,
+        float coordinateScaleToMm, float tubeMultiplier, float colorTolerance, float heightBinMultiplier,
+        int maxEmptyBins, bool selecting, CancellationToken token)
+    {
+        PointCloudProgressManager pm = PointCloudProgressManager.Instance;
+        try
         {
-            for (int i = 0; i < selectedIndices.Count; i++)
+            byte[] mask = await Task.Run(() =>
             {
-                writer.Write(selectedIndices[i]);
-            }
-        }
+                Directory.CreateDirectory(outputDir);
+                using (BinaryWriter writer = new BinaryWriter(File.Open(seedPath, FileMode.Create, FileAccess.Write)))
+                    for (int i = 0; i < seedIndices.Length; i++) writer.Write(seedIndices[i]);
 
-        var pm = PointCloudProgressManager.Instance;
-        pm.Start("支柱抽出 Python", "Pythonバックエンドを起動中...");
-
-        Task.Run(() =>
-        {
-            try
-            {
-                string args =
-                    $"-u \"{scriptPath}\"" +
-                    $" --input \"{inputPath}\"" +
-                    $" --seed_indices \"{seedPath}\"" +
-                    $" --output_dir \"{outputDir}\"" +
-                    $" --coordinate-scale-to-mm {coordinateScaleToMm.ToString(CultureInfo.InvariantCulture)}" +
-                    $" --tube_multiplier {tubeMultiplier.ToString(CultureInfo.InvariantCulture)}" +
-                    $" --color_tolerance {colorTolerance.ToString(CultureInfo.InvariantCulture)}" +
-                    $" --height_bin_multiplier {heightBinMultiplier.ToString(CultureInfo.InvariantCulture)}" +
-                    $" --max_empty_bins {maxEmptyBins}";
-
-                System.Diagnostics.ProcessStartInfo psi = new System.Diagnostics.ProcessStartInfo
+                string args = $"-u \"{scriptPath}\"" +
+                              $" --input \"{inputPath}\"" +
+                              $" --seed_indices \"{seedPath}\"" +
+                              $" --output_dir \"{outputDir}\"" +
+                              $" --coordinate-scale-to-mm {coordinateScaleToMm.ToString(CultureInfo.InvariantCulture)}" +
+                              $" --tube_multiplier {tubeMultiplier.ToString(CultureInfo.InvariantCulture)}" +
+                              $" --color_tolerance {colorTolerance.ToString(CultureInfo.InvariantCulture)}" +
+                              $" --height_bin_multiplier {heightBinMultiplier.ToString(CultureInfo.InvariantCulture)}" +
+                              $" --max_empty_bins {maxEmptyBins}";
+                var startInfo = new System.Diagnostics.ProcessStartInfo
                 {
                     FileName = pythonPath,
                     Arguments = args,
@@ -2808,86 +2538,78 @@ public class PointCloudEditor : MonoBehaviour
                     StandardOutputEncoding = Encoding.UTF8,
                     StandardErrorEncoding = Encoding.UTF8
                 };
-
-                Debug.Log($"[SupportCylinder] Python command: {pythonPath} {args}");
-
-                StringBuilder outLog = new StringBuilder();
-                StringBuilder errLog = new StringBuilder();
-                using (System.Diagnostics.Process process = new System.Diagnostics.Process())
+                var stdout = new StringBuilder();
+                var stderr = new StringBuilder();
+                object logLock = new object();
+                using (var process = new System.Diagnostics.Process { StartInfo = startInfo })
                 {
-                    process.StartInfo = psi;
-                    process.OutputDataReceived += (sender, e) =>
+                    process.OutputDataReceived += (_, e) =>
                     {
                         if (e.Data == null) return;
-                        outLog.AppendLine(e.Data);
-                        Debug.Log($"[SupportCylinder Out] {e.Data}");
-                        if (e.Data.StartsWith("[Progress]"))
+                        lock (logLock) stdout.AppendLine(e.Data);
+                        if (e.Data.StartsWith("[Progress]", StringComparison.Ordinal))
                         {
                             string rest = e.Data.Substring(10).Trim();
                             int split = rest.IndexOf(' ');
-                            if (split > 0 &&
-                                float.TryParse(rest.Substring(0, split), NumberStyles.Any, CultureInfo.InvariantCulture, out float pct))
-                            {
-                                pm.Update(0.05f + 0.85f * (pct / 100f), rest.Substring(split + 1));
-                            }
+                            if (split > 0 && float.TryParse(rest.Substring(0, split), NumberStyles.Any,
+                                CultureInfo.InvariantCulture, out float percent))
+                                pm.Update(0.05f + 0.85f * (percent / 100f), rest.Substring(split + 1));
                         }
                     };
-                    process.ErrorDataReceived += (sender, e) =>
+                    process.ErrorDataReceived += (_, e) =>
                     {
-                        if (e.Data == null) return;
-                        errLog.AppendLine(e.Data);
-                        Debug.LogError($"[SupportCylinder Err] {e.Data}");
+                        if (e.Data != null) lock (logLock) stderr.AppendLine(e.Data);
                     };
-
-                    if (!process.Start())
-                    {
-                        throw new System.Exception("Python支柱抽出プロセスの開始に失敗しました。");
-                    }
+                    if (!process.Start()) throw new InvalidOperationException("Python支柱抽出プロセスを開始できませんでした。");
                     process.BeginOutputReadLine();
                     process.BeginErrorReadLine();
-                    process.WaitForExit();
+                    try
+                    {
+                        while (!process.WaitForExit(100)) token.ThrowIfCancellationRequested();
+                        process.WaitForExit();
+                    }
+                    catch (OperationCanceledException)
+                    {
+                        try { if (!process.HasExited) process.Kill(); } catch { }
+                        process.WaitForExit();
+                        throw;
+                    }
 
                     if (process.ExitCode != 0)
                     {
-                        throw new System.Exception($"Python支柱抽出がエラーで終了しました (ExitCode: {process.ExitCode})\n{errLog}\n{outLog}");
+                        string outText;
+                        string errorText;
+                        lock (logLock) { outText = stdout.ToString(); errorText = stderr.ToString(); }
+                        throw new InvalidOperationException(
+                            $"Python支柱抽出がエラーで終了しました (ExitCode: {process.ExitCode})\n[stderr]\n{errorText}\n[stdout]\n{outText}");
                     }
                 }
 
-                string maskPath = Path.Combine(outputDir, "support_mask.bin");
-                if (!File.Exists(maskPath))
-                {
-                    throw new FileNotFoundException($"support_mask.bin が見つかりません: {maskPath}");
-                }
+                token.ThrowIfCancellationRequested();
+                if (!File.Exists(maskPath)) throw new FileNotFoundException("support_mask.bin が見つかりません。", maskPath);
+                byte[] result = File.ReadAllBytes(maskPath);
+                if (result.Length != points.Length)
+                    throw new InvalidDataException($"支柱マスクの点数が一致しません。mask={result.Length}, points={points.Length}");
+                return result;
+            }, token);
 
-                byte[] mask = File.ReadAllBytes(maskPath);
-                if (mask.Length != points.Length)
-                {
-                    throw new System.Exception($"support_mask.bin の点数が一致しません。mask={mask.Length}, points={points.Length}");
-                }
-
-                pm.Update(0.95f, "支柱選択結果をUnityへ反映中...");
-                int changed = 0;
-                for (int i = 0; i < points.Length; i++)
-                {
-                    if (mask[i] == 0) continue;
-                    int label = points[i].label;
-                    int nextLabel = selecting ? (label | 0x10000) : (label & ~0x10000);
-                    if (nextLabel == label) continue;
-                    points[i].label = nextLabel;
-                    changed++;
-                }
-
-                Debug.Log($"[SupportCylinder] Python mask applied. changed={changed:N0}, seed={selectedIndices.Count:N0}");
-            }
-            catch (System.Exception ex)
+            ApplyBackgroundSelectionResult(new BackgroundSelectionResult
             {
-                Debug.LogError($"[SupportCylinder] Python支柱抽出に失敗しました: {ex.Message}");
-            }
-            finally
-            {
-                finishedRansacFlag = true;
-            }
-        });
+                Mask = Array.ConvertAll(mask, value => value != 0),
+                SourcePoints = points,
+                Selecting = selecting,
+                OperationTitle = "支柱抽出"
+            });
+        }
+        catch (OperationCanceledException)
+        {
+            pm.CompleteCancelled("支柱抽出をキャンセルしました。選択状態は変更していません。");
+        }
+        catch (Exception ex)
+        {
+            pm.Fail("支柱抽出", "Pythonによる支柱抽出に失敗しました。選択状態は変更していません。", ex.ToString());
+            Debug.LogWarning($"[RecoverableOperationError] 支柱抽出: {ex}");
+        }
     }
 
     public void ApplyAttributeFilterSelection()
@@ -2924,13 +2646,13 @@ public class PointCloudEditor : MonoBehaviour
             else if (filterType == FilterType.Redness)
             {
                 Color32 c = PointData.UnpackColor(points[i].originalColor);
-                val = (float)c.r / Mathf.Max(1f, (float)c.g + c.b);
+                val = (float)c.r / Math.Max(1f, (float)c.g + c.b);
                 pass = (val >= filterMin && val <= filterMax);
             }
             else if (filterType == FilterType.Greenness)
             {
                 Color32 c = PointData.UnpackColor(points[i].originalColor);
-                val = (float)c.g / Mathf.Max(1f, (float)c.r + c.b);
+                val = (float)c.g / Math.Max(1f, (float)c.r + c.b);
                 pass = (val >= filterMin && val <= filterMax);
             }
 
@@ -3000,7 +2722,8 @@ public class PointCloudEditor : MonoBehaviour
             measurementFingerprintPending = false;
             measurementFingerprintTask = null;
             measurementStatus = $"計測JSONを読み込めません: {ex.Message}";
-            Debug.LogError($"[Measurement] {measurementStatus}");
+            PointCloudProgressManager.Instance.ShowError("計測JSON", measurementStatus);
+            Debug.LogWarning($"[RecoverableOperationError] {measurementStatus}\n{ex}");
         }
         UpdateMeasureVisuals();
     }
@@ -3015,7 +2738,8 @@ public class PointCloudEditor : MonoBehaviour
         if (completed.IsFaulted)
         {
             measurementStatus = "点群ファイルの照合に失敗しました。";
-            Debug.LogError($"[Measurement] Fingerprint failed: {completed.Exception}");
+            PointCloudProgressManager.Instance.ShowError("計測データ照合", measurementStatus);
+            Debug.LogWarning($"[RecoverableOperationError] {measurementStatus}\n{completed.Exception}");
             return;
         }
 
@@ -3358,7 +3082,8 @@ public class PointCloudEditor : MonoBehaviour
         {
             measurementDocumentDirty = true;
             measurementStatus = $"保存に失敗しました: {ex.Message}";
-            Debug.LogError($"[Measurement] {measurementStatus}");
+            PointCloudProgressManager.Instance.ShowError("計測データ保存", measurementStatus);
+            Debug.LogWarning($"[RecoverableOperationError] {measurementStatus}\n{ex}");
             return false;
         }
     }

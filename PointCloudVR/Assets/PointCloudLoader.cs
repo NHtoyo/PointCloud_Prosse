@@ -187,7 +187,7 @@ public class PointCloudLoader : MonoBehaviour
         }
         catch (System.Exception ex)
         {
-            Debug.LogError($"[PointCloudLoader] Point-cloud loaded listener failed: {ex.Message}");
+            Debug.LogWarning($"[RecoverableOperationError] Point-cloud loaded listener failed: {ex}");
         }
         return true;
     }
@@ -196,7 +196,9 @@ public class PointCloudLoader : MonoBehaviour
     {
         if (!File.Exists(filePath))
         {
-            Debug.LogError($"[PointCloudLoader] File not found at: {filePath}");
+            const string message = "指定した点群ファイルが見つかりません。ファイル選択を確認してください。";
+            PointCloudWorkbench.PointCloudProgressManager.Instance.ShowError("点群読み込み", message);
+            Debug.LogWarning($"[RecoverableOperationError] {message} Path: {filePath}");
             return;
         }
 
@@ -208,14 +210,23 @@ public class PointCloudLoader : MonoBehaviour
 
         PointData[] loadedPoints = null;
         parsedCoordinatesAreScaleCalibrated = false;
-
-        if (extension == ".ply")
+        try
         {
-            loadedPoints = ParsePLY(filePath);
+            if (extension == ".ply")
+            {
+                loadedPoints = ParsePLY(filePath);
+            }
+            else
+            {
+                loadedPoints = ParseTXT(filePath);
+            }
         }
-        else
+        catch (System.Exception ex)
         {
-            loadedPoints = ParseTXT(filePath);
+            string message = $"点群ファイルを読み込めませんでした: {Path.GetFileName(filePath)}";
+            PointCloudWorkbench.PointCloudProgressManager.Instance.ShowError("点群読み込み", message);
+            Debug.LogWarning($"[RecoverableOperationError] {message}{System.Environment.NewLine}{ex}");
+            return;
         }
 
         bool sourceScaleIsCalibrated = parsedCoordinatesAreScaleCalibrated || PointCloudScaleService.IsCalibratedPointCloud(filePath);
@@ -254,7 +265,7 @@ public class PointCloudLoader : MonoBehaviour
                 }
                 catch (System.Exception ex)
                 {
-                    Debug.LogError($"[PointCloudLoader] Point-cloud loaded listener failed: {ex.Message}");
+                    Debug.LogWarning($"[RecoverableOperationError] Point-cloud loaded listener failed: {ex}");
                 }
             }
             else
@@ -281,7 +292,7 @@ public class PointCloudLoader : MonoBehaviour
             }
             catch (System.Exception ex)
             {
-                Debug.LogError($"[PointCloudLoader] Point-cloud change listener failed: {ex.Message}");
+                Debug.LogWarning($"[RecoverableOperationError] Point-cloud change listener failed: {ex}");
                 return false;
             }
         }
@@ -386,8 +397,7 @@ public class PointCloudLoader : MonoBehaviour
 
         if (vertexCount <= 0)
         {
-            Debug.LogError("[PointCloudLoader] No vertices found in PLY header.");
-            return null;
+            throw new InvalidDataException("PLYヘッダーに頂点数がありません。");
         }
 
         int countToLoad = Mathf.Min(vertexCount, maxPointsToLoad);

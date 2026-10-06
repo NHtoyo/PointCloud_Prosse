@@ -174,7 +174,9 @@ namespace PointCloudWorkbench
                 catch (System.Exception ex)
                 {
                     resultExportStatus = $"CSV出力に失敗: {ex.Message}";
-                    Debug.LogError($"[Measurement] {resultExportStatus}");
+                    const string message = "計測結果CSVを書き出せませんでした。";
+                    PointCloudProgressManager.Instance.ShowError("計測結果CSV", message);
+                    Debug.LogWarning($"[RecoverableOperationError] {message}{System.Environment.NewLine}{ex}");
                 }
             }
             if (!string.IsNullOrEmpty(resultExportStatus))

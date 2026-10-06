@@ -60,6 +60,24 @@ namespace PointCloudWorkbench
             return Path.GetFullPath(Path.Combine(Application.dataPath, ".."));
         }
 
+        private static async Task TerminateAndWaitAsync(Process process)
+        {
+            try
+            {
+                if (!process.HasExited) process.Kill();
+            }
+            catch (InvalidOperationException)
+            {
+                if (!process.HasExited) throw;
+            }
+            catch (System.ComponentModel.Win32Exception)
+            {
+                if (!process.HasExited) throw;
+            }
+
+            await Task.Run(() => process.WaitForExit());
+        }
+
         private static string ResolveProjectPath(string path)
         {
             if (string.IsNullOrWhiteSpace(path))
@@ -198,16 +216,31 @@ namespace PointCloudWorkbench
                     FileName = command,
                     Arguments = arguments,
                     UseShellExecute = false,
-                    CreateNoWindow = true,
-                    RedirectStandardOutput = true,
-                    RedirectStandardError = true
+                    CreateNoWindow = true
                 };
                 using (Process p = Process.Start(psi))
                 {
                     if (p == null) return false;
-                    await Task.Run(() => p.WaitForExit(), cancellationToken);
+                    try
+                    {
+                        while (!p.HasExited)
+                        {
+                            cancellationToken.ThrowIfCancellationRequested();
+                            await Task.Delay(100);
+                        }
+                        await Task.Run(() => p.WaitForExit());
+                    }
+                    catch (OperationCanceledException)
+                    {
+                        await TerminateAndWaitAsync(p);
+                        throw;
+                    }
                     return p.ExitCode == 0;
                 }
+            }
+            catch (OperationCanceledException)
+            {
+                throw;
             }
             catch
             {
@@ -217,39 +250,48 @@ namespace PointCloudWorkbench
 
         private static async Task<bool> RunCommandAsync(string command, string arguments, string workingDir, CancellationToken cancellationToken)
         {
-            try
+            ProcessStartInfo psi = new ProcessStartInfo
             {
-                ProcessStartInfo psi = new ProcessStartInfo
+                FileName = command,
+                Arguments = arguments,
+                WorkingDirectory = workingDir,
+                UseShellExecute = false,
+                CreateNoWindow = true,
+                RedirectStandardOutput = true,
+                RedirectStandardError = true
+            };
+            var stdout = new StringBuilder();
+            var stderr = new StringBuilder();
+            object logLock = new object();
+            using (Process process = new Process())
+            {
+                process.StartInfo = psi;
+                process.OutputDataReceived += (_, e) => { if (e.Data != null) lock (logLock) stdout.AppendLine(e.Data); };
+                process.ErrorDataReceived += (_, e) => { if (e.Data != null) lock (logLock) stderr.AppendLine(e.Data); };
+                if (!process.Start()) throw new InvalidOperationException($"プロセスを開始できません: {command}");
+                process.BeginOutputReadLine();
+                process.BeginErrorReadLine();
+                while (!process.HasExited)
                 {
-                    FileName = command,
-                    Arguments = arguments,
-                    WorkingDirectory = workingDir,
-                    UseShellExecute = false,
-                    CreateNoWindow = true,
-                    RedirectStandardOutput = true,
-                    RedirectStandardError = true
-                };
-                using (Process p = Process.Start(psi))
-                {
-                    if (p == null) return false;
-
-                    p.OutputDataReceived += (s, e) => { if (e.Data != null) UnityEngine.Debug.Log($"[Env Setup] {e.Data}"); };
-                    p.ErrorDataReceived += (s, e) => { if (e.Data != null) UnityEngine.Debug.LogWarning($"[Env Setup Warn] {e.Data}"); };
-
-                    p.BeginOutputReadLine();
-                    p.BeginErrorReadLine();
-
-                    await Task.Run(() => p.WaitForExit(), cancellationToken);
-                    return p.ExitCode == 0;
+                    if (cancellationToken.IsCancellationRequested)
+                    {
+                        await TerminateAndWaitAsync(process);
+                        throw new OperationCanceledException(cancellationToken);
+                    }
+                    await Task.Delay(100);
                 }
-            }
-            catch (Exception ex)
-            {
-                UnityEngine.Debug.LogError($"[Env Setup Exception] {ex.Message}");
-                return false;
+                await Task.Run(() => process.WaitForExit());
+                if (process.ExitCode != 0)
+                {
+                    string outText;
+                    string errText;
+                    lock (logLock) { outText = stdout.ToString(); errText = stderr.ToString(); }
+                    throw new InvalidOperationException(
+                        $"Process failed (ExitCode: {process.ExitCode}): {command} {arguments}\n[stderr]\n{errText}\n[stdout]\n{outText}");
+                }
+                return true;
             }
         }
-
 
         /// <summary>
         /// 繝舌ャ繧ｯ繧ｰ繝ｩ繧ｦ繝ｳ繝峨繝ｭ繧ｻ繧ｹ縺ｧ繝弱う繧ｺ髯､蜴ｻ繧ｹ繧ｯ繝ｪ繝励ヨ繧帝撼蜷梧悄螳溯｡後＠縲∝ｮ御ｺｾ後↓邨先棡繧ｪ繝悶ず繧ｧ繧ｯ繝医ｒ霑斐＠縺ｾ縺吶€
@@ -323,6 +365,7 @@ namespace PointCloudWorkbench
 
                 StringBuilder outputLog = new StringBuilder();
                 StringBuilder errorLog = new StringBuilder();
+                object logLock = new object();
 
                 // 最後の活動時刻（処理時間はUTCの現在時刻のTick数）
                 long lastActivityTicks = System.DateTime.UtcNow.Ticks;
@@ -333,8 +376,7 @@ namespace PointCloudWorkbench
                     if (e.Data != null)
                     {
                         System.Threading.Interlocked.Exchange(ref lastActivityTicks, System.DateTime.UtcNow.Ticks);
-                        outputLog.AppendLine(e.Data);
-                        UnityEngine.Debug.Log($"[Python Out] {e.Data}");
+                        lock (logLock) outputLog.AppendLine(e.Data);
                         
                         // 進捗更新メッセージのデシリアライズ/パーサー
                         if (e.Data.StartsWith("[Progress]"))
@@ -373,8 +415,7 @@ namespace PointCloudWorkbench
                     if (e.Data != null)
                     {
                         System.Threading.Interlocked.Exchange(ref lastActivityTicks, System.DateTime.UtcNow.Ticks);
-                        errorLog.AppendLine(e.Data);
-                        UnityEngine.Debug.LogError($"[Python Err] {e.Data}");
+                        lock (logLock) errorLog.AppendLine(e.Data);
                     }
                 };
 
@@ -393,15 +434,7 @@ namespace PointCloudWorkbench
                 {
                     if (cancellationToken.IsCancellationRequested)
                     {
-                        try
-                        {
-                            process.Kill();
-                            UnityEngine.Debug.LogWarning("[PythonBridge] 繝ｦ繝ｼ繧ｶ繝ｼ縺ｮ繧ｭ繝｣繝ｳ繧ｻ繝ｫ隕∵ｱゅ↓繧医ｊ縲￣ython繝励Ο繧ｻ繧ｹ繧貞ｼｷ蛻ｶ邨ゆｺ＠縺ｾ縺励◆縲");
-                        }
-                        catch (Exception ex)
-                        {
-                            UnityEngine.Debug.LogError($"[PythonBridge] 繝励Ο繧ｻ繧ｹ蠑ｷ蛻ｶ邨ゆｺお繝ｩ繝ｼ: {ex.Message}");
-                        }
+                        await TerminateAndWaitAsync(process);
                         throw new OperationCanceledException(cancellationToken);
                     }
 
@@ -411,33 +444,36 @@ namespace PointCloudWorkbench
 
                     if (idleSeconds > timeoutSeconds)
                     {
-                        try
-                        {
-                            process.Kill();
-                            UnityEngine.Debug.LogError($"[PythonBridge] Pythonプロセスが {timeoutSeconds}秒 間応答しなかった（ログが出力されなかった）ため、強制終了しました。");
-                        }
-                        catch (Exception ex)
-                        {
-                            UnityEngine.Debug.LogError($"[PythonBridge] タイムアウト強制終了エラー: {ex.Message}");
-                        }
-                        throw new TimeoutException($"Pythonノイズフィルタの処理が {timeoutSeconds}秒 間ログを出力せず応答しなかったため、タイムアウトしました。\n[出力ログ]\n{outputLog.ToString()}\n[エラーログ]\n{errorLog.ToString()}");
+                        await TerminateAndWaitAsync(process);
+                        string outputText;
+                        string errorText;
+                        lock (logLock) { outputText = outputLog.ToString(); errorText = errorLog.ToString(); }
+                        throw new TimeoutException($"Pythonノイズフィルタの処理が {timeoutSeconds}秒 間ログを出力せず応答しませんでした。\n[出力ログ]\n{outputText}\n[エラーログ]\n{errorText}");
                     }
 
                     // 100msウェイト
                     await Task.Delay(100);
                 }
 
+                await Task.Run(() => process.WaitForExit());
+
                 if (process.ExitCode != 0)
                 {
-                    string errText = errorLog.ToString();
-                    string outText = outputLog.ToString();
+                    string errText;
+                    string outText;
+                    lock (logLock) { errText = errorLog.ToString(); outText = outputLog.ToString(); }
                     throw new Exception($"Pythonノイズフィルタがエラーで終了しました (ExitCode: {process.ExitCode})\n[エラーログ]\n{errText}\n[出力ログ]\n{outText}");
                 }
             }
 
             // 終了後にバイナリファイルを読み込み
             PointCloudProgressManager.Instance.Update(0.9f, "バイナリ結果データをロード中...");
-            return LoadFilterResult(outputDir);
+            string metadataPath = Path.Combine(outputDir, "metadata.json");
+            string metadataJson = await Task.Run(() => File.ReadAllText(metadataPath), cancellationToken);
+            NoiseFilterMetadata metadata = JsonUtility.FromJson<NoiseFilterMetadata>(metadataJson);
+            if (metadata == null || metadata.point_count < 0)
+                throw new InvalidDataException("ノイズ解析metadata.jsonの形式または点数が不正です。");
+            return await Task.Run(() => LoadFilterResult(outputDir, metadata), cancellationToken);
         }
 
         /// <summary>
@@ -492,6 +528,7 @@ namespace PointCloudWorkbench
                 process.StartInfo = psi;
                 StringBuilder outputLog = new StringBuilder();
                 StringBuilder errorLog = new StringBuilder();
+                object logLock = new object();
 
                 long lastActivityTicks = System.DateTime.UtcNow.Ticks;
                 const int timeoutSeconds = 300; // 5分
@@ -501,8 +538,7 @@ namespace PointCloudWorkbench
                     if (e.Data != null)
                     {
                         System.Threading.Interlocked.Exchange(ref lastActivityTicks, System.DateTime.UtcNow.Ticks);
-                        outputLog.AppendLine(e.Data);
-                        UnityEngine.Debug.Log($"[Downsample Out] {e.Data}");
+                        lock (logLock) outputLog.AppendLine(e.Data);
 
                         if (e.Data.StartsWith("[Progress]"))
                         {
@@ -535,8 +571,7 @@ namespace PointCloudWorkbench
                     if (e.Data != null)
                     {
                         System.Threading.Interlocked.Exchange(ref lastActivityTicks, System.DateTime.UtcNow.Ticks);
-                        errorLog.AppendLine(e.Data);
-                        UnityEngine.Debug.LogError($"[Downsample Err] {e.Data}");
+                        lock (logLock) errorLog.AppendLine(e.Data);
                     }
                 };
 
@@ -552,7 +587,7 @@ namespace PointCloudWorkbench
                 {
                     if (cancellationToken.IsCancellationRequested)
                     {
-                        try { process.Kill(); } catch { }
+                        await TerminateAndWaitAsync(process);
                         throw new OperationCanceledException(cancellationToken);
                     }
 
@@ -560,16 +595,24 @@ namespace PointCloudWorkbench
                     double idleSeconds = (System.DateTime.UtcNow.Ticks - lastTicks) / (double)System.TimeSpan.TicksPerSecond;
                     if (idleSeconds > timeoutSeconds)
                     {
-                        try { process.Kill(); } catch { }
-                        throw new TimeoutException("ダウンサンプリング処理がタイムアウトしました。");
+                        await TerminateAndWaitAsync(process);
+                        string outText;
+                        string errText;
+                        lock (logLock) { outText = outputLog.ToString(); errText = errorLog.ToString(); }
+                        throw new TimeoutException($"ダウンサンプリング処理がタイムアウトしました。\n[stderr]\n{errText}\n[stdout]\n{outText}");
                     }
 
                     await Task.Delay(100);
                 }
 
+                await Task.Run(() => process.WaitForExit());
+
                 if (process.ExitCode != 0)
                 {
-                    throw new Exception($"ダウンサンプリングがエラーで終了しました (ExitCode: {process.ExitCode})\n{errorLog.ToString()}");
+                    string outText;
+                    string errText;
+                    lock (logLock) { outText = outputLog.ToString(); errText = errorLog.ToString(); }
+                    throw new Exception($"ダウンサンプリングがエラーで終了しました (ExitCode: {process.ExitCode})\n[stderr]\n{errText}\n[stdout]\n{outText}");
                 }
             }
 
@@ -660,7 +703,7 @@ namespace PointCloudWorkbench
             }
             catch (Exception ex)
             {
-                UnityEngine.Debug.LogError($"[PythonBridge] パイプライン構成JSONの書き込みに失敗しました: {ex.Message}");
+                throw new IOException($"パイプライン構成JSONを書き込めませんでした: {configJsonPath}", ex);
             }
 
             StringBuilder argsBuilder = new StringBuilder();
@@ -682,16 +725,8 @@ namespace PointCloudWorkbench
         /// <summary>
         /// 謖�ｮ壹＆繧後◆蜃ｺ蜉帙ョ繧｣繝ｬ繧ｯ繝医Μ縺ｮ繝舌う繝翫Μ繝輔ぃ繧､繝ｫ縺翫ｈ縺ｳJSON繧帝ｫ倬溘Ο繝ｼ繝峨＠縺ｾ縺吶�
         /// </summary>
-        private static NoiseFilterResult LoadFilterResult(string outputDir)
+        private static NoiseFilterResult LoadFilterResult(string outputDir, NoiseFilterMetadata meta)
         {
-            string metadataPath = Path.Combine(outputDir, "metadata.json");
-            if (!File.Exists(metadataPath))
-            {
-                throw new FileNotFoundException($"繝｡繧ｿ繝��繧ｿ JSON 繝輔ぃ繧､繝ｫ縺瑚ｦ九▽縺九ｊ縺ｾ縺帙ｓ: {metadataPath}");
-            }
-
-            string jsonContent = File.ReadAllText(metadataPath);
-            NoiseFilterMetadata meta = JsonUtility.FromJson<NoiseFilterMetadata>(jsonContent);
             int count = meta.point_count;
 
             // 蜷�ｨｮ繝舌う繝翫Μ繝輔ぃ繧､繝ｫ繧帝ｫ倬溘Ο繝ｼ繝�

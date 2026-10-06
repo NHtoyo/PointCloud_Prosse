@@ -1,3 +1,6 @@
+using System;
+using System.Threading;
+using System.Threading.Tasks;
 using UnityEngine;
 using System.IO;
 using System.Collections.Generic;
@@ -69,11 +72,8 @@ public class PointCloudEditorUI : MonoBehaviour
     private string downsampleInputDir = "../PointCloudData";
     private string downsampleOutputDir = "../PointCloudData/downsample";
 
-    // Async execution flags
-    private volatile bool downsampleFinishedFlag = false;
-    private volatile bool downsampleFailedFlag = false;
-    private volatile string downsampleErrorMessage = "";
     private float lastDownsampleVoxelSize = 0f; // 自動ロード時のファイル名解決に使用
+    private Rect errorNotificationRect;
 
     public void LoadSettings()
     {
@@ -154,49 +154,6 @@ public class PointCloudEditorUI : MonoBehaviour
             fileCheckTimer = 2.0f;
         }
 
-        // ダウンサンプリングの非同期結果チェック
-        if (downsampleFinishedFlag)
-        {
-            downsampleFinishedFlag = false;
-            PointCloudProgressManager.Instance.Complete();
-            UnityEngine.Debug.Log("ダウンサンプリング処理が正常に完了しました。");
-
-            // ダウンサンプリングされた全体ファイルを自動で再ロードして表示を更新
-            if (editor != null && editor.targetRenderer != null)
-            {
-                var loader = editor.targetRenderer.GetComponent<PointCloudLoader>();
-                if (loader != null)
-                {
-                    string sourcePath = string.IsNullOrEmpty(loader.CurrentFilePath) ? loader.GetFilePath() : loader.CurrentFilePath;
-                    DownsamplePaths paths = PointCloudDownsampleService.BuildPaths(sourcePath, lastDownsampleVoxelSize);
-                    string downsampledPath = paths.CombinedOutputPath;
-
-                    if (System.IO.File.Exists(downsampledPath))
-                    {
-                        UnityEngine.Debug.Log($"[Downsample Auto-Load] Loading downsampled PLY: {downsampledPath}");
-                        
-                        loader.fileName = PointCloudDownsampleService.GetLoaderRelativePath(downsampledPath);
-                        loader.LoadPointCloud(downsampledPath);
-                        
-                        // カメラを再センタリング
-                        var camCtrl = Object.FindAnyObjectByType<CloudCompareCameraController>();
-                        if (camCtrl != null)
-                        {
-                            camCtrl.CenterOnRenderer(editor.targetRenderer);
-                        }
-                    }
-                    else
-                    {
-                        UnityEngine.Debug.LogWarning($"[Downsample Auto-Load] Downsampled file not found: {downsampledPath} (Mode 2 Per-Organ only?)");
-                    }
-                }
-            }
-        }
-        if (downsampleFailedFlag)
-        {
-            downsampleFailedFlag = false;
-            PointCloudProgressManager.Instance.ShowError("ダウンサンプリングエラー", downsampleErrorMessage);
-        }
     }
 
     private void RefreshFileList()
@@ -289,7 +246,10 @@ public class PointCloudEditorUI : MonoBehaviour
     public bool IsMouseOverUI()
     {
         // Block mouse interactions if modal progress dialog is running or parameters dialogs are open
-        if (PointCloudProgressManager.Instance.IsRunning || showDownsampleDialog || showScaleCalibDialog || showExportDialog) return true;
+        PointCloudProgressSnapshot progress = PointCloudProgressManager.Instance.GetSnapshot();
+        if (progress.IsRunning || showDownsampleDialog || showScaleCalibDialog || showExportDialog) return true;
+        Vector2 guiMousePosition = new Vector2(Input.mousePosition.x, Screen.height - Input.mousePosition.y);
+        if ((progress.HasError || progress.HasWarning) && errorNotificationRect.Contains(guiMousePosition)) return true;
         if (GUIUtility.hotControl != 0) return true;
         if (showNoiseFilterUI && pipelineEditorUI != null && pipelineEditorUI.IsMouseOverUI()) return true;
         if (showAnnotationUI && annotationPipelineEditorUI != null && annotationPipelineEditorUI.IsMouseOverUI()) return true;
@@ -679,7 +639,7 @@ public class PointCloudEditorUI : MonoBehaviour
                                 {
                                     loader.fileName = fName;
                                     loader.LoadPointCloud(availablePlyFiles[i]);
-                                    var cam = Object.FindAnyObjectByType<CloudCompareCameraController>();
+                                    var cam = UnityEngine.Object.FindAnyObjectByType<CloudCompareCameraController>();
                                     if (cam != null) cam.hasCenteredOnCloud = false;
                                     editor.MarkStatsDirty();
                                 }
@@ -779,11 +739,9 @@ public class PointCloudEditorUI : MonoBehaviour
         }
 
         // Draw Progress Pop-up Window if running (Modal state)
-        var pm = PointCloudProgressManager.Instance;
-        if (pm.IsRunning)
-        {
-            DrawProgressDialog(pm);
-        }
+        PointCloudProgressSnapshot progress = PointCloudProgressManager.Instance.GetSnapshot();
+        if (progress.IsRunning) DrawProgressDialog(progress);
+        else if (progress.HasError || progress.HasWarning) DrawOperationNotification(progress);
 
         // --- 11. Format Selection Dialog for Export ---
         if (showExportDialog)
@@ -837,94 +795,84 @@ public class PointCloudEditorUI : MonoBehaviour
         }
     }
 
-    private void DrawProgressDialog(PointCloudProgressManager pm)
+    private bool errorDetailsExpanded;
+
+    private void DrawProgressDialog(PointCloudProgressSnapshot progress)
     {
         Color savedGuiColor = GUI.color;
-
-        // Fullscreen block to prevent clicking items in background
         GUIStyle backdropStyle = new GUIStyle();
-        if (modalBackdropTex != null)
-        {
-            backdropStyle.normal.background = modalBackdropTex;
-        }
+        if (modalBackdropTex != null) backdropStyle.normal.background = modalBackdropTex;
         GUI.Box(new Rect(0, 0, Screen.width, Screen.height), "", backdropStyle);
 
-        // Center window coordinates
-        float w = pm.IsError ? 600f : 500f; // エラー時は少し広げる
-        float h = pm.IsError ? 350f : 210f; // エラー時は縦に広げる
-        float x = (Screen.width - w) * 0.5f;
-        float y = (Screen.height - h) * 0.5f;
+        const float width = 500f;
+        const float height = 210f;
+        float x = (Screen.width - width) * 0.5f;
+        float y = (Screen.height - height) * 0.5f;
+        GUILayout.BeginArea(new Rect(x, y, width, height), windowStyle);
+        GUILayout.Label($"⏳ {progress.Title}", headerStyle);
+        GUILayout.Space(8);
+        GUILayout.Label(progress.StatusMessage, textStyle);
+        GUILayout.Space(8);
 
-        GUILayout.BeginArea(new Rect(x, y, w, h), windowStyle);
-        
-        if (pm.IsError)
+        Rect progressRect = GUILayoutUtility.GetRect(width - 32, 26);
+        GUIStyle barBgStyle = new GUIStyle();
+        if (progressBgTex != null) barBgStyle.normal.background = progressBgTex;
+        GUI.Box(progressRect, "", barBgStyle);
+
+        float fillWidth = (progressRect.width - 4) * progress.Progress;
+        if (fillWidth > 0.1f)
         {
-            GUIStyle errHeaderStyle = new GUIStyle(headerStyle);
-            errHeaderStyle.normal.textColor = new Color(1.0f, 0.3f, 0.3f); // 赤色
-            GUILayout.Label($"❌ {pm.Title}", errHeaderStyle);
-            GUILayout.Space(8);
-            
-            GUILayout.Label("処理中に以下のエラーが発生しました。ログを確認してください。", textStyle);
-            GUILayout.Space(5);
-
-            // エラーログ表示用のスクロールビュー
-            errorScrollPos = GUILayout.BeginScrollView(errorScrollPos, GUILayout.Height(180));
-            GUIStyle errTextStyle = new GUIStyle(textStyle);
-            errTextStyle.normal.textColor = new Color(1.0f, 0.4f, 0.4f); // 薄い赤
-            errTextStyle.fontSize = 13;
-            GUILayout.TextArea(pm.ErrorMessage, errTextStyle);
-            GUILayout.EndScrollView();
-
-            GUILayout.Space(15);
-            if (GUILayout.Button("閉じる", activeButtonStyle, GUILayout.Height(35)))
-            {
-                pm.Complete();
-            }
+            GUI.color = new Color(0.15f, 0.76f, 1f, 0.9f);
+            GUI.DrawTexture(new Rect(progressRect.x + 2, progressRect.y + 2, fillWidth, progressRect.height - 4),
+                lineTex != null ? lineTex : Texture2D.whiteTexture);
+            GUI.color = Color.white;
         }
-        else
-        {
-            GUILayout.Label($"⏳ {pm.Title}", headerStyle);
-            GUILayout.Space(8);
-            
-            GUILayout.Label(pm.StatusMessage, textStyle);
-            GUILayout.Space(8);
+        GUIStyle percentStyle = new GUIStyle(textStyle);
+        percentStyle.alignment = TextAnchor.MiddleCenter;
+        percentStyle.fontStyle = FontStyle.Bold;
+        percentStyle.normal.textColor = Color.white;
+        GUI.Label(progressRect, $"{progress.Progress * 100f:F1} %", percentStyle);
 
-            // Progress bar container
-            Rect progressRect = GUILayoutUtility.GetRect(w - 32, 26);
-            
-            // Progress background
-            GUIStyle barBgStyle = new GUIStyle();
-            if (progressBgTex != null)
-            {
-                barBgStyle.normal.background = progressBgTex;
-            }
-            GUI.Box(progressRect, "", barBgStyle);
-            
-            // Progress fill (utilizing lineTex or basic texture if null)
-            float fillWidth = (progressRect.width - 4) * pm.Progress;
-            if (fillWidth > 0.1f)
-            {
-                GUI.color = new Color(0.15f, 0.76f, 1f, 0.9f); // Cyan fill
-                GUI.DrawTexture(new Rect(progressRect.x + 2, progressRect.y + 2, fillWidth, progressRect.height - 4), lineTex != null ? lineTex : Texture2D.whiteTexture);
-                GUI.color = Color.white;
-            }
-
-            // Progress percentage text
-            GUIStyle percentStyle = new GUIStyle(textStyle);
-            percentStyle.alignment = TextAnchor.MiddleCenter;
-            percentStyle.fontStyle = FontStyle.Bold;
-            percentStyle.normal.textColor = Color.white;
-            GUI.Label(progressRect, $"{pm.Progress * 100f:F1} %", percentStyle);
-
-            GUILayout.Space(15);
-            if (GUILayout.Button("処理をキャンセル", activeButtonStyle, GUILayout.Height(35)))
-            {
-                pm.Cancel();
-            }
-        }
-
+        GUILayout.Space(15);
+        if (GUILayout.Button("処理をキャンセル", activeButtonStyle, GUILayout.Height(35)))
+            PointCloudProgressManager.Instance.Cancel();
         GUILayout.EndArea();
         GUI.color = savedGuiColor;
+    }
+
+    private void DrawOperationNotification(PointCloudProgressSnapshot progress)
+    {
+        float width = Mathf.Min(560f, Screen.width - 24f);
+        float height = errorDetailsExpanded ? Mathf.Min(350f, Screen.height - 24f) : 150f;
+        float x = Mathf.Max(12f, Screen.width - width - 18f);
+        float y = 18f;
+        errorNotificationRect = new Rect(x, y, width, height);
+        GUIStyle panel = new GUIStyle(windowStyle);
+        if (progressBgTex != null) panel.normal.background = progressBgTex;
+        GUILayout.BeginArea(errorNotificationRect, panel);
+        GUIStyle titleStyle = new GUIStyle(headerStyle);
+        titleStyle.alignment = TextAnchor.MiddleLeft;
+        titleStyle.normal.textColor = progress.HasError ? new Color(1f, 0.32f, 0.32f) : new Color(1f, 0.72f, 0.2f);
+        GUILayout.Label($"{(progress.HasError ? "エラー" : "警告")} | {progress.Title}", titleStyle);
+        GUILayout.Label(progress.NotificationMessage, textStyle);
+        GUILayout.BeginHorizontal();
+        if (!string.IsNullOrEmpty(progress.Detail) && GUILayout.Button(errorDetailsExpanded ? "詳細を隠す" : "詳細", buttonStyle, GUILayout.Width(90f)))
+            errorDetailsExpanded = !errorDetailsExpanded;
+        GUILayout.FlexibleSpace();
+        if (GUILayout.Button("閉じる", buttonStyle, GUILayout.Width(90f)))
+        {
+            PointCloudProgressManager.Instance.DismissNotification();
+            errorDetailsExpanded = false;
+        }
+        GUILayout.EndHorizontal();
+        if (errorDetailsExpanded && !string.IsNullOrEmpty(progress.Detail))
+        {
+            GUILayout.Space(4f);
+            errorScrollPos = GUILayout.BeginScrollView(errorScrollPos);
+            GUILayout.TextArea(progress.Detail, textStyle);
+            GUILayout.EndScrollView();
+        }
+        GUILayout.EndArea();
     }
 
     private void DrawLine(Vector2 start, Vector2 end, Color color, float width)
@@ -1075,7 +1023,7 @@ public class PointCloudEditorUI : MonoBehaviour
     {
         if (editor == null || editor.targetRenderer == null)
         {
-            UnityEngine.Debug.LogError("校正する点群が読み込まれていません。");
+            PointCloudProgressManager.Instance.ShowError("スケール校正", "校正する点群が読み込まれていません。");
             return;
         }
         PointCloudLoader activeLoader = editor.targetRenderer.GetComponent<PointCloudLoader>();
@@ -1086,13 +1034,13 @@ public class PointCloudEditorUI : MonoBehaviour
         }
         if (!editor.IsMeasurementDocumentReady || editor.HasMeasurementFingerprintMismatch)
         {
-            UnityEngine.Debug.LogError("点群と計測JSONの照合が終わってから校正してください。");
+            PointCloudProgressManager.Instance.ShowError("スケール校正", "点群と計測JSONの照合が終わってから校正してください。");
             return;
         }
 
         if (!float.TryParse(scaleRealDiameterStr, System.Globalization.NumberStyles.Any, System.Globalization.CultureInfo.InvariantCulture, out float parsedDiameter))
         {
-            UnityEngine.Debug.LogError("基準球の実寸が有効な数値ではありません。");
+            PointCloudProgressManager.Instance.ShowError("スケール校正", "基準球の実寸が有効な数値ではありません。");
             return;
         }
 
@@ -1109,7 +1057,7 @@ public class PointCloudEditorUI : MonoBehaviour
             return;
         }
 
-        PointCloudProgressManager.Instance.Start("スケール校正", "点群座標を補正したPLYを作成中...");
+        if (!PointCloudProgressManager.Instance.Start("スケール校正", "点群座標を補正したPLYを作成中...")) return;
         ApplyScaleCalibrationAndSaveAsync(correctionFactor);
     }
 
@@ -1121,7 +1069,7 @@ public class PointCloudEditorUI : MonoBehaviour
             : null;
         if (loader == null)
         {
-            progress.ShowError("スケール校正を適用できません", "点群ローダーが見つかりません。");
+            progress.Fail("スケール校正", "点群ローダーが見つかりません。");
             return;
         }
 
@@ -1137,98 +1085,137 @@ public class PointCloudEditorUI : MonoBehaviour
                 throw new System.InvalidOperationException("補正済みPLYを現在の点群として切り替えられませんでした。");
             }
 
-            progress.Complete();
-            UnityEngine.Debug.Log($"補正済み点群を保存して切り替えました: {outputPath}");
-            var cameraController = Object.FindAnyObjectByType<CloudCompareCameraController>();
+            if (!string.IsNullOrEmpty(editor.LastCalibrationSidecarWarning))
+            {
+                string message = $"補正済みPLYは保存しましたが、計測JSONの保存に失敗しました: {outputPath}";
+                progress.CompleteWithWarning(message, editor.LastCalibrationSidecarWarning);
+                UnityEngine.Debug.LogWarning($"[RecoverableOperationError] {message}\n{editor.LastCalibrationSidecarWarning}");
+            }
+            else
+            {
+                progress.Complete();
+                UnityEngine.Debug.Log($"補正済み点群を保存して切り替えました: {outputPath}");
+            }
+            var cameraController = UnityEngine.Object.FindAnyObjectByType<CloudCompareCameraController>();
             if (cameraController != null) cameraController.CenterOnRenderer(editor.targetRenderer);
         }
         catch (System.OperationCanceledException)
         {
-            progress.ShowError("スケール校正をキャンセルしました", "元PLYは変更されていません。");
+            progress.CompleteCancelled("スケール校正をキャンセルしました。元PLYは変更されていません。");
         }
         catch (System.Exception ex)
         {
-            UnityEngine.Debug.LogError($"[PointCloudEditorUI] 補正PLYの保存に失敗しました: {ex}");
-            progress.ShowError("補正済みPLYの保存に失敗しました", ex.Message);
+            progress.Fail("スケール校正", "補正済みPLYの保存に失敗しました。", ex.ToString());
+            UnityEngine.Debug.LogWarning($"[RecoverableOperationError] 補正済みPLYの保存に失敗しました。\n{ex}");
         }
     }
 
     private void ExecuteDownsampling()
     {
-        if (!float.TryParse(downsampleVoxelSizeStr, System.Globalization.NumberStyles.Any, System.Globalization.CultureInfo.InvariantCulture, out float parsedVoxelSize))
+        if (!float.TryParse(downsampleVoxelSizeStr, System.Globalization.NumberStyles.Any,
+            System.Globalization.CultureInfo.InvariantCulture, out float parsedVoxelSize) || parsedVoxelSize <= 0f)
         {
-            UnityEngine.Debug.LogError("ダウンサンプリング間隔が有効な数値ではありません。");
+            PointCloudProgressManager.Instance.ShowError("ダウンサンプリング", "ダウンサンプリング間隔には0より大きい数値を指定してください。");
             return;
         }
-
         if (editor == null || editor.targetRenderer == null)
         {
-            UnityEngine.Debug.LogError("対象のPointCloudRendererが見つかりません。");
+            PointCloudProgressManager.Instance.ShowError("ダウンサンプリング", "対象のPointCloudRendererが見つかりません。");
             return;
         }
 
-        var loader = editor.targetRenderer.GetComponent<PointCloudLoader>();
+        PointCloudLoader loader = editor.targetRenderer.GetComponent<PointCloudLoader>();
         string loadedPath = loader != null && !string.IsNullOrEmpty(loader.CurrentFilePath)
             ? loader.CurrentFilePath
-            : (loader != null ? loader.GetFilePath() : "");
+            : (loader != null ? loader.GetFilePath() : string.Empty);
         if (loader == null || string.IsNullOrEmpty(loadedPath))
         {
-            UnityEngine.Debug.LogError("ロードされた点群ファイルが見つかりません。");
+            PointCloudProgressManager.Instance.ShowError("ダウンサンプリング", "ロードされた点群ファイルが見つかりません。");
             return;
         }
 
         lastDownsampleVoxelSize = parsedVoxelSize;
         DownsamplePaths paths = PointCloudDownsampleService.BuildPaths(loadedPath, parsedVoxelSize);
         float coordinateScaleToMm = editor.targetRenderer.DisplayScale;
+        int modeSnapshot = downsampleMode;
         MeasurementDocument measurementSnapshot = editor.CreateMeasurementSnapshotForExport();
+        PointCloudProgressManager pm = PointCloudProgressManager.Instance;
+        if (!pm.Start("ダウンサンプリング", "最新のアノテーション状態を一時保存中...")) return;
+        _ = RunDownsamplingAsync(loader, paths, parsedVoxelSize, coordinateScaleToMm,
+            modeSnapshot, measurementSnapshot, pm.CancellationToken);
+    }
 
-        var pm = PointCloudProgressManager.Instance;
-        pm.Start("ダウンサンプリング", "最新のアノテーション状態を一時保存中...");
-
-        System.Threading.Tasks.Task.Run(async () =>
+    private async Task RunDownsamplingAsync(PointCloudLoader loader, DownsamplePaths paths, float voxelSize,
+        float coordinateScaleToMm, int mode, MeasurementDocument measurementSnapshot, CancellationToken token)
+    {
+        PointCloudProgressManager pm = PointCloudProgressManager.Instance;
+        try
         {
-            try
+            Debug.Log($"[Downsample] Exporting latest annotations to: {paths.TemporaryLabeledPath}");
+            await editor.ExportLabeledPointsAsync(paths.TemporaryLabeledPath, true, token);
+            token.ThrowIfCancellationRequested();
+
+            pm.Update(0.1f, "Pythonプロセスを開始中...");
+            bool success = await PythonBridge.RunDownsamplingAsync(
+                paths.TemporaryLabeledPath, paths.OutputDirectory, voxelSize, coordinateScaleToMm,
+                paths.CombinedOutputPath, mode, token);
+            token.ThrowIfCancellationRequested();
+            if (!success) throw new InvalidOperationException("Pythonダウンサンプリング処理が成功を返しませんでした。");
+
+            string warningDetail = string.Empty;
+            string warningMessage = string.Empty;
+            if (measurementSnapshot != null && File.Exists(paths.CombinedOutputPath))
             {
-                var token = pm.CancellationToken;
-
-                // 1. 最新のアノテーション状態を _labeled.ply としてバイナリ形式で一時保存
-                UnityEngine.Debug.Log($"[Downsample Auto] Exporting latest annotations to: {paths.TemporaryLabeledPath}");
-                await editor.ExportLabeledPointsAsync(paths.TemporaryLabeledPath, true, token);
-
-                if (token.IsCancellationRequested) return;
-
-                // 2. エクスポートされた一時ファイルを用いてPythonダウンサンプリングを起動
-                pm.Update(0.1f, "Pythonプロセスを開始中...");
-                bool success = await PythonBridge.RunDownsamplingAsync(
-                    paths.TemporaryLabeledPath,
-                    paths.OutputDirectory,
-                    parsedVoxelSize,
-                    coordinateScaleToMm,
-                    paths.CombinedOutputPath,
-                    downsampleMode,
-                    token
-                );
-
-                if (!token.IsCancellationRequested && success)
+                try
                 {
-                    if (measurementSnapshot != null && System.IO.File.Exists(paths.CombinedOutputPath))
-                    {
-                        MeasurementDocumentStore.WriteDerivedSidecar(paths.CombinedOutputPath, measurementSnapshot);
-                    }
-                    downsampleFinishedFlag = true;
+                    MeasurementDocument derived = MeasurementDocumentStore.CreateDerivedDocument(measurementSnapshot, paths.CombinedOutputPath);
+                    derived.sourceSha256 = await Task.Run(() => MeasurementDocumentStore.ComputeSha256(paths.CombinedOutputPath));
+                    string json = MeasurementDocumentStore.Serialize(derived);
+                    string sidecarPath = MeasurementDocumentStore.GetSidecarPath(paths.CombinedOutputPath);
+                    await Task.Run(() => MeasurementDocumentStore.WriteSerializedAtomic(sidecarPath, json));
+                }
+                catch (Exception ex)
+                {
+                    warningMessage = "ダウンサンプリングPLYは保存済みですが、計測JSONの保存に失敗しました。";
+                    warningDetail = ex.ToString();
                 }
             }
-            catch (System.OperationCanceledException)
+
+            if (!string.IsNullOrEmpty(warningMessage))
             {
-                UnityEngine.Debug.LogWarning("[PointCloudEditorUI] ダウンサンプリング処理がユーザーによってキャンセルされました。");
+                pm.CompleteWithWarning(warningMessage, warningDetail);
+                Debug.LogWarning($"[RecoverableOperationError] ダウンサンプリング: {warningMessage}{Environment.NewLine}{warningDetail}");
             }
-            catch (System.Exception ex)
+            else
             {
-                UnityEngine.Debug.LogError($"[PointCloudEditorUI] ダウンサンプリング処理エラー: {ex.Message}");
-                downsampleErrorMessage = ex.Message;
-                downsampleFailedFlag = true;
+                pm.Complete();
+                Debug.Log("ダウンサンプリング処理が正常に完了しました。");
             }
-        });
+
+            if (File.Exists(paths.CombinedOutputPath))
+            {
+                string downsampledPath = paths.CombinedOutputPath;
+                Debug.Log($"[Downsample] Loading output PLY: {downsampledPath}");
+                loader.fileName = PointCloudDownsampleService.GetLoaderRelativePath(downsampledPath);
+                loader.LoadPointCloud(downsampledPath);
+                CloudCompareCameraController cameraController = UnityEngine.Object.FindAnyObjectByType<CloudCompareCameraController>();
+                if (cameraController != null) cameraController.CenterOnRenderer(editor.targetRenderer);
+            }
+            else
+            {
+                Debug.LogWarning($"[Downsample] Combined output is not present: {paths.CombinedOutputPath}");
+            }
+        }
+        catch (OperationCanceledException)
+        {
+            pm.CompleteCancelled("ダウンサンプリングをキャンセルしました。");
+            Debug.LogWarning("[ダウンサンプリング] キャンセルされました。");
+        }
+        catch (Exception ex)
+        {
+            pm.Fail("ダウンサンプリングエラー", "処理に失敗しました。点群編集は継続できます。", ex.ToString());
+            Debug.LogWarning($"[RecoverableOperationError] ダウンサンプリング: {ex}");
+        }
     }
 
     void OnDestroy()

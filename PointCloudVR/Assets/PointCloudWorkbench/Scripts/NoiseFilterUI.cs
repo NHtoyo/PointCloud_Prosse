@@ -1,3 +1,5 @@
+using System;
+using System.Threading;
 using UnityEngine;
 using System.IO;
 using System.Threading.Tasks;
@@ -13,40 +15,13 @@ namespace PointCloudWorkbench
         private PointCloudEditor editor;
         public NoiseFilterParams Params = new NoiseFilterParams();
 
-        // 非同期スレッド完了検知用フラグ
-        private volatile bool filterFinishedFlag = false;
-        private volatile bool filterFailedFlag = false;
-        private volatile string asyncErrorMessage = "";
-        private NoiseFilterResult asyncResult = null;
 
         void Start()
         {
             editor = GetComponent<PointCloudEditor>();
             if (editor == null)
             {
-                UnityEngine.Debug.LogError("[NoiseFilterUI] PointCloudEditor コンポーネントが見つかりません。");
-            }
-        }
-
-        void Update()
-        {
-            // メインスレッドでの非同期解析完了処理 (スレッドセーフ対策)
-            if (filterFinishedFlag)
-            {
-                filterFinishedFlag = false;
-                if (asyncResult != null)
-                {
-                    NoiseFilterManager.Instance.SetResult(asyncResult);
-                    NoiseFilterManager.Instance.ApplyPreview(editor.targetRenderer);
-                    editor.MarkStatsDirty();
-                }
-                PointCloudProgressManager.Instance.Complete();
-            }
-
-            if (filterFailedFlag)
-            {
-                filterFailedFlag = false;
-                PointCloudProgressManager.Instance.ShowError("空中モヤ・浮遊点ノイズ除去エラー", asyncErrorMessage);
+                UnityEngine.Debug.LogWarning("[RecoverableOperationError] [NoiseFilterUI] PointCloudEditor コンポーネントが見つかりません。");
             }
         }
 
@@ -293,56 +268,49 @@ namespace PointCloudWorkbench
 
         public void RunNoiseFilterAnalysis()
         {
-            if (editor == null || editor.targetRenderer == null) return;
-            var loader = editor.targetRenderer.GetComponent<PointCloudLoader>();
-            if (loader == null) return;
-            string inputPath = loader.GetFilePath();
+            _ = RunNoiseFilterAnalysisAsync();
+        }
 
+        private async Task RunNoiseFilterAnalysisAsync()
+        {
+            if (editor == null || editor.targetRenderer == null) return;
+            PointCloudLoader loader = editor.targetRenderer.GetComponent<PointCloudLoader>();
+            string inputPath = loader != null && !string.IsNullOrEmpty(loader.CurrentFilePath)
+                ? loader.CurrentFilePath
+                : (loader != null ? loader.GetFilePath() : string.Empty);
             if (string.IsNullOrEmpty(inputPath) || !File.Exists(inputPath))
             {
-                UnityEngine.Debug.LogError("[NoiseFilterUI] 点群ファイルが読み込まれていないか、パスが無効です。");
+                PointCloudProgressManager.Instance.ShowError("ノイズ解析", "点群ファイルが読み込まれていないか、パスが無効です。");
                 return;
             }
 
-            string outputDir = Path.Combine(Application.dataPath, "../python_backend/output");
-            var pm = PointCloudProgressManager.Instance;
-            pm.Start("空中モヤ・浮遊点ノイズ除去", "Pythonプロセスを準備中...");
-
+            string outputDir = Path.GetFullPath(Path.Combine(Application.dataPath, "../python_backend/output"));
             PointData[] points = editor.targetRenderer.GetPointData();
             float coordinateScaleToMm = editor.targetRenderer.DisplayScale;
+            NoiseFilterParams parameterSnapshot = JsonUtility.FromJson<NoiseFilterParams>(JsonUtility.ToJson(Params));
+            PointCloudProgressManager pm = PointCloudProgressManager.Instance;
+            if (!pm.Start("空中モヤ・浮遊点ノイズ除去", "Pythonプロセスを準備中...")) return;
+            CancellationToken token = pm.CancellationToken;
 
-            // 非同期でPythonバッチ処理を起動
-            Task.Run(async () =>
+            try
             {
-                try
-                {
-                    var token = pm.CancellationToken;
-                    NoiseFilterResult result = await PythonBridge.RunDenoiserAsync(
-                        inputPath,
-                        outputDir,
-                        Params,
-                        points,
-                        coordinateScaleToMm,
-                        token
-                    );
-
-                    if (!token.IsCancellationRequested)
-                    {
-                        asyncResult = result;
-                        filterFinishedFlag = true;
-                    }
-                }
-                catch (System.OperationCanceledException)
-                {
-                    UnityEngine.Debug.LogWarning("[NoiseFilterUI] 解析処理がユーザーによってキャンセルされました。");
-                }
-                catch (System.Exception ex)
-                {
-                    UnityEngine.Debug.LogError($"[NoiseFilterUI] 解析処理エラー: {ex.Message}");
-                    asyncErrorMessage = ex.Message;
-                    filterFailedFlag = true;
-                }
-            });
+                NoiseFilterResult result = await PythonBridge.RunDenoiserAsync(
+                    inputPath, outputDir, parameterSnapshot, points, coordinateScaleToMm, token);
+                token.ThrowIfCancellationRequested();
+                NoiseFilterManager.Instance.SetResult(result);
+                NoiseFilterManager.Instance.ApplyPreview(editor.targetRenderer);
+                editor.MarkStatsDirty();
+                pm.Complete();
+            }
+            catch (OperationCanceledException)
+            {
+                pm.CompleteCancelled("ノイズ解析をキャンセルしました。点群の選択状態は変更していません。");
+            }
+            catch (Exception ex)
+            {
+                pm.Fail("空中モヤ・浮遊点ノイズ除去", "Python解析に失敗しました。点群の編集内容は適用していません。", ex.ToString());
+                UnityEngine.Debug.LogWarning($"[RecoverableOperationError] ノイズ解析: {ex}");
+            }
         }
 
         // 凡例表示用スタイルのキャッシュ

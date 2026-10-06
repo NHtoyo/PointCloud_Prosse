@@ -4,6 +4,8 @@ using System.Diagnostics;
 using System.Globalization;
 using System.IO;
 using System.Text;
+using System.Threading;
+using System.Threading.Tasks;
 using PointCloudWorkbench;
 using UnityEngine;
 
@@ -29,6 +31,10 @@ public sealed class StemDiameterUI : MonoBehaviour
     private PointCloudEditorUI editorUI;
     private StemDiameterVisualizer visualizer;
     private StemDiameterResult result;
+    private bool isLoadingResult;
+    private bool ownsOperation;
+    private bool isStopping;
+    private int processGeneration;
 
     private struct OutputLine
     {
@@ -49,15 +55,20 @@ public sealed class StemDiameterUI : MonoBehaviour
     private void OnDestroy()
     {
         if (loader != null) loader.PointCloudLoaded -= OnPointCloudLoaded;
-        StopProcess();
+        if (ownsOperation)
+        {
+            PointCloudProgressManager.Instance.Cancel();
+            _ = StopProcessAsync();
+        }
         if (panelBackgroundTexture != null) Destroy(panelBackgroundTexture);
     }
 
     private void Update()
     {
-        if (process != null && PointCloudProgressManager.Instance.CancellationToken.IsCancellationRequested)
+        if (isStopping) return;
+        if (ownsOperation && PointCloudProgressManager.Instance.IsRunning && PointCloudProgressManager.Instance.CancellationToken.IsCancellationRequested)
         {
-            StopProcess();
+            _ = StopProcessAsync();
             return;
         }
 
@@ -78,29 +89,48 @@ public sealed class StemDiameterUI : MonoBehaviour
         process = null;
         if (exitCode == 0)
         {
-            try
-            {
-                string jsonPath = Path.Combine(outputDirectory, "stem_diameter.json");
-                result = JsonUtility.FromJson<StemDiameterResult>(File.ReadAllText(jsonPath));
-                if (result == null || result.schema_version != 2 || result.sections == null)
-                    throw new InvalidDataException("JSONの形式またはschema_versionが不正です。");
-                selectedIndex = result.sections.Length > 0 ? 0 : -1;
-                visualizer.SetResult(targetRenderer, result);
-                if (selectedIndex >= 0) visualizer.SelectSection(selectedIndex);
-                visualizer.SetVisible(showOverlay);
-                status = $"完了: {result.sections.Length}断面 / {result.centerline_length_mm:F1} mm";
-                PointCloudProgressManager.Instance.Complete();
-                UnityEngine.Debug.Log($"[StemDiameterUI] 解析完了: {jsonPath}");
-            }
-            catch (Exception ex)
-            {
-                Fail($"解析結果を読み込めません: {ex.Message}");
-            }
+            _ = LoadResultAsync(Path.Combine(outputDirectory, "stem_diameter.json"), PointCloudProgressManager.Instance.CancellationToken);
         }
         else
         {
             string detail = errorOutput.ToString();
-            Fail($"Python解析に失敗しました (ExitCode: {exitCode})\n{detail}");
+            Fail($"Python解析に失敗しました (ExitCode: {exitCode})", detail);
+        }
+    }
+
+    private async Task LoadResultAsync(string jsonPath, CancellationToken cancellationToken)
+    {
+        isLoadingResult = true;
+        try
+        {
+            string json = await Task.Run(() => File.ReadAllText(jsonPath), cancellationToken);
+            cancellationToken.ThrowIfCancellationRequested();
+            StemDiameterResult parsed = JsonUtility.FromJson<StemDiameterResult>(json);
+            if (parsed == null || parsed.schema_version != 2 || parsed.sections == null)
+                throw new InvalidDataException("JSONの形式またはschema_versionが不正です。");
+
+            result = parsed;
+            selectedIndex = result.sections.Length > 0 ? 0 : -1;
+            visualizer.SetResult(targetRenderer, result);
+            if (selectedIndex >= 0) visualizer.SelectSection(selectedIndex);
+            visualizer.SetVisible(showOverlay);
+            status = $"完了: {result.sections.Length}断面 / {result.centerline_length_mm:F1} mm";
+            PointCloudProgressManager.Instance.Complete();
+            ownsOperation = false;
+            UnityEngine.Debug.Log($"[StemDiameterUI] 解析完了: {jsonPath}");
+        }
+        catch (OperationCanceledException)
+        {
+            return;
+        }
+        catch (Exception ex)
+        {
+            if (cancellationToken.IsCancellationRequested) return;
+            Fail($"解析結果を読み込めません: {ex.Message}", ex.ToString());
+        }
+        finally
+        {
+            isLoadingResult = false;
         }
     }
 
@@ -157,10 +187,10 @@ public sealed class StemDiameterUI : MonoBehaviour
         GUILayout.Label("主茎を抽出した点群を入力してください。節・葉柄等は品質指標で確認します。");
         GUILayout.BeginHorizontal();
         bool priorEnabled = GUI.enabled;
-        GUI.enabled = process == null && !PointCloudProgressManager.Instance.IsRunning;
+        GUI.enabled = process == null && !isLoadingResult && !PointCloudProgressManager.Instance.IsRunning;
         if (GUILayout.Button("茎径解析を実行", GUILayout.Height(32f))) StartAnalysis();
-        GUI.enabled = process != null;
-        if (GUILayout.Button("キャンセル", GUILayout.Width(90f), GUILayout.Height(32f))) StopProcess();
+        GUI.enabled = ownsOperation && PointCloudProgressManager.Instance.IsRunning;
+        if (GUILayout.Button("キャンセル", GUILayout.Width(90f), GUILayout.Height(32f))) _ = StopProcessAsync();
         GUI.enabled = priorEnabled;
         GUILayout.EndHorizontal();
         GUILayout.Label(status, GUILayout.MinHeight(28f));
@@ -379,6 +409,10 @@ public sealed class StemDiameterUI : MonoBehaviour
 
     private void StartAnalysis()
     {
+        PointCloudProgressManager progress = PointCloudProgressManager.Instance;
+        if (!progress.Start("茎径プロファイル", "Pythonを起動中...")) return;
+        ownsOperation = true;
+        isStopping = false;
         try
         {
             RefreshSourceInfo();
@@ -416,28 +450,32 @@ public sealed class StemDiameterUI : MonoBehaviour
             stdoutEnded = false;
             stderrEnded = false;
             errorOutput.Length = 0;
+            while (outputQueue.TryDequeue(out _)) { }
+            int generation = ++processGeneration;
             process.OutputDataReceived += (_, e) =>
             {
+                if (generation != Volatile.Read(ref processGeneration)) return;
                 if (e.Data == null) stdoutEnded = true;
                 else outputQueue.Enqueue(new OutputLine { IsError = false, Text = e.Data });
             };
             process.ErrorDataReceived += (_, e) =>
             {
+                if (generation != Volatile.Read(ref processGeneration)) return;
                 if (e.Data == null) stderrEnded = true;
                 else outputQueue.Enqueue(new OutputLine { IsError = true, Text = e.Data });
             };
             if (!process.Start()) throw new InvalidOperationException("Pythonプロセスを開始できませんでした。");
             process.BeginOutputReadLine();
             process.BeginErrorReadLine();
+            isLoadingResult = false;
             result = null;
             selectedIndex = -1;
             if (visualizer != null) visualizer.Clear();
             status = "中心線と局所断面を解析中...";
-            PointCloudProgressManager.Instance.Start("茎径プロファイル", "Pythonを起動中...");
         }
         catch (Exception ex)
         {
-            Fail(ex.Message);
+            Fail(ex.Message, ex.ToString());
         }
     }
 
@@ -467,22 +505,61 @@ public sealed class StemDiameterUI : MonoBehaviour
         }
     }
 
-    private void StopProcess()
+    private async Task StopProcessAsync()
     {
-        if (process == null) return;
-        try { if (!process.HasExited) process.Kill(); }
-        catch (Exception ex) { UnityEngine.Debug.LogWarning($"[StemDiameterUI] Python停止時の警告: {ex.Message}"); }
-        status = "解析をキャンセルしました。";
-        process.Dispose();
-        process = null;
-        PointCloudProgressManager.Instance.Complete();
+        if (!ownsOperation || isStopping) return;
+        isStopping = true;
+        Interlocked.Increment(ref processGeneration);
+        Process stoppingProcess = process;
+        try
+        {
+            if (stoppingProcess != null)
+            {
+                try { if (!stoppingProcess.HasExited) stoppingProcess.Kill(); }
+                catch (InvalidOperationException) { }
+                catch (System.ComponentModel.Win32Exception ex)
+                {
+                    if (!stoppingProcess.HasExited)
+                        UnityEngine.Debug.LogWarning($"[StemDiameterUI] Python停止時の警告: {ex.Message}");
+                }
+                await Task.Run(() => stoppingProcess.WaitForExit());
+            }
+        }
+        catch (Exception ex)
+        {
+            UnityEngine.Debug.LogWarning($"[StemDiameterUI] Python停止時の警告: {ex}");
+        }
+        finally
+        {
+            if (ReferenceEquals(process, stoppingProcess))
+            {
+                stoppingProcess?.Dispose();
+                process = null;
+            }
+            isLoadingResult = false;
+            status = "解析をキャンセルしました。";
+            if (PointCloudProgressManager.Instance.IsRunning)
+                PointCloudProgressManager.Instance.CompleteCancelled(status);
+            ownsOperation = false;
+            isStopping = false;
+        }
     }
 
-    private void Fail(string message)
+    private void Fail(string message, string detail = null)
     {
         status = message;
-        UnityEngine.Debug.LogError($"[StemDiameterUI] {message}");
-        PointCloudProgressManager.Instance.Complete();
+        Interlocked.Increment(ref processGeneration);
+        if (process != null)
+        {
+            try { if (!process.HasExited) process.Kill(); }
+            catch (Exception stopException) { UnityEngine.Debug.LogWarning($"[StemDiameterUI] Python停止時の警告: {stopException.Message}"); }
+            process.Dispose();
+            process = null;
+        }
+        isLoadingResult = false;
+        PointCloudProgressManager.Instance.Fail("茎径プロファイル", message, detail ?? message);
+        ownsOperation = false;
+        UnityEngine.Debug.LogWarning($"[RecoverableOperationError] {message}\n{detail ?? message}");
     }
 
     private static string Quote(string value)

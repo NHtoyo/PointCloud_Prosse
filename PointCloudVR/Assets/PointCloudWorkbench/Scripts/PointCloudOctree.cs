@@ -73,7 +73,7 @@ namespace PointCloudWorkbench
             Bounds bounds = new Bounds((min + max) * 0.5f, max - min);
             
             // アスペクト比の偏りを防ぎ、8分割が均等に行われるように立方体にする
-            float maxExt = Mathf.Max(bounds.extents.x, Mathf.Max(bounds.extents.y, bounds.extents.z));
+            float maxExt = Math.Max(bounds.extents.x, Math.Max(bounds.extents.y, bounds.extents.z));
             bounds.extents = new Vector3(maxExt, maxExt, maxExt);
 
             root = new Node(bounds, 0);
@@ -96,7 +96,7 @@ namespace PointCloudWorkbench
             if (indices.Count == 0) return;
 
             // このノードに留める代表点の数を決定
-            int targetCount = Mathf.Min(indices.Count, maxPointsPerNode);
+            int targetCount = Math.Min(indices.Count, maxPointsPerNode);
             
             // 空間的に均一にサンプリングするため、一定間隔（ストライド）で点を抽出する
             float stride = (float)indices.Count / targetCount;
@@ -104,7 +104,7 @@ namespace PointCloudWorkbench
             
             for (int i = 0; i < targetCount; i++)
             {
-                int listIdx = Mathf.Clamp((int)(i * stride), 0, indices.Count - 1);
+                int listIdx = Math.Max(0, Math.Min((int)(i * stride), indices.Count - 1));
                 if (!selectedIndicesInList.Contains(listIdx))
                 {
                     node.pointIndices.Add(indices[listIdx]);
