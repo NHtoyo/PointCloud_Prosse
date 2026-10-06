@@ -37,6 +37,15 @@ try
     Assert(BitConverter.ToSingle(binary, headerEnd + 1) == 1.25f, "binary x coordinate");
     Assert(binary[headerEnd + 1 + 12] == 0x11 && binary[headerEnd + 1 + 13] == 0x22 && binary[headerEnd + 1 + 14] == 0x33, "binary RGB channels");
 
+    string selectedBinaryPath = Path.Combine(directory, "selected-binary.ply");
+    PlyExportService.Write(new PlyExportRequest(points, selectedBinaryPath, true, false, ExportPointMode.SelectedVisible), default);
+    byte[] selectedBinary = File.ReadAllBytes(selectedBinaryPath);
+    int selectedHeaderStart = Encoding.ASCII.GetString(selectedBinary).IndexOf("end_header", StringComparison.Ordinal);
+    int selectedHeaderEnd = Array.IndexOf(selectedBinary, (byte)'\n', selectedHeaderStart);
+    Assert(Encoding.ASCII.GetString(selectedBinary, 0, selectedHeaderEnd + 1).Contains("element vertex 1\n"), "selected binary vertex count");
+    Assert(BitConverter.ToSingle(selectedBinary, selectedHeaderEnd + 1) == 4f, "selected binary point coordinates");
+    Assert(BitConverter.ToInt32(selectedBinary, selectedHeaderEnd + 1 + 15) == 2, "selected binary label excludes transient flags");
+
     string asciiPath = Path.Combine(directory, "selected-ascii.ply");
     PlyExportService.Write(new PlyExportRequest(points, asciiPath, false, true, ExportPointMode.SelectedVisible), default);
     string[] asciiLines = File.ReadAllLines(asciiPath);
@@ -73,7 +82,7 @@ try
     Assert(File.ReadAllText(failurePath) == "previous-final", "failure preserves final");
     Assert(!Directory.GetFiles(directory, "failure.ply.*.tmp").Any(), "failure removes temporary file");
 
-    Console.WriteLine("PASS ProgressManager state transitions; binary/all-visible; ASCII/selected; RGB/XYZ/metadata; cancellation cleanup; failure cleanup; existing-final preservation");
+    Console.WriteLine("PASS ProgressManager state transitions; binary/all-visible; binary-selected; ASCII-selected; RGB/XYZ/metadata; cancellation cleanup; failure cleanup; existing-final preservation");
 }
 finally
 {
