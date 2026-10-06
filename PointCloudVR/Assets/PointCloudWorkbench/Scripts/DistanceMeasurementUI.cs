@@ -73,7 +73,7 @@ namespace PointCloudWorkbench
             if (stylesInitialized) return;
 
             panelStyle = new GUIStyle(GUI.skin.box);
-            panelStyle.normal.background = MakeTexture(new Color(0.08f, 0.10f, 0.14f, 0.98f));
+            panelStyle.normal.background = MakeTexture(new Color(0.08f, 0.10f, 0.14f, 0.85f));
             panelStyle.border = new RectOffset(1, 1, 1, 1);
             panelStyle.padding = new RectOffset(12, 12, 8, 8);
 

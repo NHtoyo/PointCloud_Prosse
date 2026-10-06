@@ -192,7 +192,7 @@ public sealed class StemDiameterUI : MonoBehaviour
         if (panelBackgroundStyle != null) return;
 
         panelBackgroundTexture = new Texture2D(1, 1);
-        panelBackgroundTexture.SetPixel(0, 0, new Color(0.09f, 0.11f, 0.15f, 0.98f));
+        panelBackgroundTexture.SetPixel(0, 0, new Color(0.09f, 0.11f, 0.15f, 0.85f));
         panelBackgroundTexture.Apply();
 
         panelBackgroundStyle = new GUIStyle(GUI.skin.box);
