@@ -990,9 +990,9 @@ public class PointCloudEditorUI : MonoBehaviour
         }
         if (!float.TryParse(referenceSphereAlphaStr, System.Globalization.NumberStyles.Float,
             System.Globalization.CultureInfo.InvariantCulture, out float alpha) ||
-            float.IsNaN(alpha) || float.IsInfinity(alpha) || alpha <= 0f)
+            float.IsNaN(alpha) || float.IsInfinity(alpha) || alpha <= 0f || alpha > 10f)
         {
-            PointCloudProgressManager.Instance.ShowError("リファレンス球直径推定", "αには0より大きい有限値を入力してください。");
+            PointCloudProgressManager.Instance.ShowError("リファレンス球直径推定", "αは0より大きく10以下の値を入力してください。");
             return;
         }
         if (editor == null || editor.targetRenderer == null || editor.targetRenderer.GetPointData() == null)

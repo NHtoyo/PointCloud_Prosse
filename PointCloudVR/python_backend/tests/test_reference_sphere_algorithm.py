@@ -65,9 +65,13 @@ class ReferenceSphereAlgorithmTests(unittest.TestCase):
         for k in (0, len(points), 1.5):
             with self.subTest(k=k), self.assertRaises(ValueError):
                 estimate_reference_sphere(points, knn_k=k)
-        for alpha in (0.0, -1.0, float("nan"), float("inf")):
+        for alpha in (0.0, -1.0, float("nan"), float("inf"), 10.0001):
             with self.subTest(alpha=alpha), self.assertRaises(ValueError):
                 estimate_reference_sphere(points, connectivity_alpha=alpha)
+
+    def test_maximum_connectivity_alpha_is_valid(self):
+        result = estimate_reference_sphere(fibonacci_sphere(count=80), connectivity_alpha=10.0)
+        self.assertEqual(result.connectivity_alpha, 10.0)
 
     def test_insufficient_points_raise_value_error(self):
         with self.assertRaises(ValueError):

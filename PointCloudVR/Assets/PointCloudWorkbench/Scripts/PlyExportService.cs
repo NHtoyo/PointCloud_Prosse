@@ -65,7 +65,8 @@ namespace PointCloudWorkbench
             string temporaryPath = outputPath + "." + Guid.NewGuid().ToString("N") + ".tmp";
 
             int vertexCount = CountVertices(request, cancellationToken);
-            if (request.Mode == ExportPointMode.SelectedVisible && vertexCount == 0)
+            if ((request.Mode == ExportPointMode.SelectedVisible ||
+                 request.Mode == ExportPointMode.SelectedNonDeleted) && vertexCount == 0)
                 throw new InvalidOperationException("エクスポート対象の選択された点がありません。");
 
             try

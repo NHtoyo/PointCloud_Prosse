@@ -279,6 +279,8 @@ def largest_connected_component(
         raise ValueError("knn_k must be >= 1")
     if not np.isfinite(alpha) or alpha <= 0:
         raise ValueError("alpha must be positive")
+    if alpha > 10:
+        raise ValueError("alpha must be <= 10")
     if len(x) <= knn_k:
         raise ValueError("not enough points for requested K")
 

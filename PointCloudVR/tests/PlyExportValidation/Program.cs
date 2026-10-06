@@ -46,6 +46,20 @@ try
     Assert(BitConverter.ToSingle(selectedBinary, selectedHeaderEnd + 1) == 4f, "selected binary point coordinates");
     Assert(BitConverter.ToInt32(selectedBinary, selectedHeaderEnd + 1 + 15) == 2, "selected binary label excludes transient flags");
 
+    string emptySelectedPath = Path.Combine(directory, "empty-selected.ply");
+    try
+    {
+        PointData[] deletedSelection = { new PointData(1f, 2f, 3f, 0xFF010203u, 1 | 0x10000 | 0x20000) };
+        PlyExportService.Write(new PlyExportRequest(deletedSelection, emptySelectedPath, true, false, ExportPointMode.SelectedNonDeleted), default);
+        throw new Exception("expected empty SelectedNonDeleted export rejection");
+    }
+    catch (InvalidOperationException ex) when (ex.Message == "エクスポート対象の選択された点がありません。") { }
+    Assert(!File.Exists(emptySelectedPath), "empty SelectedNonDeleted export creates no PLY");
+
+    string cleanedPath = Path.Combine(directory, "cleaned-visible.ply");
+    PlyExportService.Write(new PlyExportRequest(points, cleanedPath, false, false, ExportPointMode.CleanedVisible), default);
+    Assert(File.ReadAllText(cleanedPath).Contains("element vertex 2\n"), "cleaned-visible export behavior");
+
     string asciiPath = Path.Combine(directory, "selected-ascii.ply");
     PlyExportService.Write(new PlyExportRequest(points, asciiPath, false, true, ExportPointMode.SelectedVisible), default);
     string[] asciiLines = File.ReadAllLines(asciiPath);
@@ -82,7 +96,7 @@ try
     Assert(File.ReadAllText(failurePath) == "previous-final", "failure preserves final");
     Assert(!Directory.GetFiles(directory, "failure.ply.*.tmp").Any(), "failure removes temporary file");
 
-    Console.WriteLine("PASS ProgressManager state transitions; binary/all-visible; binary-selected; ASCII-selected; RGB/XYZ/metadata; cancellation cleanup; failure cleanup; existing-final preservation");
+    Console.WriteLine("PASS ProgressManager state transitions; binary/all-visible; binary-selected; empty selected-non-deleted rejection; cleaned-visible; ASCII-selected; RGB/XYZ/metadata; cancellation cleanup; failure cleanup; existing-final preservation");
 }
 finally
 {
