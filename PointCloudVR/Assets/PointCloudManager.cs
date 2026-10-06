@@ -635,6 +635,12 @@ public class PointCloudManager : MonoBehaviour
             GUILayout.Label("⚖ スケール同定 & ダウンサンプリング", textStyle);
             GUILayout.Space(10);
 
+            if (GUILayout.Button("リファレンス球直径を自動推定", activeButtonStyle, GUILayout.Height(45)))
+            {
+                editorUIInstance.OpenReferenceSphereDialog();
+            }
+            GUILayout.Space(8);
+
             if (GUILayout.Button("📐 スケール校正を実行 (基準球実寸設定)", activeButtonStyle, GUILayout.Height(45)))
             {
                 editorUIInstance.showScaleCalibDialog = true;

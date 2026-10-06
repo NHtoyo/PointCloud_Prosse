@@ -23,6 +23,25 @@ namespace PointCloudWorkbench
         public float voxel_size;
     }
 
+    [Serializable]
+    public sealed class ReferenceSphereOutput
+    {
+        public string method_name;
+        public int input_point_count;
+        public int component_point_count;
+        public int component_removed_count;
+        public int knn_k;
+        public float connectivity_alpha;
+        public float median_knn_distance;
+        public float connectivity_epsilon;
+        public int fit_inlier_count;
+        public float[] center;
+        public float radius;
+        public float diameter;
+        public float[] diameter_point1;
+        public float[] diameter_point2;
+    }
+
     /// <summary>
     /// Python繝舌ャ繧ｯ繧ｨ繝ｳ繝峨�繝ｭ繧ｰ繝ｩ繝���un_noise_filter.py�峨→Unity/C#髢薙�騾壻ｿ｡繝ｻ髱槫酔譛溷ｮ溯｡後ｒ諡�≧繧ｯ繝ｩ繧ｹ縲�
     /// </summary>
@@ -55,6 +74,11 @@ namespace PointCloudWorkbench
             return Path.GetFullPath(Path.Combine(Application.dataPath, "../python_backend/2_downsample.py"));
         }
 
+        private static string GetReferenceSphereScriptPath()
+        {
+            return Path.GetFullPath(Path.Combine(Application.dataPath, "../python_backend/run_reference_sphere.py"));
+        }
+
         private static string GetProjectRootPath()
         {
             return Path.GetFullPath(Path.Combine(Application.dataPath, ".."));
@@ -76,6 +100,157 @@ namespace PointCloudWorkbench
             }
 
             await Task.Run(() => process.WaitForExit());
+        }
+
+        public static async Task<ReferenceSphereOutput> RunReferenceSphereAsync(
+            string selectedPointPath,
+            string outputJsonPath,
+            int knnK,
+            float connectivityAlpha,
+            CancellationToken cancellationToken)
+        {
+            if (string.IsNullOrWhiteSpace(selectedPointPath) || !File.Exists(selectedPointPath))
+                throw new FileNotFoundException("選択点の一時PLYが見つかりません。", selectedPointPath);
+            if (string.IsNullOrWhiteSpace(outputJsonPath))
+                throw new ArgumentException("推定結果JSONの出力先がありません。", nameof(outputJsonPath));
+            if (knnK < 1) throw new ArgumentOutOfRangeException(nameof(knnK));
+            if (float.IsNaN(connectivityAlpha) || float.IsInfinity(connectivityAlpha) || connectivityAlpha <= 0f)
+                throw new ArgumentOutOfRangeException(nameof(connectivityAlpha));
+
+            await EnsureEnvironmentReadyAsync(cancellationToken);
+            cancellationToken.ThrowIfCancellationRequested();
+            string pythonPath = GetPythonPath();
+            string scriptPath = GetReferenceSphereScriptPath();
+            if (!File.Exists(scriptPath)) throw new FileNotFoundException("球直径推定スクリプトが見つかりません。", scriptPath);
+
+            string outputFullPath = Path.GetFullPath(outputJsonPath);
+            Directory.CreateDirectory(Path.GetDirectoryName(outputFullPath));
+            string arguments = "-u " + QuoteCommandLineArgument(scriptPath)
+                + " --input " + QuoteCommandLineArgument(Path.GetFullPath(selectedPointPath))
+                + " --output " + QuoteCommandLineArgument(outputFullPath)
+                + " --knn-k " + knnK.ToString(System.Globalization.CultureInfo.InvariantCulture)
+                + " --connectivity-alpha " + connectivityAlpha.ToString("R", System.Globalization.CultureInfo.InvariantCulture);
+
+            ProcessStartInfo startInfo = new ProcessStartInfo
+            {
+                FileName = pythonPath,
+                Arguments = arguments,
+                WorkingDirectory = Path.GetDirectoryName(scriptPath),
+                UseShellExecute = false,
+                RedirectStandardOutput = true,
+                RedirectStandardError = true,
+                CreateNoWindow = true,
+                StandardOutputEncoding = Encoding.UTF8,
+                StandardErrorEncoding = Encoding.UTF8
+            };
+
+            var stdout = new StringBuilder();
+            var stderr = new StringBuilder();
+            object logLock = new object();
+            long lastActivityTicks = DateTime.UtcNow.Ticks;
+            using (Process process = new Process())
+            {
+                process.StartInfo = startInfo;
+                process.OutputDataReceived += (_, e) =>
+                {
+                    if (e.Data == null) return;
+                    System.Threading.Interlocked.Exchange(ref lastActivityTicks, DateTime.UtcNow.Ticks);
+                    lock (logLock) stdout.AppendLine(e.Data);
+                    UnityEngine.Debug.Log("[Python Out] " + e.Data);
+                    if (e.Data.StartsWith("[Progress]", StringComparison.Ordinal))
+                    {
+                        string progressText = e.Data.Substring(10).Trim();
+                        int separator = progressText.IndexOf(' ');
+                        if (separator > 0 && float.TryParse(progressText.Substring(0, separator),
+                            System.Globalization.NumberStyles.Float,
+                            System.Globalization.CultureInfo.InvariantCulture, out float percent))
+                        {
+                            PointCloudProgressManager.Instance.Update(0.15f + 0.72f * Mathf.Clamp01(percent / 100f),
+                                progressText.Substring(separator + 1));
+                        }
+                    }
+                };
+                process.ErrorDataReceived += (_, e) =>
+                {
+                    if (e.Data == null) return;
+                    System.Threading.Interlocked.Exchange(ref lastActivityTicks, DateTime.UtcNow.Ticks);
+                    lock (logLock) stderr.AppendLine(e.Data);
+                    UnityEngine.Debug.LogWarning("[Python Error] " + e.Data);
+                };
+
+                UnityEngine.Debug.Log($"[ReferenceSphere] Python実行: {pythonPath} {arguments}");
+                if (!process.Start()) throw new InvalidOperationException("Python推定プロセスを開始できませんでした。");
+                process.BeginOutputReadLine();
+                process.BeginErrorReadLine();
+                const int timeoutSeconds = 180;
+                while (!process.HasExited)
+                {
+                    if (cancellationToken.IsCancellationRequested)
+                    {
+                        await TerminateAndWaitAsync(process);
+                        throw new OperationCanceledException(cancellationToken);
+                    }
+                    long activity = System.Threading.Interlocked.Read(ref lastActivityTicks);
+                    double idleSeconds = (DateTime.UtcNow.Ticks - activity) / (double)TimeSpan.TicksPerSecond;
+                    if (idleSeconds > timeoutSeconds)
+                    {
+                        await TerminateAndWaitAsync(process);
+                        string outText;
+                        string errText;
+                        lock (logLock) { outText = stdout.ToString(); errText = stderr.ToString(); }
+                        throw new TimeoutException($"球直径推定Pythonが{timeoutSeconds}秒間応答しませんでした。\n[stdout]\n{outText}\n[stderr]\n{errText}");
+                    }
+                    await Task.Delay(100);
+                }
+                await Task.Run(() => process.WaitForExit());
+                if (process.ExitCode != 0)
+                {
+                    string outText;
+                    string errText;
+                    lock (logLock) { outText = stdout.ToString(); errText = stderr.ToString(); }
+                    throw new InvalidOperationException($"球直径推定Pythonが失敗しました (ExitCode: {process.ExitCode})\n[stdout]\n{outText}\n[stderr]\n{errText}");
+                }
+            }
+
+            cancellationToken.ThrowIfCancellationRequested();
+            if (!File.Exists(outputFullPath)) throw new InvalidDataException("Pythonが推定結果JSONを作成しませんでした。");
+            string json = await Task.Run(() => File.ReadAllText(outputFullPath, Encoding.UTF8), cancellationToken);
+            ReferenceSphereOutput result = JsonUtility.FromJson<ReferenceSphereOutput>(json);
+            if (result == null || result.center == null || result.center.Length != 3 ||
+                result.diameter_point1 == null || result.diameter_point1.Length != 3 ||
+                result.diameter_point2 == null || result.diameter_point2.Length != 3)
+                throw new InvalidDataException("推定結果JSONの形式が不正です。");
+            return result;
+        }
+
+        private static string QuoteCommandLineArgument(string value)
+        {
+            var builder = new StringBuilder();
+            builder.Append('"');
+            int backslashes = 0;
+            for (int i = 0; i < value.Length; i++)
+            {
+                char current = value[i];
+                if (current == '\\')
+                {
+                    backslashes++;
+                    continue;
+                }
+                if (current == '"')
+                {
+                    builder.Append('\\', backslashes * 2 + 1);
+                    builder.Append('"');
+                }
+                else
+                {
+                    builder.Append('\\', backslashes);
+                    builder.Append(current);
+                }
+                backslashes = 0;
+            }
+            builder.Append('\\', backslashes * 2);
+            builder.Append('"');
+            return builder.ToString();
         }
 
         private static string ResolveProjectPath(string path)

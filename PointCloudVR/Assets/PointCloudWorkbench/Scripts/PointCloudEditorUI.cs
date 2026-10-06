@@ -65,8 +65,13 @@ public class PointCloudEditorUI : MonoBehaviour
     private Rect scaleCalibDialogRect = new Rect(0, 0, 420, 260);
     public bool showDownsampleDialog = false;
     private Rect downsampleDialogRect = new Rect(0, 0, 480, 360);
+    public bool showReferenceSphereDialog = false;
+    private Rect referenceSphereDialogRect = new Rect(0, 0, 460, 270);
 
     public string scaleRealDiameterStr = "60";
+    private string referenceSphereKStr = "8";
+    private string referenceSphereAlphaStr = "2.5";
+    private int referenceSphereSelectedCount;
     private string downsampleVoxelSizeStr = "5.0";
     private int downsampleMode = 1;
     private string downsampleInputDir = "../PointCloudData";
@@ -78,6 +83,8 @@ public class PointCloudEditorUI : MonoBehaviour
     public void LoadSettings()
     {
         scaleRealDiameterStr = PlayerPrefs.GetString("ScaleCalib_RealDiameterStr", "60");
+        referenceSphereKStr = PlayerPrefs.GetString("ReferenceSphere_K", "8");
+        referenceSphereAlphaStr = PlayerPrefs.GetString("ReferenceSphere_Alpha", "2.5");
         PlayerPrefs.DeleteKey("ScaleCalib_Measurements");
         downsampleMode = PlayerPrefs.GetInt("Downsample_Mode", 1);
         downsampleVoxelSizeStr = PlayerPrefs.GetString("Downsample_VoxelSizeStr", "5.0");
@@ -93,6 +100,8 @@ public class PointCloudEditorUI : MonoBehaviour
     public void SaveSettings()
     {
         PlayerPrefs.SetString("ScaleCalib_RealDiameterStr", scaleRealDiameterStr);
+        PlayerPrefs.SetString("ReferenceSphere_K", referenceSphereKStr);
+        PlayerPrefs.SetString("ReferenceSphere_Alpha", referenceSphereAlphaStr);
         PlayerPrefs.DeleteKey("ScaleCalib_Measurements");
         PlayerPrefs.SetInt("Downsample_Mode", downsampleMode);
         PlayerPrefs.SetString("Downsample_VoxelSizeStr", downsampleVoxelSizeStr);
@@ -247,7 +256,7 @@ public class PointCloudEditorUI : MonoBehaviour
     {
         // Block mouse interactions if modal progress dialog is running or parameters dialogs are open
         PointCloudProgressSnapshot progress = PointCloudProgressManager.Instance.GetSnapshot();
-        if (progress.IsRunning || showDownsampleDialog || showScaleCalibDialog || showExportDialog) return true;
+        if (progress.IsRunning || showDownsampleDialog || showScaleCalibDialog || showReferenceSphereDialog || showExportDialog) return true;
         Vector2 guiMousePosition = new Vector2(Input.mousePosition.x, Screen.height - Input.mousePosition.y);
         if ((progress.HasError || progress.HasWarning) && errorNotificationRect.Contains(guiMousePosition)) return true;
         if (GUIUtility.hotControl != 0) return true;
@@ -279,6 +288,15 @@ public class PointCloudEditorUI : MonoBehaviour
         if (showStemDiameterUI == visible) return;
         showStemDiameterUI = visible;
         SaveSettings();
+    }
+
+    public void OpenReferenceSphereDialog()
+    {
+        if (editor == null) editor = GetComponent<PointCloudEditor>();
+        referenceSphereSelectedCount = editor != null ? editor.CountSelectedNonDeletedPoints() : 0;
+        showReferenceSphereDialog = true;
+        showScaleCalibDialog = false;
+        showDownsampleDialog = false;
     }
 
     void OnGUI()
@@ -690,6 +708,15 @@ public class PointCloudEditorUI : MonoBehaviour
             GUI.BringWindowToFront(997);
         }
 
+        if (showReferenceSphereDialog)
+        {
+            referenceSphereDialogRect.x = (Screen.width - referenceSphereDialogRect.width) / 2f;
+            referenceSphereDialogRect.y = (Screen.height - referenceSphereDialogRect.height) / 2f;
+            referenceSphereDialogRect = GUI.Window(996, referenceSphereDialogRect, DrawReferenceSphereWindow,
+                "リファレンス球直径推定", windowStyle);
+            GUI.BringWindowToFront(996);
+        }
+
         if (showScaleCalibDialog)
         {
             scaleCalibDialogRect.x = (Screen.width - scaleCalibDialogRect.width) / 2f;
@@ -925,6 +952,187 @@ public class PointCloudEditorUI : MonoBehaviour
         }
     }
 
+
+    private void DrawReferenceSphereWindow(int windowID)
+    {
+        GUILayout.Space(8);
+        GUILayout.Label($"現在の選択点数: {referenceSphereSelectedCount:N0}", textStyle);
+        GUILayout.Label("選択点だけを使い、離れた連結成分を除いて球直径を推定します。", textStyle);
+        GUILayout.BeginHorizontal();
+        GUILayout.Label("近傍数 K:", textStyle, GUILayout.Width(150));
+        referenceSphereKStr = GUILayout.TextField(referenceSphereKStr);
+        GUILayout.EndHorizontal();
+        GUILayout.BeginHorizontal();
+        GUILayout.Label("接続係数 α:", textStyle, GUILayout.Width(150));
+        referenceSphereAlphaStr = GUILayout.TextField(referenceSphereAlphaStr);
+        GUILayout.EndHorizontal();
+        GUILayout.Label("ε = α × 中央値(K番目近傍距離)。座標はdata-spaceのまま処理します。", textStyle);
+        GUILayout.Space(12);
+        GUILayout.BeginHorizontal();
+        if (GUILayout.Button("実行", activeButtonStyle, GUILayout.Height(35)))
+        {
+            TryStartReferenceSphereAnalysis();
+        }
+        if (GUILayout.Button("キャンセル", buttonStyle, GUILayout.Height(35)))
+        {
+            showReferenceSphereDialog = false;
+        }
+        GUILayout.EndHorizontal();
+    }
+
+    private void TryStartReferenceSphereAnalysis()
+    {
+        if (!int.TryParse(referenceSphereKStr, System.Globalization.NumberStyles.Integer,
+            System.Globalization.CultureInfo.InvariantCulture, out int knnK))
+        {
+            PointCloudProgressManager.Instance.ShowError("リファレンス球直径推定", "Kには整数を入力してください。");
+            return;
+        }
+        if (!float.TryParse(referenceSphereAlphaStr, System.Globalization.NumberStyles.Float,
+            System.Globalization.CultureInfo.InvariantCulture, out float alpha) ||
+            float.IsNaN(alpha) || float.IsInfinity(alpha) || alpha <= 0f)
+        {
+            PointCloudProgressManager.Instance.ShowError("リファレンス球直径推定", "αには0より大きい有限値を入力してください。");
+            return;
+        }
+        if (editor == null || editor.targetRenderer == null || editor.targetRenderer.GetPointData() == null)
+        {
+            PointCloudProgressManager.Instance.ShowError("リファレンス球直径推定", "点群が読み込まれていません。");
+            return;
+        }
+        if (!editor.IsMeasurementDocumentReady || editor.HasMeasurementFingerprintMismatch)
+        {
+            PointCloudProgressManager.Instance.ShowError("リファレンス球直径推定", "点群と計測JSONの照合が完了してから実行してください。");
+            return;
+        }
+
+        referenceSphereSelectedCount = editor.CountSelectedNonDeletedPoints();
+        if (referenceSphereSelectedCount < 5)
+        {
+            PointCloudProgressManager.Instance.ShowError("リファレンス球直径推定", "解析には削除されていない選択点が5点以上必要です。");
+            return;
+        }
+        if (knnK < 1 || knnK >= referenceSphereSelectedCount)
+        {
+            PointCloudProgressManager.Instance.ShowError("リファレンス球直径推定", "Kは1以上かつ選択点数未満にしてください。");
+            return;
+        }
+
+        referenceSphereKStr = knnK.ToString(System.Globalization.CultureInfo.InvariantCulture);
+        referenceSphereAlphaStr = alpha.ToString("R", System.Globalization.CultureInfo.InvariantCulture);
+        SaveSettings();
+        if (!PointCloudProgressManager.Instance.Start("リファレンス球直径推定", "選択点を解析用一時PLYへ書き出し中...")) return;
+
+        int selectedCountSnapshot = referenceSphereSelectedCount;
+        showReferenceSphereDialog = false;
+        RunReferenceSphereAnalysisAsync(knnK, alpha, selectedCountSnapshot);
+    }
+
+    private async void RunReferenceSphereAnalysisAsync(int knnK, float alpha, int expectedSelectedCount)
+    {
+        PointCloudProgressManager progress = PointCloudProgressManager.Instance;
+        string temporaryDirectory = Path.Combine(Path.GetTempPath(), "PointCloudVR",
+            "reference_sphere_" + Guid.NewGuid().ToString("N"));
+        try
+        {
+            CancellationToken token = progress.CancellationToken;
+            PointData[] points = editor.targetRenderer.GetPointData();
+            Directory.CreateDirectory(temporaryDirectory);
+            string inputPath = Path.Combine(temporaryDirectory, "selected_points.ply");
+            string outputPath = Path.Combine(temporaryDirectory, "result.json");
+            var exportRequest = new PlyExportRequest(points, inputPath, true, false, ExportPointMode.SelectedNonDeleted);
+            PlyExportResult exported = await Task.Run(
+                () => PlyExportService.Write(exportRequest, token,
+                    (fraction, message) => progress.Update(0.02f + 0.13f * fraction, message)), token);
+            if (exported.VertexCount != expectedSelectedCount)
+                throw new InvalidOperationException($"選択点数が処理開始時から変化しました ({expectedSelectedCount:N0} → {exported.VertexCount:N0})。");
+
+            progress.Update(0.15f, $"選択点{exported.VertexCount:N0}点のKNN・連結成分・球fitを実行中...");
+            ReferenceSphereOutput result = await PythonBridge.RunReferenceSphereAsync(
+                inputPath, outputPath, knnK, alpha, token);
+            token.ThrowIfCancellationRequested();
+
+            if (result.input_point_count != exported.VertexCount ||
+                result.component_point_count < 5 || result.component_point_count > result.input_point_count ||
+                result.component_removed_count != result.input_point_count - result.component_point_count ||
+                result.fit_inlier_count < 5 || result.fit_inlier_count > result.component_point_count ||
+                string.IsNullOrWhiteSpace(result.method_name) || result.knn_k != knnK ||
+                Math.Abs(result.connectivity_alpha - alpha) > Mathf.Max(1e-6f, alpha * 1e-5f) ||
+                float.IsNaN(result.median_knn_distance) || float.IsInfinity(result.median_knn_distance) || result.median_knn_distance <= 0f ||
+                float.IsNaN(result.connectivity_epsilon) || float.IsInfinity(result.connectivity_epsilon) || result.connectivity_epsilon <= 0f ||
+                float.IsNaN(result.radius) || float.IsInfinity(result.radius) || result.radius <= 0f ||
+                float.IsNaN(result.diameter) || float.IsInfinity(result.diameter) || result.diameter <= 0f)
+                throw new InvalidDataException("推定結果の点数・設定値・半径が不正です。");
+
+            Vector3 center = ToVector3(result.center);
+            Vector3 point1 = ToVector3(result.diameter_point1);
+            Vector3 point2 = ToVector3(result.diameter_point2);
+            float geometryTolerance = Mathf.Max(1e-8f, result.diameter * 1e-4f);
+            Vector3 endpointMidpoint = (point1 + point2) * 0.5f;
+            if (!IsFinite(center) || !IsFinite(point1) || !IsFinite(point2) ||
+                Math.Abs(Vector3.Distance(point1, point2) - result.diameter) > geometryTolerance ||
+                Math.Abs(result.diameter - 2f * result.radius) > geometryTolerance ||
+                Vector3.Distance(endpointMidpoint, center) > geometryTolerance)
+                throw new InvalidDataException("直径の中心または端点が不正です。");
+
+            if (!editor.UpsertReferenceDiameterMeasurement(point1, point2, out bool created, out string error))
+                throw new InvalidOperationException(string.IsNullOrEmpty(error) ? "計測一覧へ直径を保存できませんでした。" : error);
+
+            float displayedDiameterMm = editor.targetRenderer.DataLengthToMillimeters(result.diameter);
+            Debug.Log("[ReferenceSphere] ===== リファレンス球直径推定 =====");
+            Debug.Log($"[ReferenceSphere] 選択点数: {result.input_point_count:N0}");
+            Debug.Log($"[ReferenceSphere] K: {result.knn_k}, Alpha: {result.connectivity_alpha:G6}");
+            Debug.Log($"[ReferenceSphere] median KNN distance: {result.median_knn_distance:G9} (data-space)");
+            Debug.Log($"[ReferenceSphere] epsilon: {result.connectivity_epsilon:G9} (data-space)");
+            Debug.Log($"[ReferenceSphere] 最大連結成分: {result.component_point_count:N0} / {result.input_point_count:N0}");
+            Debug.Log($"[ReferenceSphere] 連結成分除外: {result.component_removed_count:N0}");
+            Debug.Log($"[ReferenceSphere] fit inliers ({result.method_name}): {result.fit_inlier_count:N0}");
+            Debug.Log($"[ReferenceSphere] center: ({center.x:G9}, {center.y:G9}, {center.z:G9}) (data-space)");
+            Debug.Log($"[ReferenceSphere] radius: {result.radius:G9} (data-space)");
+            Debug.Log($"[ReferenceSphere] diameter: {result.diameter:G9} (data-space)");
+            Debug.Log($"[ReferenceSphere] current displayed diameter: {displayedDiameterMm:F3} mm");
+            Debug.Log(created
+                ? "[ReferenceSphere] 「リファレンス直径」を作成しました。"
+                : "[ReferenceSphere] 「リファレンス直径」を更新しました。");
+            progress.Complete();
+        }
+        catch (OperationCanceledException)
+        {
+            progress.CompleteCancelled("リファレンス球直径推定をキャンセルしました。点群と既存計測は変更していません。");
+        }
+        catch (Exception ex)
+        {
+            progress.Fail("リファレンス球直径推定", "リファレンス球直径の推定に失敗しました。", ex.ToString());
+            Debug.LogError("[ReferenceSphereError] リファレンス球直径の推定に失敗しました。\n" + ex);
+        }
+        finally
+        {
+            try
+            {
+                if (Directory.Exists(temporaryDirectory)) Directory.Delete(temporaryDirectory, true);
+            }
+            catch (Exception cleanupException)
+            {
+                Debug.LogWarning("[RecoverableOperationError] 球直径推定用の一時ファイルを削除できませんでした。\n" + cleanupException);
+            }
+        }
+    }
+
+    private static Vector3 ToVector3(float[] values)
+    {
+        if (values == null || values.Length != 3) throw new InvalidDataException("座標配列は3要素である必要があります。");
+        return new Vector3(values[0], values[1], values[2]);
+    }
+
+    private static bool IsFinite(Vector3 value)
+    {
+        return IsFinite(value.x) && IsFinite(value.y) && IsFinite(value.z);
+    }
+
+    private static bool IsFinite(float value)
+    {
+        return !float.IsNaN(value) && !float.IsInfinity(value);
+    }
 
     private void DrawDownsampleWindow(int windowID)
     {

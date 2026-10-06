@@ -10,6 +10,7 @@ namespace PointCloudWorkbench
     {
         AllVisible,
         SelectedVisible,
+        SelectedNonDeleted,
         CleanedVisible
     }
 
@@ -188,6 +189,10 @@ namespace PointCloudWorkbench
 
         private static bool IsIncluded(int label, ExportPointMode mode)
         {
+            if (mode == ExportPointMode.SelectedNonDeleted)
+            {
+                return (label & SelectedBit) != 0 && (label & DeletedBit) == 0;
+            }
             if ((label & (DeletedBit | NoiseHiddenBit)) != 0) return false;
             return mode != ExportPointMode.SelectedVisible || (label & SelectedBit) != 0;
         }

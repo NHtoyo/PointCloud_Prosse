@@ -188,6 +188,105 @@ public class PointCloudEditor : MonoBehaviour
         ? measurementPath.Points.Count
         : (SelectedMeasurement != null ? SelectedMeasurement.points.Count : 0);
 
+    public int CountSelectedNonDeletedPoints()
+    {
+        PointData[] data = targetRenderer != null ? targetRenderer.GetPointData() : null;
+        if (data == null) return 0;
+        int count = 0;
+        for (int i = 0; i < data.Length; i++)
+        {
+            int label = data[i].label;
+            if ((label & 0x10000) != 0 && (label & 0x20000) == 0) count++;
+        }
+        return count;
+    }
+
+    public bool UpsertReferenceDiameterMeasurement(Vector3 point1, Vector3 point2, out bool created, out string error)
+    {
+        created = false;
+        error = string.Empty;
+        if (!measurementDocumentReady || measurementDocument == null || measurementFingerprintMismatch)
+        {
+            error = "点群と計測JSONの照合が完了していません。";
+            return false;
+        }
+        if (measurementDraftActive)
+        {
+            error = "編集中の計測を確定またはキャンセルしてから実行してください。";
+            return false;
+        }
+        if (!IsFinite(point1) || !IsFinite(point2) || Vector3.Distance(point1, point2) <= 0f)
+        {
+            error = "推定された直径線の座標が不正です。";
+            return false;
+        }
+
+        const string recordName = "リファレンス直径";
+        string previousDocument = JsonUtility.ToJson(measurementDocument);
+        string previousSelectedId = selectedMeasurementId;
+        MeasurementRecord record = null;
+        for (int i = 0; i < measurementDocument.measurements.Count; i++)
+        {
+            MeasurementRecord candidate = measurementDocument.measurements[i];
+            if (candidate != null && candidate.name == recordName)
+            {
+                record = candidate;
+                break;
+            }
+        }
+
+        PushMeasurementUndo();
+        created = record == null;
+        string now = DateTime.UtcNow.ToString("o");
+        if (created)
+        {
+            record = new MeasurementRecord
+            {
+                id = Guid.NewGuid().ToString("N"),
+                name = recordName,
+                color = MeasurementPalette[measurementDocument.measurements.Count % MeasurementPalette.Length],
+                createdUtc = now
+            };
+            measurementDocument.measurements.Add(record);
+        }
+
+        record.mode = (int)MeasurementMode.TwoPoint;
+        record.interpolation = MeasurementPath.CurveAlgorithmId;
+        record.points = new List<Vector3> { point1, point2 };
+        record.visible = true;
+        record.modifiedUtc = now;
+        selectedMeasurementId = record.id;
+        measurementDocumentDirty = true;
+
+        if (!SaveMeasurementDocument())
+        {
+            measurementDocument = JsonUtility.FromJson<MeasurementDocument>(previousDocument);
+            selectedMeasurementId = previousSelectedId;
+            if (measurementUndoStack.Count > 0) measurementUndoStack.Pop();
+            measurementVisualsDirty = true;
+            SyncLegacyMeasureFields();
+            UpdateMeasureVisuals();
+            error = measurementStatus;
+            created = false;
+            return false;
+        }
+
+        measurementVisualsDirty = true;
+        SyncLegacyMeasureFields();
+        UpdateMeasureVisuals();
+        return true;
+    }
+
+    private static bool IsFinite(Vector3 value)
+    {
+        return IsFinite(value.x) && IsFinite(value.y) && IsFinite(value.z);
+    }
+
+    private static bool IsFinite(float value)
+    {
+        return !float.IsNaN(value) && !float.IsInfinity(value);
+    }
+
     public MeasurementDocument CreateMeasurementSnapshotForExport()
     {
         if (!measurementDocumentReady || measurementFingerprintMismatch) return null;
