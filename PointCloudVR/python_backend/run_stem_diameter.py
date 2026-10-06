@@ -41,6 +41,7 @@ def main(argv=None) -> int:
             points, _ = pointcloud_io.load_npz(str(input_path))
         else:
             points, _ = pointcloud_io.load_ply(str(input_path))
+        points = np.asarray(points, dtype=np.float64)
         print(f"[StemDiameter] points={len(points):,}", flush=True)
 
         params = StemDiameterParams(

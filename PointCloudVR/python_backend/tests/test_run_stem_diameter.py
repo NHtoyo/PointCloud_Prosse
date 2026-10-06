@@ -6,7 +6,7 @@ from pathlib import Path
 import numpy as np
 
 import pointcloud_io
-from run_stem_diameter import main
+from run_stem_diameter import build_parser, main
 from test_stem_diameter_algorithm import cylinder_points_mm
 
 
@@ -42,11 +42,20 @@ class StemDiameterCliTests(unittest.TestCase):
             self.assertEqual(payload["schema_version"], 2)
             self.assertNotIn("scale_mm_per_unit", payload)
             self.assertEqual(payload["point_count"], len(points))
+            self.assertAlmostEqual(payload["centerline_length_mm"], 160.0, delta=15.0)
             self.assertGreater(len(payload["sections"]), 10)
             self.assertEqual(len(payload["centerline"]["display_points_xyz_mm"][0]), 3)
             section = payload["sections"][len(payload["sections"]) // 2]
             self.assertIsInstance(section["center_xyz_mm"], dict)
             self.assertIsInstance(section["slice_results"][0]["contour_uv_mm"][0], dict)
+
+    def test_display_scale_argument_is_not_supported(self):
+        options = {
+            option
+            for action in build_parser()._actions
+            for option in action.option_strings
+        }
+        self.assertNotIn("--coordinate-scale-to-mm", options)
 
 
 if __name__ == "__main__":

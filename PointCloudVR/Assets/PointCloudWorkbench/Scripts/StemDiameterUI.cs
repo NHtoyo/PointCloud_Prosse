@@ -151,9 +151,12 @@ public sealed class StemDiameterUI : MonoBehaviour
 
         GUILayout.Label("間隔 10 mm   中心線支持 5 mm   局所軸半径 15 mm   断面厚 3 / 5 / 7 mm");
         GUILayout.Label("主茎を抽出した点群を入力してください。節・葉柄等は品質指標で確認します。");
+        bool hasMillimeterCoordinates = loader != null && loader.CurrentPointCloudCoordinatesAreMillimeters;
+        if (!hasMillimeterCoordinates)
+            GUILayout.Label("実寸mmの座標情報がありません。スケール校正後に出力されたPLYを読み込んでください。");
         GUILayout.BeginHorizontal();
         bool priorEnabled = GUI.enabled;
-        GUI.enabled = process == null && !PointCloudProgressManager.Instance.IsRunning;
+        GUI.enabled = hasMillimeterCoordinates && process == null && !PointCloudProgressManager.Instance.IsRunning;
         if (GUILayout.Button("茎径解析を実行", GUILayout.Height(32f))) StartAnalysis();
         GUI.enabled = process != null;
         if (GUILayout.Button("キャンセル", GUILayout.Width(90f), GUILayout.Height(32f))) StopProcess();
@@ -368,6 +371,8 @@ public sealed class StemDiameterUI : MonoBehaviour
             if (loader == null || targetRenderer == null) throw new InvalidOperationException("PointCloudLoader / PointCloudRenderer が見つかりません。");
             if (targetRenderer.GetPointData() == null || targetRenderer.GetPointData().Length == 0)
                 throw new InvalidOperationException("点群がまだ読み込まれていません。");
+            if (!loader.CurrentPointCloudCoordinatesAreMillimeters)
+                throw new InvalidOperationException("点群の実寸mmスケールが確認できません。表示倍率は茎径解析の換算には使いません。スケール校正済みPLYを読み込んでください。");
             if (!File.Exists(inputPath)) throw new FileNotFoundException("現在の点群PLYが見つかりません。", inputPath);
 
             string backend = Path.GetFullPath(Path.Combine(Application.dataPath, "../python_backend"));

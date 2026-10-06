@@ -182,6 +182,24 @@ public class PointCloudEditor : MonoBehaviour
         return snapshot;
     }
 
+    private string GetCoordinatePlyMetadata()
+    {
+        PointCloudLoader loader = targetRenderer != null ? targetRenderer.GetComponent<PointCloudLoader>() : pointCloudLoader;
+        if (loader == null || !loader.CurrentPointCloudCoordinatesAreMillimeters) return string.Empty;
+
+        string metadata = "comment pcwb_coordinate_basis mm\n";
+        if (loader.CurrentPointCloudScaleIsCalibrated) metadata += "comment pcwb_scale_calibrated true\n";
+        return metadata;
+    }
+
+    private static void WriteCoordinatePlyMetadata(StreamWriter writer, string metadata)
+    {
+        if (string.IsNullOrEmpty(metadata)) return;
+        string[] lines = metadata.Split('\n');
+        for (int i = 0; i < lines.Length; i++)
+            if (!string.IsNullOrEmpty(lines[i])) writer.WriteLine(lines[i]);
+    }
+
     public async Task<string> ApplyScaleCalibrationAndSaveAsync(
         float correctionFactor,
         string outputDirectory,
@@ -213,6 +231,8 @@ public class PointCloudEditor : MonoBehaviour
         if (string.IsNullOrEmpty(sourcePath)) throw new System.IO.IOException("現在の点群ファイルパスを取得できません。");
         string outputPath = PointCloudScaleService.BuildCalibratedOutputPath(sourcePath, outputDirectory);
         PointData[] points = targetRenderer.GetPointData();
+        PointCloudLoader loader = targetRenderer.GetComponent<PointCloudLoader>();
+        bool sourceCoordinatesAreMillimeters = loader != null && loader.CurrentPointCloudCoordinatesAreMillimeters;
         MeasurementDocument calibratedMeasurements = MeasurementDocumentStore.Clone(measurementDocument);
         for (int i = 0; i < calibratedMeasurements.measurements.Count; i++)
         {
@@ -224,6 +244,7 @@ public class PointCloudEditor : MonoBehaviour
         {
             throw new System.InvalidOperationException("補正後の点座標を適用できませんでした。");
         }
+        targetRenderer.SetCoordinateDisplayBasis(true);
 
         bool outputWritten = false;
         try
@@ -243,6 +264,7 @@ public class PointCloudEditor : MonoBehaviour
         catch
         {
             PointCloudScaleService.ApplyPointCoordinateCorrection(targetRenderer, 1f / correctionFactor);
+            targetRenderer.SetCoordinateDisplayBasis(sourceCoordinatesAreMillimeters);
             measurementVisualsDirty = true;
             UpdateMeasureVisuals();
             if (outputWritten)
@@ -1308,6 +1330,7 @@ public class PointCloudEditor : MonoBehaviour
         {
             throw new System.Exception("No points to export!");
         }
+        string coordinateMetadata = GetCoordinatePlyMetadata();
 
         await Task.Run(() =>
         {
@@ -1328,7 +1351,7 @@ public class PointCloudEditor : MonoBehaviour
                     // PLY Header (ASCII characters)
                     string header = "ply\n" +
                                     "format binary_little_endian 1.0\n" +
-                                    "comment pcwb_coordinate_basis mm\n" +
+                                    coordinateMetadata +
                                     $"element vertex {nonDeletedCount}\n" +
                                     "property float x\n" +
                                     "property float y\n" +
@@ -1386,7 +1409,7 @@ public class PointCloudEditor : MonoBehaviour
                     // PLY ASCII Header
                     writer.WriteLine("ply");
                     writer.WriteLine("format ascii 1.0");
-                    writer.WriteLine("comment pcwb_coordinate_basis mm");
+                    WriteCoordinatePlyMetadata(writer, coordinateMetadata);
                     writer.WriteLine($"element vertex {nonDeletedCount}");
                     writer.WriteLine("property float x");
                     writer.WriteLine("property float y");
@@ -1476,6 +1499,7 @@ public class PointCloudEditor : MonoBehaviour
             Debug.LogError("[PointCloudEditor] No points to export!");
             return;
         }
+        string coordinateMetadata = GetCoordinatePlyMetadata();
 
         string inputPath = GetLoadedPointCloudPath();
         string directory = Path.GetDirectoryName(inputPath);
@@ -1512,7 +1536,7 @@ public class PointCloudEditor : MonoBehaviour
                     // PLY ASCII Header
                     writer.WriteLine("ply");
                     writer.WriteLine("format ascii 1.0");
-                    writer.WriteLine("comment pcwb_coordinate_basis mm");
+                    WriteCoordinatePlyMetadata(writer, coordinateMetadata);
                     writer.WriteLine($"element vertex {remainingCount}");
                     writer.WriteLine("property float x");
                     writer.WriteLine("property float y");
@@ -1590,6 +1614,7 @@ public class PointCloudEditor : MonoBehaviour
         {
             throw new System.Exception("No points to export!");
         }
+        string coordinateMetadata = GetCoordinatePlyMetadata();
 
         await Task.Run(() =>
         {
@@ -1620,7 +1645,7 @@ public class PointCloudEditor : MonoBehaviour
                     // PLY Header (ASCII characters)
                     string header = "ply\n" +
                                     "format binary_little_endian 1.0\n" +
-                                    "comment pcwb_coordinate_basis mm\n" +
+                                    coordinateMetadata +
                                     $"element vertex {selectedCount}\n" +
                                     "property float x\n" +
                                     "property float y\n" +
@@ -1679,7 +1704,7 @@ public class PointCloudEditor : MonoBehaviour
                     // PLY ASCII Header
                     writer.WriteLine("ply");
                     writer.WriteLine("format ascii 1.0");
-                    writer.WriteLine("comment pcwb_coordinate_basis mm");
+                    WriteCoordinatePlyMetadata(writer, coordinateMetadata);
                     writer.WriteLine($"element vertex {selectedCount}");
                     writer.WriteLine("property float x");
                     writer.WriteLine("property float y");
@@ -2957,8 +2982,7 @@ public class PointCloudEditor : MonoBehaviour
         try
         {
             measurementDocument = MeasurementDocumentStore.LoadOrCreate(measurementCloudPath, out measurementSidecarExisted);
-            float coordinateScale = pointCloudLoader != null ? pointCloudLoader.CurrentCoordinateScaleFactor : 1f;
-            MeasurementDocumentStore.ConvertCoordinatesToScale(measurementDocument, coordinateScale);
+            MeasurementDocumentStore.ConvertCoordinatesToScale(measurementDocument, 1f);
             measurementExpectedHash = measurementDocument.sourceSha256 ?? "";
             measurementFingerprintPending = true;
             measurementStatus = "点群ファイルを照合中...";

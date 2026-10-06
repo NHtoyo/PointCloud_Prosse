@@ -9,6 +9,10 @@ public class PointCloudRenderer : MonoBehaviour
     public Shader pointShader;
     public float pointSize = 2.0f;
 
+    [Header("Coordinate Display")]
+    [Min(0.001f)]
+    public float pointCloudDisplayScale = 1200f;
+
     [Header("Scalar Fields Mode")]
     [Range(0, 3)]
     public int colorMode = 0; // 0: RGB, 1: Height, 2: Label, 3: Distance
@@ -29,6 +33,8 @@ public class PointCloudRenderer : MonoBehaviour
     private Material pointMaterial;
     private Bounds localBounds;
     private bool isInitialized = false;
+    private Vector3 unscaledLocalScale = Vector3.one;
+    private bool hasCapturedLocalScale;
 
 
     // Dynamic label colors
@@ -58,6 +64,9 @@ public class PointCloudRenderer : MonoBehaviour
 
     void Awake()
     {
+        unscaledLocalScale = transform.localScale;
+        hasCapturedLocalScale = true;
+
         // 謎のパーティクルを消すため、同じGameObjectにあるParticleSystemとParticleSystemRendererを破壊する
         var ps = GetComponent<ParticleSystem>();
         if (ps != null)
@@ -71,6 +80,19 @@ public class PointCloudRenderer : MonoBehaviour
             DestroyImmediate(psr);
             Debug.Log("[PointCloudRenderer] Removed obsolete ParticleSystemRenderer component.");
         }
+    }
+
+    public void SetCoordinateDisplayBasis(bool coordinatesAreMillimeters)
+    {
+        if (!hasCapturedLocalScale)
+        {
+            unscaledLocalScale = transform.localScale;
+            hasCapturedLocalScale = true;
+        }
+
+        float displayScale = coordinatesAreMillimeters ? 1f : Mathf.Max(0.001f, pointCloudDisplayScale);
+        // This affects only the rendered/world-space layer; PointData remains in file coordinates.
+        transform.localScale = unscaledLocalScale * displayScale;
     }
 
     void Start()
