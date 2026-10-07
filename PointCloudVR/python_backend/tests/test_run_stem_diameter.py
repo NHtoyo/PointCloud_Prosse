@@ -45,6 +45,7 @@ class StemDiameterCliTests(unittest.TestCase):
                     "--source-point-cloud-path", str(source_path),
                     "--source-loaded-point-count", str(len(points) + 2),
                     "--analysis-visible-point-count", str(len(points)),
+                    "--analysis-visible-point-fingerprint", "sha256:" + "a" * 64,
                     "--coordinate-scale-to-mm", "1",
                     "--query-workers", "1",
                 ])
@@ -69,6 +70,7 @@ class StemDiameterCliTests(unittest.TestCase):
             self.assertEqual(payload["source_loaded_point_count"], len(points) + 2)
             self.assertEqual(payload["analysis_visible_point_count"], len(points))
             self.assertEqual(payload["analysis_input_point_count"], len(points))
+            self.assertEqual(payload["analysis_visible_point_fingerprint"], "sha256:" + "a" * 64)
             self.assertEqual(payload["centerline_axis_mode"], "pca")
             self.assertEqual(payload["centerline_model"], "polyline")
             self.assertTrue(payload["use_largest_component"])
@@ -207,8 +209,8 @@ class StemDiameterCliTests(unittest.TestCase):
                     "--input", str(input_path), "--output_dir", str(output_dir),
                     "--coordinate-scale-to-mm", "1", "--query-workers", "1",
                     "--centerline-axis", "y", "--centerline-model", "spline",
-                    "--no-largest-component", "--component-knn-k", "7",
-                    "--component-alpha", "3.5", "--centerline-step-mm", "4",
+                    "--no-largest-component", "--component-knn-k", str(len(points) + 1),
+                    "--component-alpha", "100", "--centerline-step-mm", "4",
                     "--min-centerline-bin-points", "20",
                 ])
             self.assertEqual(code, 0, output.getvalue())
@@ -216,10 +218,13 @@ class StemDiameterCliTests(unittest.TestCase):
             self.assertEqual(payload["centerline_axis_mode"], "y")
             self.assertEqual(payload["centerline_model"], "spline")
             self.assertFalse(payload["use_largest_component"])
-            self.assertEqual(payload["component_knn_k"], 7)
-            self.assertEqual(payload["component_alpha"], 3.5)
+            self.assertEqual(payload["component_knn_k"], len(points) + 1)
+            self.assertEqual(payload["component_alpha"], 100.0)
             self.assertEqual(payload["component_point_count"], len(points))
             self.assertEqual(payload["component_removed_count"], 0)
+            self.assertFalse(payload["diagnostics"]["connected_component"]["enabled"])
+            self.assertEqual(payload["diagnostics"]["connected_component"]["kept_points"], len(points))
+            self.assertEqual(payload["diagnostics"]["connected_component"]["removed_points"], 0)
             self.assertEqual(payload["parameters"]["centerline_step_mm"], 4.0)
             self.assertEqual(payload["parameters"]["min_centerline_bin_points"], 20)
 
@@ -272,9 +277,21 @@ class StemDiameterCliTests(unittest.TestCase):
         self.assertIn('"--source-loaded-point-count", activeInputExport.LoadedPointCount.ToString', ui_source)
         self.assertIn('"--analysis-visible-point-count", exported.VertexCount.ToString', ui_source)
         self.assertIn("loadGeneration != sourceGeneration", ui_source)
+        self.assertIn("if (useLargestComponent) activeInputExport.ValidateComponentK(componentK);", ui_source)
         self.assertIn("現在の点群編集状態と解析時の点数が異なります。再解析を推奨します。", ui_source)
         self.assertIn("既存の茎径解析結果を読み込めませんでした。", ui_source)
         self.assertIn("ValidateResultPayload(parsed);", ui_source)
+        self.assertIn("private void Start()", ui_source)
+        self.assertIn("targetRenderer.GetPointData() == null", ui_source)
+        self.assertIn("HandlePointCloudLoaded(loader.CurrentFilePath);", ui_source)
+        self.assertIn("if (!startInitializationComplete)", ui_source)
+        self.assertIn("hasPreStartPointCloudEvent", ui_source)
+        self.assertIn("GUI.enabled = optionsEnabled && useLargestComponent;", ui_source)
+        self.assertIn("analysis_visible_point_fingerprint", ui_source)
+        self.assertIn('"--analysis-visible-point-fingerprint", Quote(visibleFingerprint.Fingerprint)', ui_source)
+        self.assertIn("StemDiameterPointFingerprint.Compute(currentPoints, ExportPointMode.AllVisible", ui_source)
+        self.assertIn("visualizer.SelectSection(selectedIndex);", ui_source)
+        self.assertIn("visualizer.SetVisible(showOverlay);", ui_source)
         self.assertIn("ExportPointMode.AllVisible", input_export_source)
         self.assertIn('"stem_diameter_" + Guid.NewGuid().ToString("N")', input_export_source)
         self.assertIn("public void Cleanup()", input_export_source)

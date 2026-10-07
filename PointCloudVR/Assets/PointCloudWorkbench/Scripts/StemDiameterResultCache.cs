@@ -52,5 +52,14 @@ namespace PointCloudWorkbench
             return analysisVisiblePointCount > 0 && currentVisiblePointCount >= 0 &&
                    analysisVisiblePointCount != currentVisiblePointCount;
         }
+
+        public static bool IsStale(int analysisVisiblePointCount, int currentVisiblePointCount,
+            string analysisFingerprint, string currentFingerprint)
+        {
+            if (analysisVisiblePointCount <= 0) return false;
+            if (currentVisiblePointCount != analysisVisiblePointCount) return true;
+            if (string.IsNullOrWhiteSpace(analysisFingerprint)) return false;
+            return !string.Equals(analysisFingerprint, currentFingerprint, StringComparison.OrdinalIgnoreCase);
+        }
     }
 }

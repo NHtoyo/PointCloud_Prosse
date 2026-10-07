@@ -64,6 +64,31 @@ class StemDiameterAlgorithmTests(unittest.TestCase):
         for forbidden in ("open3d", "matplotlib", "UnityEngine", "subprocess", "pointcloud_io", "1200"):
             self.assertNotIn(forbidden, source.lower())
 
+    def test_largest_component_enabled_rejects_invalid_k(self):
+        points = cylinder_points_mm(length_mm=80.0, axial_step_mm=2.0, angular_count=64)
+        with self.assertRaises(StemDiameterStageError) as raised:
+            self.analyze(points, component_knn_k=len(points))
+        self.assertEqual(raised.exception.stage, "CONNECTED_COMPONENT")
+
+    def test_largest_component_disabled_ignores_k_and_alpha_validation(self):
+        points = cylinder_points_mm(length_mm=80.0, axial_step_mm=2.0, angular_count=64)
+        diagnostics = []
+        params = StemDiameterParams(
+            query_workers=1,
+            use_largest_component=False,
+            component_knn_k=len(points) + 5,
+            component_alpha=100.0,
+        )
+        result = analyze_stem(points, params, diagnostic_callback=diagnostics.append)
+        component = result.diagnostics["connected_component"]
+        self.assertFalse(component["enabled"])
+        self.assertEqual(component["input_points"], len(points))
+        self.assertEqual(component["kept_points"], len(points))
+        self.assertEqual(component["removed_points"], 0)
+        self.assertTrue(any("[STAGE][OK] CONNECTED_COMPONENT" in line and
+                            "enabled=False" in line and "removed_points=0" in line
+                            for line in diagnostics))
+
     def test_known_diameter_and_tilt_invariance(self):
         for tilt in (0.0, 15.0, 30.0, 45.0):
             with self.subTest(tilt=tilt):

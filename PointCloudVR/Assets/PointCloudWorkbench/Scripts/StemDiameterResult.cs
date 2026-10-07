@@ -13,6 +13,7 @@ namespace PointCloudWorkbench
         public int source_loaded_point_count;
         public int analysis_visible_point_count;
         public int analysis_input_point_count;
+        public string analysis_visible_point_fingerprint;
         public float centerline_length_mm;
         public StemCenterlineResult centerline;
         public StemDiameterSection[] sections;

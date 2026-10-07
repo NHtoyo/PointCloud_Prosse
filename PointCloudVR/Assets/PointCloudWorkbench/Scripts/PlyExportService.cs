@@ -189,7 +189,7 @@ namespace PointCloudWorkbench
             writer.WriteLine((point.label & 0xff).ToString(CultureInfo.InvariantCulture));
         }
 
-        private static bool IsIncluded(int label, ExportPointMode mode)
+        public static bool IsIncluded(int label, ExportPointMode mode)
         {
             if (mode == ExportPointMode.SelectedNonDeleted)
             {

@@ -42,6 +42,32 @@ try
         "visible-point count marks stale cache");
     Assert(PlyExportService.CountIncludedPoints(points, ExportPointMode.AllVisible) == 2,
         "current visible count uses AllVisible export rules");
+    StemDiameterPointFingerprintResult fingerprint = StemDiameterPointFingerprint.Compute(points, ExportPointMode.AllVisible);
+    PointData firstVisible = points[0];
+    PointData selectedVisible = points[1];
+    selectedVisible.label = 2;
+    PointData[] visibleOnly = { firstVisible, selectedVisible };
+    StemDiameterPointFingerprintResult referenceFingerprint =
+        StemDiameterPointFingerprint.Compute(visibleOnly, ExportPointMode.AllVisible);
+    Assert(fingerprint.PointCount == 2 && fingerprint.Fingerprint.StartsWith("sha256:", StringComparison.Ordinal) &&
+        fingerprint.Fingerprint.Length == 71, "fingerprint is SHA-256 of visible data-space points");
+    Assert(fingerprint.Fingerprint == "sha256:500c56c752502dfca6e9b6865f02acb2e307711d282eeba3888560a7a63af223",
+        "fingerprint encodes IEEE-754 XYZ floats in stable little-endian order");
+    Assert(fingerprint.Fingerprint == referenceFingerprint.Fingerprint,
+        "deleted/noise-hidden points excluded and selected-only point included in fingerprint");
+    PointData[] changedVisible = (PointData[])visibleOnly.Clone();
+    changedVisible[0].position.x += 0.25f;
+    Assert(StemDiameterPointFingerprint.Compute(changedVisible, ExportPointMode.AllVisible).Fingerprint !=
+        fingerprint.Fingerprint, "same visible count with changed coordinates changes fingerprint");
+    Assert(!StemDiameterResultCache.IsStale(2, 2, fingerprint.Fingerprint, fingerprint.Fingerprint),
+        "matching count and fingerprint is current");
+    Assert(StemDiameterResultCache.IsStale(2, 2, fingerprint.Fingerprint,
+        StemDiameterPointFingerprint.Compute(changedVisible, ExportPointMode.AllVisible).Fingerprint),
+        "same count with different fingerprint is stale");
+    Assert(!StemDiameterResultCache.IsStale(2, 2, null, "ignored-for-legacy-json"),
+        "legacy JSON without fingerprint falls back to point count");
+    Assert(StemDiameterResultCache.IsStale(2, 1, null, "ignored-for-legacy-json"),
+        "legacy JSON still detects visible point-count changes");
 
     string binaryPath = Path.Combine(directory, "all-binary.ply");
     PlyExportService.Write(new PlyExportRequest(points, binaryPath, true, false, ExportPointMode.AllVisible), default);
@@ -179,7 +205,7 @@ try
     Assert(File.ReadAllText(failurePath) == "previous-final", "failure preserves final");
     Assert(!Directory.GetFiles(directory, "failure.ply.*.tmp").Any(), "failure removes temporary file");
 
-    Console.WriteLine("PASS ProgressManager state transitions; source-keyed stem cache and stale-count helpers; AllVisible count; binary/all-visible; binary-selected; empty selected-non-deleted rejection; cleaned-visible; stem AllVisible temp input/count/K validation/original preservation/cancellation cleanup; ASCII-selected; RGB/XYZ/metadata; cancellation cleanup; failure cleanup; existing-final preservation");
+    Console.WriteLine("PASS ProgressManager state transitions; source-keyed stem cache; AllVisible count/fingerprint and stale checks; binary/all-visible; binary-selected; empty selected-non-deleted rejection; cleaned-visible; stem AllVisible temp input/count/K validation/original preservation/cancellation cleanup; ASCII-selected; RGB/XYZ/metadata; cancellation cleanup; failure cleanup; existing-final preservation");
 }
 finally
 {

@@ -40,6 +40,8 @@ def build_parser() -> argparse.ArgumentParser:
                         help="Number of points in the original loaded Unity point cloud")
     parser.add_argument("--analysis-visible-point-count", type=int,
                         help="Number of visible points exported by Unity for this analysis")
+    parser.add_argument("--analysis-visible-point-fingerprint",
+                        help="SHA-256 fingerprint of the visible point XYZ values in data-space")
     parser.add_argument("--coordinate-scale-to-mm", type=float, required=True,
                         help="Multiply source coordinates by this factor to get millimeters")
     parser.add_argument("--measurement-interval-mm", type=float, default=10.0)
@@ -150,7 +152,7 @@ def main(argv=None) -> int:
         write_stem_diameter_outputs(
             output_dir, result, str(input_path), len(points_mm),
             args.source_point_cloud_path, args.source_loaded_point_count,
-            args.analysis_visible_point_count,
+            args.analysis_visible_point_count, args.analysis_visible_point_fingerprint,
         )
         stale_error = output_dir / "stem_diameter_error.json"
         if stale_error.exists():

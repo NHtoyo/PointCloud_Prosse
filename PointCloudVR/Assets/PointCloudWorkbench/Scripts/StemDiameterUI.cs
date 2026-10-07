@@ -47,10 +47,15 @@ public sealed class StemDiameterUI : MonoBehaviour
     private int processGeneration;
     private StemDiameterInputExport activeInputExport;
     private Task<PlyExportResult> inputExportTask;
+    private Task<StemDiameterPointFingerprintResult> inputFingerprintTask;
     private int sourceGeneration;
     private int analysisSourceGeneration;
     private string analysisSourcePath = "";
     private string analysisOutputDirectory = "";
+    private bool startInitializationComplete;
+    private bool hasPreStartPointCloudEvent;
+    private string preStartPointCloudPath = "";
+    private int preStartPointCloudRevision;
 
     private struct OutputLine
     {
@@ -66,6 +71,23 @@ public sealed class StemDiameterUI : MonoBehaviour
         visualizer = GetComponent<StemDiameterVisualizer>();
         if (visualizer == null) visualizer = gameObject.AddComponent<StemDiameterVisualizer>();
         if (loader != null) loader.PointCloudLoaded += OnPointCloudLoaded;
+    }
+
+    private void Start()
+    {
+        if (loader == null) loader = GetComponent<PointCloudLoader>();
+        if (targetRenderer == null) targetRenderer = GetComponent<PointCloudRenderer>();
+        startInitializationComplete = true;
+
+        if (loader == null || targetRenderer == null || string.IsNullOrWhiteSpace(loader.CurrentFilePath) ||
+            targetRenderer.GetPointData() == null)
+            return;
+
+        if (hasPreStartPointCloudEvent && preStartPointCloudRevision == loader.SuccessfulLoadRevision &&
+            StemDiameterResultCache.PathsEqual(preStartPointCloudPath, loader.CurrentFilePath))
+            return;
+
+        HandlePointCloudLoaded(loader.CurrentFilePath);
     }
 
     private void OnDestroy()
@@ -138,16 +160,11 @@ public sealed class StemDiameterUI : MonoBehaviour
         try
         {
             PointData[] currentPoints = targetRenderer != null ? targetRenderer.GetPointData() : null;
-            Task<string> jsonTask = Task.Run(() => File.ReadAllText(jsonPath), cancellationToken);
-            Task<int> visibleCountTask = Task.Run(() => currentPoints == null ? 0 :
-                PlyExportService.CountIncludedPoints(currentPoints, ExportPointMode.AllVisible, cancellationToken),
-                cancellationToken);
-            await Task.WhenAll(jsonTask, visibleCountTask);
+            string json = await Task.Run(() => File.ReadAllText(jsonPath), cancellationToken);
             cancellationToken.ThrowIfCancellationRequested();
             if (loadGeneration != sourceGeneration || !StemDiameterResultCache.PathsEqual(expectedSourcePath, inputPath))
                 return;
 
-            string json = jsonTask.Result;
             StemDiameterResult parsed = JsonUtility.FromJson<StemDiameterResult>(json);
             ValidateResultPayload(parsed);
             if (expectedPointCount >= 0)
@@ -164,6 +181,13 @@ public sealed class StemDiameterUI : MonoBehaviour
                 return;
             }
 
+            StemDiameterPointFingerprintResult visibleState = await Task.Run(() =>
+                StemDiameterPointFingerprint.Compute(currentPoints, ExportPointMode.AllVisible, cancellationToken),
+                cancellationToken);
+            cancellationToken.ThrowIfCancellationRequested();
+            if (loadGeneration != sourceGeneration || !StemDiameterResultCache.PathsEqual(expectedSourcePath, inputPath))
+                return;
+
             result = parsed;
             selectedIndex = result.sections.Length > 0 ? 0 : -1;
             if (visualizer != null)
@@ -174,7 +198,8 @@ public sealed class StemDiameterUI : MonoBehaviour
             }
 
             bool stale = StemDiameterResultCache.IsStale(
-                parsed.analysis_visible_point_count, visibleCountTask.Result);
+                parsed.analysis_visible_point_count, visibleState.PointCount,
+                parsed.analysis_visible_point_fingerprint, visibleState.Fingerprint);
             status = isCachedResult
                 ? $"保存済み解析結果を読み込みました: {result.sections.Length}断面 / {result.centerline_length_mm:F1} mm"
                 : $"完了: {result.sections.Length}断面 / {result.centerline_length_mm:F1} mm";
@@ -183,7 +208,9 @@ public sealed class StemDiameterUI : MonoBehaviour
                 status += "\n現在の点群編集状態と解析時の点数が異なります。再解析を推奨します。";
                 UnityEngine.Debug.LogWarning(
                     $"[StemDiameterUI][CACHE] stale analysis_visible_point_count={parsed.analysis_visible_point_count} " +
-                    $"current_visible_point_count={visibleCountTask.Result}");
+                    $"current_visible_point_count={visibleState.PointCount} " +
+                    $"analysis_fingerprint={parsed.analysis_visible_point_fingerprint ?? "(none)"} " +
+                    $"current_fingerprint={visibleState.Fingerprint}");
             }
 
             if (isCachedResult)
@@ -228,6 +255,17 @@ public sealed class StemDiameterUI : MonoBehaviour
     }
 
     private void OnPointCloudLoaded(string path)
+    {
+        if (!startInitializationComplete)
+        {
+            hasPreStartPointCloudEvent = true;
+            preStartPointCloudPath = path ?? "";
+            preStartPointCloudRevision = loader != null ? loader.SuccessfulLoadRevision : 0;
+        }
+        HandlePointCloudLoaded(path);
+    }
+
+    private void HandlePointCloudLoaded(string path)
     {
         int generation = ++sourceGeneration;
         if (ownsOperation)
@@ -393,6 +431,8 @@ public sealed class StemDiameterUI : MonoBehaviour
         GUILayout.EndHorizontal();
 
         useLargestComponent = GUILayout.Toggle(useLargestComponent, "最大連結成分のみ使用");
+        bool optionsEnabled = process == null && !isLoadingResult && !PointCloudProgressManager.Instance.IsRunning;
+        GUI.enabled = optionsEnabled && useLargestComponent;
         GUILayout.BeginHorizontal();
         GUILayout.Label("近傍数 K", GUILayout.Width(72f));
         componentKText = GUILayout.TextField(componentKText, GUILayout.Width(72f));
@@ -400,6 +440,7 @@ public sealed class StemDiameterUI : MonoBehaviour
         componentAlphaText = GUILayout.TextField(componentAlphaText, GUILayout.Width(84f));
         GUILayout.Label("（0 < α ≤ 10）");
         GUILayout.EndHorizontal();
+        GUI.enabled = optionsEnabled;
 
         GUILayout.BeginHorizontal();
         GUILayout.Label("中心線支持間隔", GUILayout.Width(110f));
@@ -617,13 +658,17 @@ public sealed class StemDiameterUI : MonoBehaviour
     private async Task StartAnalysisAsync()
     {
         RefreshSourceInfo();
-        if (!int.TryParse(componentKText, NumberStyles.Integer, CultureInfo.InvariantCulture, out int componentK))
+        int componentK = 8;
+        float componentAlpha = 2.5f;
+        if (useLargestComponent &&
+            !int.TryParse(componentKText, NumberStyles.Integer, CultureInfo.InvariantCulture, out componentK))
         {
             PointCloudProgressManager.Instance.ShowError("茎径プロファイル", "近傍数Kには整数を入力してください。");
             return;
         }
-        if (!float.TryParse(componentAlphaText, NumberStyles.Float, CultureInfo.InvariantCulture, out float componentAlpha) ||
-            float.IsNaN(componentAlpha) || float.IsInfinity(componentAlpha) || componentAlpha <= 0f || componentAlpha > 10f)
+        if (useLargestComponent &&
+            (!float.TryParse(componentAlphaText, NumberStyles.Float, CultureInfo.InvariantCulture, out componentAlpha) ||
+             float.IsNaN(componentAlpha) || float.IsInfinity(componentAlpha) || componentAlpha <= 0f || componentAlpha > 10f))
         {
             PointCloudProgressManager.Instance.ShowError("茎径プロファイル", "接続係数αは0より大きく10以下の値を入力してください。");
             return;
@@ -666,11 +711,18 @@ public sealed class StemDiameterUI : MonoBehaviour
             activeInputExport = StemDiameterInputExport.Create(currentPoints,
                 loader.CurrentPointCloudScaleIsCalibrated);
             UnityEngine.Debug.Log($"[StemDiameterUI] input points loaded={activeInputExport.LoadedPointCount:N0}");
+            inputFingerprintTask = Task.Run(() => StemDiameterPointFingerprint.Compute(
+                currentPoints, ExportPointMode.AllVisible, cancellationToken), cancellationToken);
             inputExportTask = activeInputExport.WriteAsync(cancellationToken,
                 (value, message) => progress.Update(value * 0.15f, message));
-            PlyExportResult exported = await inputExportTask;
+            await Task.WhenAll(inputExportTask, inputFingerprintTask);
+            PlyExportResult exported = inputExportTask.Result;
+            StemDiameterPointFingerprintResult visibleFingerprint = inputFingerprintTask.Result;
             inputExportTask = null;
+            inputFingerprintTask = null;
             cancellationToken.ThrowIfCancellationRequested();
+            if (visibleFingerprint.PointCount != exported.VertexCount)
+                throw new InvalidDataException("fingerprint対象点数と解析用PLYの点数が一致しません。");
             if (runSourceGeneration != sourceGeneration || !StemDiameterResultCache.PathsEqual(runSourcePath, inputPath))
             {
                 if (!isStopping) _ = StopProcessAsync();
@@ -681,7 +733,8 @@ public sealed class StemDiameterUI : MonoBehaviour
                 $"[StemDiameterUI] visible export mode=AllVisible loaded={activeInputExport.LoadedPointCount:N0} " +
                 $"visible={exported.VertexCount:N0} excluded={excludedPointCount:N0} input={exported.OutputPath}");
             progress.Update(0.15f, $"表示中の点を書き出しました ({exported.VertexCount:N0} 点)。入力を検証中...");
-            activeInputExport.ValidateComponentK(componentK);
+            if (useLargestComponent) activeInputExport.ValidateComponentK(componentK);
+            else activeInputExport.ValidateMinimumPointCount();
 
             string backend = Path.GetFullPath(Path.Combine(Application.dataPath, "../python_backend"));
             string script = Path.Combine(backend, "run_stem_diameter.py");
@@ -703,6 +756,7 @@ public sealed class StemDiameterUI : MonoBehaviour
                     "--source-point-cloud-path", Quote(runSourcePath),
                     "--source-loaded-point-count", activeInputExport.LoadedPointCount.ToString(CultureInfo.InvariantCulture),
                     "--analysis-visible-point-count", exported.VertexCount.ToString(CultureInfo.InvariantCulture),
+                    "--analysis-visible-point-fingerprint", Quote(visibleFingerprint.Fingerprint),
                     "--coordinate-scale-to-mm", targetRenderer.DisplayScale.ToString("R", CultureInfo.InvariantCulture),
                     "--centerline-axis", centerlineAxisSelection == 0 ? "pca" : "y",
                     "--centerline-model", centerlineModelSelection == 0 ? "polyline" : "spline",
@@ -848,6 +902,13 @@ public sealed class StemDiameterUI : MonoBehaviour
                 catch (OperationCanceledException) { }
                 catch (Exception ex) { UnityEngine.Debug.LogWarning($"[StemDiameterUI] 一時PLY停止時の警告: {ex.Message}"); }
             }
+            Task<StemDiameterPointFingerprintResult> stoppingFingerprintTask = inputFingerprintTask;
+            if (stoppingFingerprintTask != null)
+            {
+                try { await stoppingFingerprintTask; }
+                catch (OperationCanceledException) { }
+                catch (Exception ex) { UnityEngine.Debug.LogWarning($"[StemDiameterUI] fingerprint停止時の警告: {ex.Message}"); }
+            }
             if (stoppingProcess != null)
             {
                 try { if (!stoppingProcess.HasExited) stoppingProcess.Kill(); }
@@ -879,6 +940,7 @@ public sealed class StemDiameterUI : MonoBehaviour
             ownsOperation = false;
             isStopping = false;
             inputExportTask = null;
+            inputFingerprintTask = null;
             CleanupTemporaryInput();
         }
     }
@@ -905,6 +967,7 @@ public sealed class StemDiameterUI : MonoBehaviour
         PointCloudProgressManager.Instance.Fail("茎径プロファイル", message, detail ?? message);
         ownsOperation = false;
         inputExportTask = null;
+        inputFingerprintTask = null;
         CleanupTemporaryInput();
         UnityEngine.Debug.LogWarning($"[RecoverableOperationError] {message}\n{detail ?? message}");
     }

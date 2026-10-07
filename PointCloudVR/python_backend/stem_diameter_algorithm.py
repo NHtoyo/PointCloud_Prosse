@@ -590,19 +590,19 @@ def analyze_stem(
         "alpha": params.component_alpha,
     })
     try:
-        if params.component_knn_k < 1 or params.component_knn_k >= component_input_count:
-            raise ConnectedComponentError(
-                "knn_k must satisfy 1 <= K < input point count",
-                input_point_count=component_input_count,
-                knn_k=int(params.component_knn_k), alpha=float(params.component_alpha),
-            )
-        if not np.isfinite(params.component_alpha) or not 0 < params.component_alpha <= 10:
-            raise ConnectedComponentError(
-                "alpha must satisfy 0 < alpha <= 10",
-                input_point_count=component_input_count,
-                knn_k=int(params.component_knn_k), alpha=float(params.component_alpha),
-            )
         if params.use_largest_component:
+            if params.component_knn_k < 1 or params.component_knn_k >= component_input_count:
+                raise ConnectedComponentError(
+                    "knn_k must satisfy 1 <= K < input point count",
+                    input_point_count=component_input_count,
+                    knn_k=int(params.component_knn_k), alpha=float(params.component_alpha),
+                )
+            if not np.isfinite(params.component_alpha) or not 0 < params.component_alpha <= 10:
+                raise ConnectedComponentError(
+                    "alpha must satisfy 0 < alpha <= 10",
+                    input_point_count=component_input_count,
+                    knn_k=int(params.component_knn_k), alpha=float(params.component_alpha),
+                )
             component_result = largest_connected_component(
                 points_mm, knn_k=params.component_knn_k, alpha=params.component_alpha,
                 return_diagnostics=True,

@@ -55,14 +55,19 @@ namespace PointCloudWorkbench
 
         public void ValidateComponentK(int componentK)
         {
+            ValidateMinimumPointCount();
+            if (componentK < 1 || componentK >= VisiblePointCount)
+            {
+                throw new InvalidOperationException("近傍数Kは1以上かつ書き出した可視点数未満にしてください。");
+            }
+        }
+
+        public void ValidateMinimumPointCount()
+        {
             if (VisiblePointCount < MinimumPointCount)
             {
                 throw new InvalidOperationException(
                     $"解析に必要な可視点が不足しています。可視点数: {VisiblePointCount} / 必要: {MinimumPointCount}");
-            }
-            if (componentK < 1 || componentK >= VisiblePointCount)
-            {
-                throw new InvalidOperationException("近傍数Kは1以上かつ書き出した可視点数未満にしてください。");
             }
         }
 

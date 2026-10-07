@@ -45,7 +45,8 @@ def _json_value(value):
 def _write_json(path: Path, result, input_path: str, point_count: int,
                 source_point_cloud_path: str | None = None,
                 source_loaded_point_count: int | None = None,
-                analysis_visible_point_count: int | None = None):
+                analysis_visible_point_count: int | None = None,
+                analysis_visible_point_fingerprint: str | None = None):
     def vector(value):
         if value is None:
             return None
@@ -109,6 +110,8 @@ def _write_json(path: Path, result, input_path: str, point_count: int,
         payload["source_point_cloud_filename"] = source_path.name
     if source_loaded_point_count is not None:
         payload["source_loaded_point_count"] = int(source_loaded_point_count)
+    if analysis_visible_point_fingerprint:
+        payload["analysis_visible_point_fingerprint"] = str(analysis_visible_point_fingerprint)
     with path.open("w", encoding="utf-8", newline="\n") as stream:
         json.dump(payload, stream, ensure_ascii=False, allow_nan=False, separators=(",", ":"))
 
@@ -194,7 +197,8 @@ def _write_plots(directory: Path, result):
 def write_stem_diameter_outputs(output_dir, result, input_path: str, point_count: int,
                                 source_point_cloud_path: str | None = None,
                                 source_loaded_point_count: int | None = None,
-                                analysis_visible_point_count: int | None = None):
+                                analysis_visible_point_count: int | None = None,
+                                analysis_visible_point_fingerprint: str | None = None):
     """Regenerate only the four named analysis outputs; preserve other user files."""
     target = Path(output_dir)
     target.mkdir(parents=True, exist_ok=True)
@@ -203,6 +207,7 @@ def write_stem_diameter_outputs(output_dir, result, input_path: str, point_count
         _write_json(
             stage / "stem_diameter.json", result, input_path, point_count,
             source_point_cloud_path, source_loaded_point_count, analysis_visible_point_count,
+            analysis_visible_point_fingerprint,
         )
         _write_csv(stage / "stem_diameter.csv", result)
         _write_plots(stage, result)

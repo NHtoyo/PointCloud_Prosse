@@ -10,5 +10,6 @@
     <Compile Include="../../Assets/PointCloudWorkbench/Scripts/PointCloudProgressManager.cs" Link="PointCloudProgressManager.cs" />
     <Compile Include="../../Assets/PointCloudWorkbench/Scripts/StemDiameterInputExport.cs" Link="StemDiameterInputExport.cs" />
     <Compile Include="../../Assets/PointCloudWorkbench/Scripts/StemDiameterResultCache.cs" Link="StemDiameterResultCache.cs" />
+    <Compile Include="../../Assets/PointCloudWorkbench/Scripts/StemDiameterPointFingerprint.cs" Link="StemDiameterPointFingerprint.cs" />
   </ItemGroup>
 </Project>
