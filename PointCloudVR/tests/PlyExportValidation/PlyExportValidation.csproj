@@ -9,5 +9,6 @@
     <Compile Include="../../Assets/PointCloudWorkbench/Scripts/PlyExportService.cs" Link="PlyExportService.cs" />
     <Compile Include="../../Assets/PointCloudWorkbench/Scripts/PointCloudProgressManager.cs" Link="PointCloudProgressManager.cs" />
     <Compile Include="../../Assets/PointCloudWorkbench/Scripts/StemDiameterInputExport.cs" Link="StemDiameterInputExport.cs" />
+    <Compile Include="../../Assets/PointCloudWorkbench/Scripts/StemDiameterResultCache.cs" Link="StemDiameterResultCache.cs" />
   </ItemGroup>
 </Project>

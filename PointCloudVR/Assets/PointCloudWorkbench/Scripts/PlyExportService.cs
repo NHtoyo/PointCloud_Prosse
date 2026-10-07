@@ -64,7 +64,7 @@ namespace PointCloudWorkbench
             Directory.CreateDirectory(directory);
             string temporaryPath = outputPath + "." + Guid.NewGuid().ToString("N") + ".tmp";
 
-            int vertexCount = CountVertices(request, cancellationToken);
+            int vertexCount = CountIncludedPoints(points, request.Mode, cancellationToken);
             if ((request.Mode == ExportPointMode.SelectedVisible ||
                  request.Mode == ExportPointMode.SelectedNonDeleted) && vertexCount == 0)
                 throw new InvalidOperationException("エクスポート対象の選択された点がありません。");
@@ -94,14 +94,15 @@ namespace PointCloudWorkbench
             }
         }
 
-        private static int CountVertices(PlyExportRequest request, CancellationToken token)
+        public static int CountIncludedPoints(PointData[] points, ExportPointMode mode,
+            CancellationToken token = default)
         {
+            if (points == null) throw new ArgumentNullException(nameof(points));
             int count = 0;
-            PointData[] points = request.Points;
             for (int i = 0; i < points.Length; i++)
             {
                 if ((i & (CancellationCheckInterval - 1)) == 0) token.ThrowIfCancellationRequested();
-                if (IsIncluded(points[i].label, request.Mode)) count++;
+                if (IsIncluded(points[i].label, mode)) count++;
             }
             return count;
         }

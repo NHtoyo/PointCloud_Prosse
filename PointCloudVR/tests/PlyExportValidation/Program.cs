@@ -26,6 +26,23 @@ try
         new PointData(10f, 11f, 12f, 0xFFCCBBAAu, 4 | 0x80000)
     };
 
+    string sourcePlyPath = Path.Combine(directory, "plant-a.ply");
+    string dataDirectory = Path.Combine(directory, "PointCloudData");
+    string expectedResultDirectory = Path.Combine(dataDirectory, "plant-a_stem_diameter");
+    Assert(StemDiameterResultCache.GetResultDirectory(dataDirectory, sourcePlyPath) == expectedResultDirectory,
+        "result folder derives from original source filename");
+    Assert(StemDiameterResultCache.GetResultJsonPath(dataDirectory, sourcePlyPath) ==
+        Path.Combine(expectedResultDirectory, "stem_diameter.json"), "result JSON cache path");
+    Assert(StemDiameterResultCache.SourceMatches(sourcePlyPath, "plant-a.ply", sourcePlyPath),
+        "cached result matches source identity");
+    Assert(!StemDiameterResultCache.SourceMatches(sourcePlyPath, "plant-a.ply", Path.Combine(directory, "plant-b.ply")),
+        "cached result rejects different source identity");
+    Assert(StemDiameterResultCache.SourceMatches(null, null, sourcePlyPath), "legacy cache without source identity");
+    Assert(!StemDiameterResultCache.IsStale(100, 100) && StemDiameterResultCache.IsStale(100, 99),
+        "visible-point count marks stale cache");
+    Assert(PlyExportService.CountIncludedPoints(points, ExportPointMode.AllVisible) == 2,
+        "current visible count uses AllVisible export rules");
+
     string binaryPath = Path.Combine(directory, "all-binary.ply");
     PlyExportService.Write(new PlyExportRequest(points, binaryPath, true, false, ExportPointMode.AllVisible), default);
     byte[] binary = File.ReadAllBytes(binaryPath);
@@ -162,7 +179,7 @@ try
     Assert(File.ReadAllText(failurePath) == "previous-final", "failure preserves final");
     Assert(!Directory.GetFiles(directory, "failure.ply.*.tmp").Any(), "failure removes temporary file");
 
-    Console.WriteLine("PASS ProgressManager state transitions; binary/all-visible; binary-selected; empty selected-non-deleted rejection; cleaned-visible; stem AllVisible temp input/count/K validation/original preservation/cancellation cleanup; ASCII-selected; RGB/XYZ/metadata; cancellation cleanup; failure cleanup; existing-final preservation");
+    Console.WriteLine("PASS ProgressManager state transitions; source-keyed stem cache and stale-count helpers; AllVisible count; binary/all-visible; binary-selected; empty selected-non-deleted rejection; cleaned-visible; stem AllVisible temp input/count/K validation/original preservation/cancellation cleanup; ASCII-selected; RGB/XYZ/metadata; cancellation cleanup; failure cleanup; existing-final preservation");
 }
 finally
 {

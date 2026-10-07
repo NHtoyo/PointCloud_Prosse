@@ -35,6 +35,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Estimate a plant main-stem diameter profile.")
     parser.add_argument("--input", required=True, help="Input PLY or NPZ point cloud")
     parser.add_argument("--output_dir", required=True, help="Directory for JSON, CSV and PNG outputs")
+    parser.add_argument("--source-point-cloud-path", help="Original Unity-loaded point-cloud path (distinct from analysis input)")
+    parser.add_argument("--source-loaded-point-count", type=int,
+                        help="Number of points in the original loaded Unity point cloud")
+    parser.add_argument("--analysis-visible-point-count", type=int,
+                        help="Number of visible points exported by Unity for this analysis")
     parser.add_argument("--coordinate-scale-to-mm", type=float, required=True,
                         help="Multiply source coordinates by this factor to get millimeters")
     parser.add_argument("--measurement-interval-mm", type=float, default=10.0)
@@ -95,6 +100,12 @@ def main(argv=None) -> int:
             raise ValueError(f"Input point coordinates must be a non-empty Nx3 array; shape={points_raw.shape}")
         if not np.all(np.isfinite(points_raw)):
             raise ValueError("Input point coordinates contain NaN or inf.")
+        if args.source_loaded_point_count is not None and args.source_loaded_point_count < len(points_raw):
+            raise ValueError("source_loaded_point_count cannot be smaller than the analysis input point count.")
+        if args.analysis_visible_point_count is not None and args.analysis_visible_point_count != len(points_raw):
+            raise ValueError(
+                "analysis_visible_point_count must match the number of points loaded from the analysis input."
+            )
 
         raw_xyz_span = np.ptp(points_raw, axis=0)
         points_mm = _convert_points_to_mm(points_raw, args.coordinate_scale_to_mm)
@@ -136,7 +147,11 @@ def main(argv=None) -> int:
         stage = "OUTPUT"
         diagnostic(f"[StemDiameter][STAGE][START] OUTPUT output_dir={output_dir}")
         _progress(0.93, "JSON、CSV、品質グラフを書き出し中...")
-        write_stem_diameter_outputs(output_dir, result, str(input_path), len(points_mm))
+        write_stem_diameter_outputs(
+            output_dir, result, str(input_path), len(points_mm),
+            args.source_point_cloud_path, args.source_loaded_point_count,
+            args.analysis_visible_point_count,
+        )
         stale_error = output_dir / "stem_diameter_error.json"
         if stale_error.exists():
             try:

@@ -8,6 +8,11 @@ namespace PointCloudWorkbench
         public int schema_version;
         public string input_path;
         public int point_count;
+        public string source_point_cloud_path;
+        public string source_point_cloud_filename;
+        public int source_loaded_point_count;
+        public int analysis_visible_point_count;
+        public int analysis_input_point_count;
         public float centerline_length_mm;
         public StemCenterlineResult centerline;
         public StemDiameterSection[] sections;

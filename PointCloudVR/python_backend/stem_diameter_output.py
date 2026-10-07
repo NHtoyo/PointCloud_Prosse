@@ -42,7 +42,10 @@ def _json_value(value):
     return value
 
 
-def _write_json(path: Path, result, input_path: str, point_count: int):
+def _write_json(path: Path, result, input_path: str, point_count: int,
+                source_point_cloud_path: str | None = None,
+                source_loaded_point_count: int | None = None,
+                analysis_visible_point_count: int | None = None):
     def vector(value):
         if value is None:
             return None
@@ -76,6 +79,10 @@ def _write_json(path: Path, result, input_path: str, point_count: int):
         "created_utc": datetime.now(timezone.utc).isoformat(),
         "input_path": str(Path(input_path).resolve()),
         "point_count": int(point_count),
+        "analysis_input_point_count": int(point_count),
+        "analysis_visible_point_count": int(
+            point_count if analysis_visible_point_count is None else analysis_visible_point_count
+        ),
         "centerline_length_mm": float(result.centerline_length_mm),
         "centerline_axis_mode": result.parameters.centerline_axis_mode,
         "centerline_model": result.parameters.centerline_model,
@@ -96,6 +103,12 @@ def _write_json(path: Path, result, input_path: str, point_count: int):
         },
         "sections": [section_payload(section) for section in result.sections],
     }
+    if source_point_cloud_path:
+        source_path = Path(source_point_cloud_path).expanduser().resolve()
+        payload["source_point_cloud_path"] = str(source_path)
+        payload["source_point_cloud_filename"] = source_path.name
+    if source_loaded_point_count is not None:
+        payload["source_loaded_point_count"] = int(source_loaded_point_count)
     with path.open("w", encoding="utf-8", newline="\n") as stream:
         json.dump(payload, stream, ensure_ascii=False, allow_nan=False, separators=(",", ":"))
 
@@ -178,13 +191,19 @@ def _write_plots(directory: Path, result):
     plt.close(fig)
 
 
-def write_stem_diameter_outputs(output_dir, result, input_path: str, point_count: int):
+def write_stem_diameter_outputs(output_dir, result, input_path: str, point_count: int,
+                                source_point_cloud_path: str | None = None,
+                                source_loaded_point_count: int | None = None,
+                                analysis_visible_point_count: int | None = None):
     """Regenerate only the four named analysis outputs; preserve other user files."""
     target = Path(output_dir)
     target.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(prefix=".stem-diameter-", dir=target) as staging:
         stage = Path(staging)
-        _write_json(stage / "stem_diameter.json", result, input_path, point_count)
+        _write_json(
+            stage / "stem_diameter.json", result, input_path, point_count,
+            source_point_cloud_path, source_loaded_point_count, analysis_visible_point_count,
+        )
         _write_csv(stage / "stem_diameter.csv", result)
         _write_plots(stage, result)
         for filename in OUTPUT_NAMES:

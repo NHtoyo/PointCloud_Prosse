@@ -30,6 +30,7 @@ class StemDiameterCliTests(unittest.TestCase):
         with tempfile.TemporaryDirectory(prefix="stem-diameter-cli-") as temp_dir:
             root = Path(temp_dir)
             input_path = root / "synthetic_stem.ply"
+            source_path = root / "original_plant.ply"
             output_dir = root / "synthetic_stem_stem_diameter"
             pointcloud_io.save_ply(str(input_path), points, colors)
             output_dir.mkdir()
@@ -41,6 +42,9 @@ class StemDiameterCliTests(unittest.TestCase):
                 code = main([
                     "--input", str(input_path),
                     "--output_dir", str(output_dir),
+                    "--source-point-cloud-path", str(source_path),
+                    "--source-loaded-point-count", str(len(points) + 2),
+                    "--analysis-visible-point-count", str(len(points)),
                     "--coordinate-scale-to-mm", "1",
                     "--query-workers", "1",
                 ])
@@ -59,6 +63,12 @@ class StemDiameterCliTests(unittest.TestCase):
             self.assertEqual(payload["schema_version"], 2)
             self.assertNotIn("scale_mm_per_unit", payload)
             self.assertEqual(payload["point_count"], len(points))
+            self.assertEqual(payload["input_path"], str(input_path.resolve()))
+            self.assertEqual(payload["source_point_cloud_path"], str(source_path.resolve()))
+            self.assertEqual(payload["source_point_cloud_filename"], source_path.name)
+            self.assertEqual(payload["source_loaded_point_count"], len(points) + 2)
+            self.assertEqual(payload["analysis_visible_point_count"], len(points))
+            self.assertEqual(payload["analysis_input_point_count"], len(points))
             self.assertEqual(payload["centerline_axis_mode"], "pca")
             self.assertEqual(payload["centerline_model"], "polyline")
             self.assertTrue(payload["use_largest_component"])
@@ -167,6 +177,23 @@ class StemDiameterCliTests(unittest.TestCase):
         )
         self.assertTrue(action.required)
 
+    def test_visible_count_metadata_must_match_analysis_input(self):
+        points = cylinder_points_mm(length_mm=80.0, axial_step_mm=1.0, angular_count=96).astype(np.float32)
+        with tempfile.TemporaryDirectory(prefix="stem-diameter-count-metadata-") as temp_dir:
+            root = Path(temp_dir)
+            input_path = root / "stem.ply"
+            output_dir = root / "out"
+            pointcloud_io.save_ply(str(input_path), points, np.zeros_like(points, dtype=np.uint8))
+            with redirect_stderr(io.StringIO()):
+                code = main([
+                    "--input", str(input_path), "--output_dir", str(output_dir),
+                    "--coordinate-scale-to-mm", "1", "--query-workers", "1",
+                    "--analysis-visible-point-count", str(len(points) - 1),
+                ])
+            self.assertEqual(code, 2)
+            report = json.loads((output_dir / "stem_diameter_error.json").read_text(encoding="utf-8"))
+            self.assertIn("analysis_visible_point_count must match", report["message"])
+
     def test_cli_model_and_component_options_are_saved(self):
         points = cylinder_points_mm(length_mm=80.0, axial_step_mm=1.0, angular_count=96).astype(np.float32)
         with tempfile.TemporaryDirectory(prefix="stem-diameter-options-") as temp_dir:
@@ -238,6 +265,16 @@ class StemDiameterCliTests(unittest.TestCase):
         self.assertIn("loaded={activeInputExport.LoadedPointCount:N0}", ui_source)
         self.assertIn("visible={exported.VertexCount:N0} excluded={excludedPointCount:N0}", ui_source)
         self.assertIn("CleanupTemporaryInput();", ui_source)
+        self.assertIn("OnPointCloudLoaded(string path)", ui_source)
+        self.assertIn("StemDiameterResultCache.GetResultDirectory(pointCloudDataDirectory, inputPath)", ui_source)
+        self.assertIn("LoadResultAsync(resultPath, CancellationToken.None, -1", ui_source)
+        self.assertIn('"--source-point-cloud-path", Quote(runSourcePath)', ui_source)
+        self.assertIn('"--source-loaded-point-count", activeInputExport.LoadedPointCount.ToString', ui_source)
+        self.assertIn('"--analysis-visible-point-count", exported.VertexCount.ToString', ui_source)
+        self.assertIn("loadGeneration != sourceGeneration", ui_source)
+        self.assertIn("現在の点群編集状態と解析時の点数が異なります。再解析を推奨します。", ui_source)
+        self.assertIn("既存の茎径解析結果を読み込めませんでした。", ui_source)
+        self.assertIn("ValidateResultPayload(parsed);", ui_source)
         self.assertIn("ExportPointMode.AllVisible", input_export_source)
         self.assertIn('"stem_diameter_" + Guid.NewGuid().ToString("N")', input_export_source)
         self.assertIn("public void Cleanup()", input_export_source)

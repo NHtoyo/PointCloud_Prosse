@@ -47,6 +47,10 @@ public sealed class StemDiameterUI : MonoBehaviour
     private int processGeneration;
     private StemDiameterInputExport activeInputExport;
     private Task<PlyExportResult> inputExportTask;
+    private int sourceGeneration;
+    private int analysisSourceGeneration;
+    private string analysisSourcePath = "";
+    private string analysisOutputDirectory = "";
 
     private struct OutputLine
     {
@@ -66,6 +70,7 @@ public sealed class StemDiameterUI : MonoBehaviour
 
     private void OnDestroy()
     {
+        sourceGeneration++;
         if (loader != null) loader.PointCloudLoaded -= OnPointCloudLoaded;
         if (ownsOperation)
         {
@@ -82,6 +87,11 @@ public sealed class StemDiameterUI : MonoBehaviour
     private void Update()
     {
         if (isStopping) return;
+        if (ownsOperation && analysisSourceGeneration != sourceGeneration)
+        {
+            _ = StopProcessAsync();
+            return;
+        }
         if (ownsOperation && PointCloudProgressManager.Instance.IsRunning && PointCloudProgressManager.Instance.CancellationToken.IsCancellationRequested)
         {
             _ = StopProcessAsync();
@@ -107,8 +117,9 @@ public sealed class StemDiameterUI : MonoBehaviour
         if (exitCode == 0)
         {
             int expectedPointCount = activeInputExport != null ? activeInputExport.VisiblePointCount : -1;
-            _ = LoadResultAsync(Path.Combine(outputDirectory, "stem_diameter.json"),
-                PointCloudProgressManager.Instance.CancellationToken, expectedPointCount);
+            _ = LoadResultAsync(Path.Combine(analysisOutputDirectory, "stem_diameter.json"),
+                PointCloudProgressManager.Instance.CancellationToken, expectedPointCount,
+                analysisSourcePath, analysisSourceGeneration, false);
         }
         else
         {
@@ -120,27 +131,73 @@ public sealed class StemDiameterUI : MonoBehaviour
         }
     }
 
-    private async Task LoadResultAsync(string jsonPath, CancellationToken cancellationToken, int expectedPointCount)
+    private async Task LoadResultAsync(string jsonPath, CancellationToken cancellationToken,
+        int expectedPointCount, string expectedSourcePath, int loadGeneration, bool isCachedResult)
     {
-        isLoadingResult = true;
+        if (loadGeneration == sourceGeneration) isLoadingResult = true;
         try
         {
-            string json = await Task.Run(() => File.ReadAllText(jsonPath), cancellationToken);
+            PointData[] currentPoints = targetRenderer != null ? targetRenderer.GetPointData() : null;
+            Task<string> jsonTask = Task.Run(() => File.ReadAllText(jsonPath), cancellationToken);
+            Task<int> visibleCountTask = Task.Run(() => currentPoints == null ? 0 :
+                PlyExportService.CountIncludedPoints(currentPoints, ExportPointMode.AllVisible, cancellationToken),
+                cancellationToken);
+            await Task.WhenAll(jsonTask, visibleCountTask);
             cancellationToken.ThrowIfCancellationRequested();
+            if (loadGeneration != sourceGeneration || !StemDiameterResultCache.PathsEqual(expectedSourcePath, inputPath))
+                return;
+
+            string json = jsonTask.Result;
             StemDiameterResult parsed = JsonUtility.FromJson<StemDiameterResult>(json);
-            if (parsed == null || parsed.schema_version != 2 || parsed.sections == null)
-                throw new InvalidDataException("JSONの形式またはschema_versionが不正です。");
-            StemDiameterInputExport.ValidatePythonPointCount(expectedPointCount, parsed.point_count);
+            ValidateResultPayload(parsed);
+            if (expectedPointCount >= 0)
+                StemDiameterInputExport.ValidatePythonPointCount(expectedPointCount, parsed.point_count);
+            if (!StemDiameterResultCache.SourceMatches(
+                    parsed.source_point_cloud_path, parsed.source_point_cloud_filename, expectedSourcePath))
+            {
+                if (!isCachedResult)
+                    throw new InvalidDataException("解析結果に記録された元点群が現在の点群と一致しません。");
+                status = "結果ファイルと現在の点群が一致しません。";
+                UnityEngine.Debug.LogWarning(
+                    $"[StemDiameterUI][CACHE] result source mismatch expected={expectedSourcePath} " +
+                    $"actual={parsed.source_point_cloud_path ?? parsed.source_point_cloud_filename ?? "(legacy)"}");
+                return;
+            }
 
             result = parsed;
             selectedIndex = result.sections.Length > 0 ? 0 : -1;
-            visualizer.SetResult(targetRenderer, result);
-            if (selectedIndex >= 0) visualizer.SelectSection(selectedIndex);
-            visualizer.SetVisible(showOverlay);
-            status = $"完了: {result.sections.Length}断面 / {result.centerline_length_mm:F1} mm";
-            PointCloudProgressManager.Instance.Complete();
-            ownsOperation = false;
-            UnityEngine.Debug.Log($"[StemDiameterUI] 解析完了: {jsonPath}");
+            if (visualizer != null)
+            {
+                visualizer.SetResult(targetRenderer, result);
+                if (selectedIndex >= 0) visualizer.SelectSection(selectedIndex);
+                visualizer.SetVisible(showOverlay);
+            }
+
+            bool stale = StemDiameterResultCache.IsStale(
+                parsed.analysis_visible_point_count, visibleCountTask.Result);
+            status = isCachedResult
+                ? $"保存済み解析結果を読み込みました: {result.sections.Length}断面 / {result.centerline_length_mm:F1} mm"
+                : $"完了: {result.sections.Length}断面 / {result.centerline_length_mm:F1} mm";
+            if (stale)
+            {
+                status += "\n現在の点群編集状態と解析時の点数が異なります。再解析を推奨します。";
+                UnityEngine.Debug.LogWarning(
+                    $"[StemDiameterUI][CACHE] stale analysis_visible_point_count={parsed.analysis_visible_point_count} " +
+                    $"current_visible_point_count={visibleCountTask.Result}");
+            }
+
+            if (isCachedResult)
+            {
+                UnityEngine.Debug.Log(
+                    $"[StemDiameterUI][CACHE]\nloaded existing result\nsections={result.sections.Length}\n" +
+                    $"centerline_length_mm={result.centerline_length_mm:F1}");
+            }
+            else
+            {
+                PointCloudProgressManager.Instance.Complete();
+                ownsOperation = false;
+                UnityEngine.Debug.Log($"[StemDiameterUI] 解析完了: {jsonPath}");
+            }
         }
         catch (OperationCanceledException)
         {
@@ -148,23 +205,97 @@ public sealed class StemDiameterUI : MonoBehaviour
         }
         catch (Exception ex)
         {
-            if (cancellationToken.IsCancellationRequested) return;
-            Fail($"解析結果を読み込めません: {ex.Message}", ex.ToString());
+            if (cancellationToken.IsCancellationRequested || loadGeneration != sourceGeneration) return;
+            if (isCachedResult)
+            {
+                result = null;
+                selectedIndex = -1;
+                if (visualizer != null) visualizer.Clear();
+                status = "既存の茎径解析結果を読み込めませんでした。";
+                UnityEngine.Debug.LogWarning(
+                    $"[StemDiameterUI][CACHE] failed to load existing result: {jsonPath}\n{ex}");
+            }
+            else
+            {
+                Fail($"解析結果を読み込めません: {ex.Message}", ex.ToString());
+            }
         }
         finally
         {
-            isLoadingResult = false;
-            CleanupTemporaryInput();
+            if (loadGeneration == sourceGeneration) isLoadingResult = false;
+            if (!isCachedResult) CleanupTemporaryInput();
         }
     }
 
     private void OnPointCloudLoaded(string path)
     {
+        int generation = ++sourceGeneration;
+        if (ownsOperation)
+        {
+            PointCloudProgressManager.Instance.Cancel();
+            _ = StopProcessAsync();
+        }
+
         result = null;
         selectedIndex = -1;
+        isLoadingResult = false;
         if (visualizer != null) visualizer.Clear();
-        inputPath = path;
-        status = "点群が変わりました。茎径解析を再実行してください。";
+        string sourcePath = loader != null && !string.IsNullOrWhiteSpace(loader.CurrentFilePath)
+            ? loader.CurrentFilePath : path;
+        try
+        {
+            inputPath = string.IsNullOrWhiteSpace(sourcePath) ? "" : Path.GetFullPath(sourcePath);
+        }
+        catch (Exception ex)
+        {
+            outputDirectory = "";
+            status = "現在の点群パスを取得できません。";
+            UnityEngine.Debug.LogWarning($"[StemDiameterUI][CACHE] invalid source path: {ex.Message}");
+            return;
+        }
+        if (string.IsNullOrWhiteSpace(inputPath))
+        {
+            outputDirectory = "";
+            status = "現在の点群パスを取得できません。";
+            return;
+        }
+
+        string pointCloudDataDirectory = loader != null
+            ? loader.GetPointCloudDataDirectory()
+            : Path.GetFullPath(Path.Combine(Application.dataPath, "../../PointCloudData"));
+        outputDirectory = StemDiameterResultCache.GetResultDirectory(pointCloudDataDirectory, inputPath);
+        string resultPath = Path.Combine(outputDirectory, "stem_diameter.json");
+        bool found = File.Exists(resultPath);
+        UnityEngine.Debug.Log(
+            $"[StemDiameterUI][CACHE]\nsource={Path.GetFileName(inputPath)}\nresult_path={resultPath}\nfound={found.ToString().ToLowerInvariant()}");
+        if (!found)
+        {
+            status = "この点群の茎径解析結果はありません。";
+            UnityEngine.Debug.Log("[StemDiameterUI][CACHE]\nno existing result");
+            return;
+        }
+
+        status = "保存済み茎径解析結果を読み込み中...";
+        _ = LoadResultAsync(resultPath, CancellationToken.None, -1,
+            inputPath, generation, true);
+    }
+
+    private static void ValidateResultPayload(StemDiameterResult parsed)
+    {
+        if (parsed == null || parsed.schema_version != 2 || parsed.sections == null || parsed.sections.Length == 0 ||
+            parsed.centerline == null || parsed.centerline.display_points_xyz_mm == null ||
+            parsed.centerline.display_points_xyz_mm.Length < 2)
+            throw new InvalidDataException("JSONの形式または必須データが不足しています。");
+
+        for (int i = 0; i < parsed.sections.Length; i++)
+        {
+            StemDiameterSection section = parsed.sections[i];
+            if (section == null || section.slice_results == null)
+                throw new InvalidDataException($"JSONの断面データが不完全です (index={i})。");
+            for (int j = 0; j < section.slice_results.Length; j++)
+                if (section.slice_results[j] == null)
+                    throw new InvalidDataException($"JSONのスライスデータが不完全です (section={i}, slice={j})。");
+        }
     }
 
     public bool IsMouseOverPanel()
@@ -520,9 +651,15 @@ public sealed class StemDiameterUI : MonoBehaviour
         if (!progress.Start("茎径プロファイル", "表示中の点を一時PLYへ書き出し中...")) return;
         ownsOperation = true;
         isStopping = false;
+        string runSourcePath = "";
+        int runSourceGeneration = sourceGeneration;
         CancellationToken cancellationToken = progress.CancellationToken;
         try
         {
+            runSourcePath = Path.GetFullPath(inputPath);
+            runSourceGeneration = sourceGeneration;
+            analysisSourcePath = runSourcePath;
+            analysisSourceGeneration = runSourceGeneration;
             if (loader == null || targetRenderer == null) throw new InvalidOperationException("PointCloudLoader / PointCloudRenderer が見つかりません。");
             if (string.IsNullOrWhiteSpace(inputPath)) throw new InvalidOperationException("現在の点群ファイル名を取得できません。");
 
@@ -534,6 +671,11 @@ public sealed class StemDiameterUI : MonoBehaviour
             PlyExportResult exported = await inputExportTask;
             inputExportTask = null;
             cancellationToken.ThrowIfCancellationRequested();
+            if (runSourceGeneration != sourceGeneration || !StemDiameterResultCache.PathsEqual(runSourcePath, inputPath))
+            {
+                if (!isStopping) _ = StopProcessAsync();
+                return;
+            }
             int excludedPointCount = activeInputExport.LoadedPointCount - exported.VertexCount;
             UnityEngine.Debug.Log(
                 $"[StemDiameterUI] visible export mode=AllVisible loaded={activeInputExport.LoadedPointCount:N0} " +
@@ -546,16 +688,21 @@ public sealed class StemDiameterUI : MonoBehaviour
             if (!File.Exists(script)) throw new FileNotFoundException("茎径解析CLIが見つかりません。", script);
             string pythonVenv = Path.Combine(backend, ".venv", "Scripts", "python.exe");
             string python = File.Exists(pythonVenv) ? pythonVenv : "python";
-            outputDirectory = Path.Combine(loader.GetPointCloudDataDirectory(),
-                Path.GetFileNameWithoutExtension(inputPath) + "_stem_diameter");
-            Directory.CreateDirectory(outputDirectory);
+            string runOutputDirectory = StemDiameterResultCache.GetResultDirectory(
+                loader.GetPointCloudDataDirectory(), runSourcePath);
+            analysisOutputDirectory = runOutputDirectory;
+            outputDirectory = runOutputDirectory;
+            Directory.CreateDirectory(runOutputDirectory);
 
             ProcessStartInfo startInfo = new ProcessStartInfo
             {
                 FileName = python,
                 Arguments = string.Join(" ", new[]
                 {
-                    Quote(script), "--input", Quote(activeInputExport.InputPath), "--output_dir", Quote(outputDirectory),
+                    Quote(script), "--input", Quote(activeInputExport.InputPath), "--output_dir", Quote(runOutputDirectory),
+                    "--source-point-cloud-path", Quote(runSourcePath),
+                    "--source-loaded-point-count", activeInputExport.LoadedPointCount.ToString(CultureInfo.InvariantCulture),
+                    "--analysis-visible-point-count", exported.VertexCount.ToString(CultureInfo.InvariantCulture),
                     "--coordinate-scale-to-mm", targetRenderer.DisplayScale.ToString("R", CultureInfo.InvariantCulture),
                     "--centerline-axis", centerlineAxisSelection == 0 ? "pca" : "y",
                     "--centerline-model", centerlineModelSelection == 0 ? "polyline" : "spline",
@@ -689,6 +836,7 @@ public sealed class StemDiameterUI : MonoBehaviour
     {
         if (!ownsOperation || isStopping) return;
         isStopping = true;
+        int stoppingSourceGeneration = analysisSourceGeneration;
         Interlocked.Increment(ref processGeneration);
         Process stoppingProcess = process;
         try
@@ -724,9 +872,10 @@ public sealed class StemDiameterUI : MonoBehaviour
                 process = null;
             }
             isLoadingResult = false;
-            status = "解析をキャンセルしました。";
+            string cancellationStatus = "解析をキャンセルしました。";
+            if (sourceGeneration == stoppingSourceGeneration) status = cancellationStatus;
             if (PointCloudProgressManager.Instance.IsRunning)
-                PointCloudProgressManager.Instance.CompleteCancelled(status);
+                PointCloudProgressManager.Instance.CompleteCancelled(cancellationStatus);
             ownsOperation = false;
             isStopping = false;
             inputExportTask = null;
