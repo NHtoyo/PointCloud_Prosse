@@ -77,7 +77,19 @@ def _write_json(path: Path, result, input_path: str, point_count: int):
         "input_path": str(Path(input_path).resolve()),
         "point_count": int(point_count),
         "centerline_length_mm": float(result.centerline_length_mm),
+        "centerline_axis_mode": result.parameters.centerline_axis_mode,
+        "centerline_model": result.parameters.centerline_model,
         "parameters": _json_value(result.parameters),
+        "use_largest_component": bool(result.parameters.use_largest_component),
+        "component_knn_k": int(result.parameters.component_knn_k),
+        "component_alpha": float(result.parameters.component_alpha),
+        "component_input_point_count": int(result.diagnostics["connected_component"]["input_points"]),
+        "component_point_count": int(result.diagnostics["connected_component"]["kept_points"]),
+        "component_removed_count": int(result.diagnostics["connected_component"]["removed_points"]),
+        "median_knn_distance_mm": result.diagnostics["connected_component"]["median_knn_distance_mm"],
+        "connectivity_epsilon_mm": result.diagnostics["connected_component"]["epsilon_mm"],
+        "diagnostics": _json_value(result.diagnostics),
+        "warnings": list(result.warnings),
         "centerline": {
             "support_points_xyz_mm": [vector(p) for p in result.centerline_support_points_mm],
             "display_points_xyz_mm": [vector(p) for p in result.centerline_display_points_mm],
@@ -132,7 +144,12 @@ def _write_plots(directory: Path, result):
         ax.plot(x, _profile_values(result, field), label=label, linewidth=1.4)
     ax.set_xlabel("Distance from top [mm]")
     ax.set_ylabel("Equivalent diameter [mm]")
-    ax.set_title("Stem diameter profile")
+    params = result.parameters
+    component_text = (
+        f"Largest component K={params.component_knn_k}, alpha={params.component_alpha:g}"
+        if params.use_largest_component else "Largest component disabled"
+    )
+    ax.set_title(f"{params.centerline_axis_mode.upper()} / {params.centerline_model} / {component_text}")
     ax.grid(True, alpha=0.25)
     ax.legend()
     fig.savefig(directory / "diameter_profile.png", dpi=160)
@@ -173,3 +190,20 @@ def write_stem_diameter_outputs(output_dir, result, input_path: str, point_count
         _write_plots(stage, result)
         for filename in OUTPUT_NAMES:
             os.replace(stage / filename, target / filename)
+
+
+def write_stem_diameter_error(output_dir, payload: dict):
+    """Atomically write a diagnostic report for a failed analysis run."""
+    target = Path(output_dir)
+    target.mkdir(parents=True, exist_ok=True)
+    fd, temporary_name = tempfile.mkstemp(prefix=".stem-diameter-error-", suffix=".tmp", dir=target)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as stream:
+            json.dump(_json_value(payload), stream, ensure_ascii=False, allow_nan=False, indent=2)
+            stream.write("\n")
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temporary_name, target / "stem_diameter_error.json")
+    finally:
+        if os.path.exists(temporary_name):
+            os.unlink(temporary_name)

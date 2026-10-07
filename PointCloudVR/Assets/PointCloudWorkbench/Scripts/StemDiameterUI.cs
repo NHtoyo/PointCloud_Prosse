@@ -26,6 +26,15 @@ public sealed class StemDiameterUI : MonoBehaviour
     private string inputPath = "";
     private int metricMode;
     private int selectedIndex = -1;
+    private int centerlineAxisSelection;
+    private int centerlineModelSelection;
+    private bool useLargestComponent = true;
+    private string componentKText = "8";
+    private string componentAlphaText = "2.5";
+    private string centerlineStepText = "5.0";
+    private string minCenterlineBinPointsText = "30";
+    private string lastFailureStage = "";
+    private string lastFailureLine = "";
     private PointCloudLoader loader;
     private PointCloudRenderer targetRenderer;
     private PointCloudEditorUI editorUI;
@@ -76,6 +85,7 @@ public sealed class StemDiameterUI : MonoBehaviour
         {
             if (line.IsError)
             {
+                CaptureFailureStage(line.Text);
                 if (errorOutput.Length > 0) errorOutput.AppendLine();
                 errorOutput.Append(line.Text);
                 continue;
@@ -94,7 +104,10 @@ public sealed class StemDiameterUI : MonoBehaviour
         else
         {
             string detail = errorOutput.ToString();
-            Fail($"Python解析に失敗しました (ExitCode: {exitCode})", detail);
+            string summary = string.IsNullOrEmpty(lastFailureStage)
+                ? $"茎径解析に失敗しました (ExitCode: {exitCode})"
+                : $"茎径解析失敗\n工程: {lastFailureStage}\n{BuildFailureSummary(lastFailureLine)}";
+            Fail(summary, detail);
         }
     }
 
@@ -164,7 +177,7 @@ public sealed class StemDiameterUI : MonoBehaviour
         barWidth = Mathf.Max(280f, barWidth);
         barX = Mathf.Clamp(barX + (availableWidth - barWidth) * 0.5f, 15f, Screen.width - barWidth - 15f);
         bool hasResult = result != null && result.sections != null && result.sections.Length > 0;
-        float preferredHeight = hasResult ? 460f : 220f;
+        float preferredHeight = hasResult ? 570f : 390f;
         float availableHeight = Mathf.Max(160f, Screen.height - currentY - 18f);
         float barHeight = Mathf.Min(preferredHeight, availableHeight);
         panelRect = new Rect(barX, currentY, barWidth, barHeight);
@@ -183,7 +196,8 @@ public sealed class StemDiameterUI : MonoBehaviour
             editorUI.SetStemDiameterPanelVisible(false);
         GUILayout.EndHorizontal();
 
-        GUILayout.Label("間隔 10 mm   中心線支持 5 mm   局所軸半径 15 mm   断面厚 3 / 5 / 7 mm");
+        DrawAnalysisOptions();
+        GUILayout.Label("測定間隔 10 mm   局所軸半径 15 mm   断面厚 3 / 5 / 7 mm");
         GUILayout.Label("主茎を抽出した点群を入力してください。節・葉柄等は品質指標で確認します。");
         GUILayout.BeginHorizontal();
         bool priorEnabled = GUI.enabled;
@@ -215,6 +229,44 @@ public sealed class StemDiameterUI : MonoBehaviour
         Event current = Event.current;
         if (current != null && current.type == EventType.ScrollWheel && panelRect.Contains(current.mousePosition))
             current.Use();
+    }
+
+    private void DrawAnalysisOptions()
+    {
+        bool previousEnabled = GUI.enabled;
+        GUI.enabled = process == null && !isLoadingResult && !PointCloudProgressManager.Instance.IsRunning;
+
+        GUILayout.BeginHorizontal();
+        GUILayout.Label("基準軸", GUILayout.Width(72f));
+        if (GUILayout.Toggle(centerlineAxisSelection == 0, "PCA", "Button", GUILayout.Width(90f)))
+            centerlineAxisSelection = 0;
+        if (GUILayout.Toggle(centerlineAxisSelection == 1, "Y軸", "Button", GUILayout.Width(90f)))
+            centerlineAxisSelection = 1;
+        GUILayout.Space(12f);
+        GUILayout.Label("中心線", GUILayout.Width(72f));
+        if (GUILayout.Toggle(centerlineModelSelection == 0, "折れ線", "Button", GUILayout.Width(90f)))
+            centerlineModelSelection = 0;
+        if (GUILayout.Toggle(centerlineModelSelection == 1, "Spline", "Button", GUILayout.Width(90f)))
+            centerlineModelSelection = 1;
+        GUILayout.EndHorizontal();
+
+        useLargestComponent = GUILayout.Toggle(useLargestComponent, "最大連結成分のみ使用");
+        GUILayout.BeginHorizontal();
+        GUILayout.Label("近傍数 K", GUILayout.Width(72f));
+        componentKText = GUILayout.TextField(componentKText, GUILayout.Width(72f));
+        GUILayout.Label("接続係数 α", GUILayout.Width(82f));
+        componentAlphaText = GUILayout.TextField(componentAlphaText, GUILayout.Width(84f));
+        GUILayout.Label("（0 < α ≤ 10）");
+        GUILayout.EndHorizontal();
+
+        GUILayout.BeginHorizontal();
+        GUILayout.Label("中心線支持間隔", GUILayout.Width(110f));
+        centerlineStepText = GUILayout.TextField(centerlineStepText, GUILayout.Width(72f));
+        GUILayout.Label("mm", GUILayout.Width(28f));
+        GUILayout.Label("bin最小点数", GUILayout.Width(92f));
+        minCenterlineBinPointsText = GUILayout.TextField(minCenterlineBinPointsText, GUILayout.Width(72f));
+        GUILayout.EndHorizontal();
+        GUI.enabled = previousEnabled;
     }
 
     private void EnsurePanelBackgroundStyle()
@@ -409,16 +461,49 @@ public sealed class StemDiameterUI : MonoBehaviour
 
     private void StartAnalysis()
     {
+        RefreshSourceInfo();
+        if (!int.TryParse(componentKText, NumberStyles.Integer, CultureInfo.InvariantCulture, out int componentK))
+        {
+            PointCloudProgressManager.Instance.ShowError("茎径プロファイル", "近傍数Kには整数を入力してください。");
+            return;
+        }
+        if (!float.TryParse(componentAlphaText, NumberStyles.Float, CultureInfo.InvariantCulture, out float componentAlpha) ||
+            float.IsNaN(componentAlpha) || float.IsInfinity(componentAlpha) || componentAlpha <= 0f || componentAlpha > 10f)
+        {
+            PointCloudProgressManager.Instance.ShowError("茎径プロファイル", "接続係数αは0より大きく10以下の値を入力してください。");
+            return;
+        }
+        if (!float.TryParse(centerlineStepText, NumberStyles.Float, CultureInfo.InvariantCulture, out float centerlineStep) ||
+            float.IsNaN(centerlineStep) || float.IsInfinity(centerlineStep) || centerlineStep <= 0f)
+        {
+            PointCloudProgressManager.Instance.ShowError("茎径プロファイル", "中心線支持間隔は0より大きい値を入力してください。");
+            return;
+        }
+        if (!int.TryParse(minCenterlineBinPointsText, NumberStyles.Integer, CultureInfo.InvariantCulture, out int minBinPoints) ||
+            minBinPoints < 1)
+        {
+            PointCloudProgressManager.Instance.ShowError("茎径プロファイル", "bin最小点数は1以上の整数を入力してください。");
+            return;
+        }
+        PointData[] currentPoints = targetRenderer != null ? targetRenderer.GetPointData() : null;
+        if (currentPoints == null || currentPoints.Length == 0)
+        {
+            PointCloudProgressManager.Instance.ShowError("茎径プロファイル", "点群がまだ読み込まれていません。");
+            return;
+        }
+        if (componentK < 1 || componentK >= currentPoints.Length)
+        {
+            PointCloudProgressManager.Instance.ShowError("茎径プロファイル", "近傍数Kは1以上かつ対象点数未満にしてください。");
+            return;
+        }
+
         PointCloudProgressManager progress = PointCloudProgressManager.Instance;
         if (!progress.Start("茎径プロファイル", "Pythonを起動中...")) return;
         ownsOperation = true;
         isStopping = false;
         try
         {
-            RefreshSourceInfo();
             if (loader == null || targetRenderer == null) throw new InvalidOperationException("PointCloudLoader / PointCloudRenderer が見つかりません。");
-            if (targetRenderer.GetPointData() == null || targetRenderer.GetPointData().Length == 0)
-                throw new InvalidOperationException("点群がまだ読み込まれていません。");
             if (!File.Exists(inputPath)) throw new FileNotFoundException("現在の点群PLYが見つかりません。", inputPath);
 
             string backend = Path.GetFullPath(Path.Combine(Application.dataPath, "../python_backend"));
@@ -437,6 +522,13 @@ public sealed class StemDiameterUI : MonoBehaviour
                 {
                     Quote(script), "--input", Quote(inputPath), "--output_dir", Quote(outputDirectory),
                     "--coordinate-scale-to-mm", targetRenderer.DisplayScale.ToString("R", CultureInfo.InvariantCulture),
+                    "--centerline-axis", centerlineAxisSelection == 0 ? "pca" : "y",
+                    "--centerline-model", centerlineModelSelection == 0 ? "polyline" : "spline",
+                    "--centerline-step-mm", centerlineStep.ToString("R", CultureInfo.InvariantCulture),
+                    "--min-centerline-bin-points", minBinPoints.ToString(CultureInfo.InvariantCulture),
+                    "--component-knn-k", componentK.ToString(CultureInfo.InvariantCulture),
+                    "--component-alpha", componentAlpha.ToString("R", CultureInfo.InvariantCulture),
+                    useLargestComponent ? "--largest-component" : "--no-largest-component",
                     "--query-workers", "-1"
                 }),
                 WorkingDirectory = backend,
@@ -450,6 +542,8 @@ public sealed class StemDiameterUI : MonoBehaviour
             stdoutEnded = false;
             stderrEnded = false;
             errorOutput.Length = 0;
+            lastFailureStage = "";
+            lastFailureLine = "";
             while (outputQueue.TryDequeue(out _)) { }
             int generation = ++processGeneration;
             process.OutputDataReceived += (_, e) =>
@@ -490,6 +584,7 @@ public sealed class StemDiameterUI : MonoBehaviour
 
     private void ProcessOutputLine(string line)
     {
+        CaptureFailureStage(line);
         if (line.StartsWith("[Progress]", StringComparison.Ordinal))
         {
             string[] fields = line.Split(new[] { ' ' }, 3, StringSplitOptions.RemoveEmptyEntries);
@@ -503,6 +598,39 @@ public sealed class StemDiameterUI : MonoBehaviour
         {
             UnityEngine.Debug.Log($"[StemDiameter] {line}");
         }
+    }
+
+    private void CaptureFailureStage(string line)
+    {
+        const string marker = "[StemDiameter][STAGE][FAIL] ";
+        int markerIndex = line.IndexOf(marker, StringComparison.Ordinal);
+        if (markerIndex < 0) return;
+        string remainder = line.Substring(markerIndex + marker.Length);
+        int separator = remainder.IndexOf(' ');
+        lastFailureStage = separator < 0 ? remainder : remainder.Substring(0, separator);
+        lastFailureLine = line;
+    }
+
+    private string BuildFailureSummary(string failureLine)
+    {
+        if (lastFailureStage == "CENTERLINE_BINNING")
+        {
+            int actual = ReadDiagnosticInt(failureLine, "valid_support_bins=");
+            int required = ReadDiagnosticInt(failureLine, "required_support_points=");
+            if (actual >= 0 && required >= 0) return $"中心線支持点生成に失敗\n有効bin: {actual} / 必要{required}";
+        }
+        if (lastFailureStage == "CONNECTED_COMPONENT") return "最大連結成分の抽出に失敗しました。K/αと点数を確認してください。";
+        return "詳細はログを確認してください。";
+    }
+
+    private static int ReadDiagnosticInt(string line, string key)
+    {
+        int start = line.IndexOf(key, StringComparison.Ordinal);
+        if (start < 0) return -1;
+        start += key.Length;
+        int end = line.IndexOf(' ', start);
+        string value = end < 0 ? line.Substring(start) : line.Substring(start, end - start);
+        return int.TryParse(value, NumberStyles.Integer, CultureInfo.InvariantCulture, out int parsed) ? parsed : -1;
     }
 
     private async Task StopProcessAsync()

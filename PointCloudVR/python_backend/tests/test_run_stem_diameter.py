@@ -4,6 +4,7 @@ import json
 import tempfile
 import unittest
 from contextlib import redirect_stdout
+from contextlib import redirect_stderr
 from pathlib import Path
 from unittest.mock import patch
 
@@ -58,6 +59,18 @@ class StemDiameterCliTests(unittest.TestCase):
             self.assertEqual(payload["schema_version"], 2)
             self.assertNotIn("scale_mm_per_unit", payload)
             self.assertEqual(payload["point_count"], len(points))
+            self.assertEqual(payload["centerline_axis_mode"], "pca")
+            self.assertEqual(payload["centerline_model"], "polyline")
+            self.assertTrue(payload["use_largest_component"])
+            self.assertEqual(payload["component_knn_k"], 8)
+            self.assertEqual(payload["component_alpha"], 2.5)
+            self.assertEqual(payload["component_input_point_count"], len(points))
+            self.assertEqual(payload["component_point_count"] + payload["component_removed_count"], len(points))
+            self.assertGreater(payload["median_knn_distance_mm"], 0.0)
+            self.assertGreater(payload["connectivity_epsilon_mm"], 0.0)
+            self.assertIn("centerline_binning", payload["diagnostics"])
+            self.assertIn("local_axis", payload["diagnostics"])
+            self.assertIn("slice_measurement", payload["diagnostics"])
             self.assertAlmostEqual(payload["centerline_length_mm"], 160.0, delta=15.0)
             self.assertGreater(len(payload["sections"]), 10)
             self.assertEqual(len(payload["centerline"]["display_points_xyz_mm"][0]), 3)
@@ -105,9 +118,9 @@ class StemDiameterCliTests(unittest.TestCase):
                 captured = {}
                 real_analyze_stem = run_stem_diameter.analyze_stem
 
-                def capture_mm_input(points_mm, params, progress_callback):
+                def capture_mm_input(points_mm, params, progress_callback, diagnostic_callback=None):
                     captured["points_mm"] = np.array(points_mm, copy=True)
-                    return real_analyze_stem(points_mm, params, progress_callback)
+                    return real_analyze_stem(points_mm, params, progress_callback, diagnostic_callback)
 
                 output = io.StringIO()
                 with patch("run_stem_diameter.analyze_stem", side_effect=capture_mm_input):
@@ -148,6 +161,60 @@ class StemDiameterCliTests(unittest.TestCase):
             if "--coordinate-scale-to-mm" in action.option_strings
         )
         self.assertTrue(action.required)
+
+    def test_cli_model_and_component_options_are_saved(self):
+        points = cylinder_points_mm(length_mm=80.0, axial_step_mm=1.0, angular_count=96).astype(np.float32)
+        with tempfile.TemporaryDirectory(prefix="stem-diameter-options-") as temp_dir:
+            root = Path(temp_dir)
+            input_path = root / "stem.ply"
+            output_dir = root / "out"
+            pointcloud_io.save_ply(str(input_path), points, np.zeros_like(points, dtype=np.uint8))
+            output = io.StringIO()
+            with redirect_stdout(output):
+                code = main([
+                    "--input", str(input_path), "--output_dir", str(output_dir),
+                    "--coordinate-scale-to-mm", "1", "--query-workers", "1",
+                    "--centerline-axis", "y", "--centerline-model", "spline",
+                    "--no-largest-component", "--component-knn-k", "7",
+                    "--component-alpha", "3.5", "--centerline-step-mm", "4",
+                    "--min-centerline-bin-points", "20",
+                ])
+            self.assertEqual(code, 0, output.getvalue())
+            payload = json.loads((output_dir / "stem_diameter.json").read_text(encoding="utf-8"))
+            self.assertEqual(payload["centerline_axis_mode"], "y")
+            self.assertEqual(payload["centerline_model"], "spline")
+            self.assertFalse(payload["use_largest_component"])
+            self.assertEqual(payload["component_knn_k"], 7)
+            self.assertEqual(payload["component_alpha"], 3.5)
+            self.assertEqual(payload["component_point_count"], len(points))
+            self.assertEqual(payload["component_removed_count"], 0)
+            self.assertEqual(payload["parameters"]["centerline_step_mm"], 4.0)
+            self.assertEqual(payload["parameters"]["min_centerline_bin_points"], 20)
+
+    def test_fatal_stage_writes_failure_json_and_traceback(self):
+        points = cylinder_points_mm(length_mm=80.0, axial_step_mm=1.0, angular_count=96).astype(np.float32)
+        with tempfile.TemporaryDirectory(prefix="stem-diameter-failure-") as temp_dir:
+            root = Path(temp_dir)
+            input_path = root / "stem.ply"
+            output_dir = root / "out"
+            pointcloud_io.save_ply(str(input_path), points, np.zeros_like(points, dtype=np.uint8))
+            stdout = io.StringIO()
+            stderr = io.StringIO()
+            with redirect_stdout(stdout), redirect_stderr(stderr):
+                code = main([
+                    "--input", str(input_path), "--output_dir", str(output_dir),
+                    "--coordinate-scale-to-mm", "1", "--query-workers", "1",
+                    "--centerline-axis", "y", "--no-largest-component",
+                    "--min-centerline-bin-points", str(len(points) + 1),
+                ])
+            self.assertEqual(code, 2)
+            self.assertIn("Traceback", stderr.getvalue())
+            self.assertIn("CENTERLINE_BINNING", stdout.getvalue())
+            report = json.loads((output_dir / "stem_diameter_error.json").read_text(encoding="utf-8"))
+            self.assertEqual(report["stage"], "CENTERLINE_BINNING")
+            self.assertEqual(report["diagnostics"]["valid_support_bins"], 0)
+            self.assertEqual(report["diagnostics"]["required_support_points"], 4)
+            self.assertEqual(report["parameters"]["centerline_axis_mode"], "y")
 
     def test_unity_uses_completed_mm_result_and_inverse_scales_overlays(self):
         project_root = Path(__file__).resolve().parents[2]

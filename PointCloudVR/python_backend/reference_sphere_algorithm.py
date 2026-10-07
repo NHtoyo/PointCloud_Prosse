@@ -5,9 +5,7 @@ from typing import Callable
 
 import numpy as np
 from numpy.fft import fft, ifft
-from scipy.sparse import csr_matrix
-from scipy.sparse.csgraph import connected_components
-from scipy.spatial import cKDTree
+from pointcloud_components import largest_connected_component
 
 
 ProgressCallback = Callable[[float, str], None] | None
@@ -258,58 +256,6 @@ def maalek_robust_sphere_fit(
     if progress_callback is not None:
         progress_callback(95.0, "robust sphere fitting completed")
     return final_center, float(final_radius), final_indices
-
-
-def largest_connected_component(
-    points: np.ndarray,
-    knn_k: int = 8,
-    alpha: float = 2.5,
-    progress_callback: ProgressCallback = None,
-) -> tuple[np.ndarray, np.ndarray, float, float]:
-    x = np.asarray(points, dtype=np.float64)
-    if x.ndim != 2 or x.shape[1] != 3:
-        raise ValueError("points must be an Nx3 array")
-    if len(x) == 0:
-        raise ValueError("point cloud is empty")
-    if not np.all(np.isfinite(x)):
-        raise ValueError("points contain NaN or inf")
-    if isinstance(knn_k, (bool, np.bool_)) or not isinstance(knn_k, (int, np.integer)):
-        raise ValueError("knn_k must be an integer")
-    if knn_k < 1:
-        raise ValueError("knn_k must be >= 1")
-    if not np.isfinite(alpha) or alpha <= 0:
-        raise ValueError("alpha must be positive")
-    if alpha > 10:
-        raise ValueError("alpha must be <= 10")
-    if len(x) <= knn_k:
-        raise ValueError("not enough points for requested K")
-
-    if progress_callback is not None:
-        progress_callback(5.0, "KNN distances: building spatial index")
-    tree = cKDTree(x)
-    distances, _ = tree.query(x, k=knn_k + 1)
-    median_knn_distance = float(np.median(distances[:, -1]))
-    epsilon = float(alpha * median_knn_distance)
-    if not np.isfinite(epsilon) or epsilon <= 0:
-        raise ValueError("invalid connectivity epsilon")
-
-    if progress_callback is not None:
-        progress_callback(30.0, "Connected Components: building epsilon graph")
-    pairs = tree.query_pairs(epsilon, output_type="ndarray")
-    if len(pairs) == 0:
-        raise ValueError("no connected point pairs found")
-    rows = np.concatenate((pairs[:, 0], pairs[:, 1]))
-    cols = np.concatenate((pairs[:, 1], pairs[:, 0]))
-    graph = csr_matrix((np.ones(len(rows), dtype=np.uint8), (rows, cols)), shape=(len(x), len(x)))
-    _, labels = connected_components(graph, directed=False)
-    component_sizes = np.bincount(labels)
-    largest_label = int(np.argmax(component_sizes))
-    component_indices = np.where(labels == largest_label)[0]
-    if len(component_indices) < 5:
-        raise ValueError("largest connected component is too small")
-    if progress_callback is not None:
-        progress_callback(48.0, "Connected Components completed")
-    return x[component_indices], component_indices, median_knn_distance, epsilon
 
 
 def estimate_reference_sphere(

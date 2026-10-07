@@ -4,12 +4,14 @@ from __future__ import annotations
 
 import argparse
 import sys
+import traceback
 from pathlib import Path
 
 import numpy as np
 import pointcloud_io
-from stem_diameter_algorithm import StemDiameterParams, analyze_stem
-from stem_diameter_output import write_stem_diameter_outputs
+from stem_diameter_algorithm import StemDiameterParams, StemDiameterStageError, analyze_stem
+from stem_diameter_output import write_stem_diameter_error, write_stem_diameter_outputs
+
 
 def _progress(value: float, message: str) -> None:
     print(f"[Progress] {value * 100.0:.1f} {message}", flush=True)
@@ -37,6 +39,15 @@ def build_parser() -> argparse.ArgumentParser:
                         help="Multiply source coordinates by this factor to get millimeters")
     parser.add_argument("--measurement-interval-mm", type=float, default=10.0)
     parser.add_argument("--centerline-step-mm", type=float, default=5.0)
+    parser.add_argument("--min-centerline-bin-points", type=int, default=30)
+    parser.add_argument("--centerline-axis", choices=("pca", "y"), default="pca")
+    parser.add_argument("--centerline-model", choices=("polyline", "spline"), default="polyline")
+    parser.add_argument("--component-knn-k", type=int, default=8)
+    parser.add_argument("--component-alpha", type=float, default=2.5)
+    component_group = parser.add_mutually_exclusive_group()
+    component_group.add_argument("--largest-component", dest="use_largest_component", action="store_true")
+    component_group.add_argument("--no-largest-component", dest="use_largest_component", action="store_false")
+    parser.set_defaults(use_largest_component=True)
     parser.add_argument("--local-axis-radius-mm", type=float, default=15.0)
     parser.add_argument("--slice-roi-radius-mm", type=float, default=30.0)
     parser.add_argument("--primary-slice-thickness-mm", type=float, default=5.0)
@@ -47,7 +58,29 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main(argv=None) -> int:
     args = build_parser().parse_args(argv)
+    output_dir = Path(args.output_dir).expanduser().resolve()
+    stage = "INPUT"
+    input_diagnostics = {}
+    parameters = {
+        "coordinate_scale_to_mm": args.coordinate_scale_to_mm,
+        "centerline_axis_mode": args.centerline_axis,
+        "centerline_model": args.centerline_model,
+        "use_largest_component": args.use_largest_component,
+        "component_knn_k": args.component_knn_k,
+        "component_alpha": args.component_alpha,
+        "centerline_step_mm": args.centerline_step_mm,
+        "min_centerline_bin_points": args.min_centerline_bin_points,
+    }
+
+    def diagnostic(message: str) -> None:
+        nonlocal stage
+        marker = "[StemDiameter][STAGE][START] "
+        if message.startswith(marker):
+            stage = message[len(marker):].split(" ", 1)[0]
+        print(message, flush=True)
+
     try:
+        diagnostic(f"[StemDiameter][STAGE][START] INPUT input_path={args.input}")
         input_path = Path(args.input).expanduser().resolve()
         if not input_path.is_file():
             raise FileNotFoundError(f"Input point cloud not found: {input_path}")
@@ -66,33 +99,93 @@ def main(argv=None) -> int:
         raw_xyz_span = np.ptp(points_raw, axis=0)
         points_mm = _convert_points_to_mm(points_raw, args.coordinate_scale_to_mm)
         mm_xyz_span = np.ptp(points_mm, axis=0)
+        input_diagnostics = {
+            "input_path": str(input_path),
+            "input_point_count": int(len(points_mm)),
+            "xyz_min_mm": np.min(points_mm, axis=0).tolist(),
+            "xyz_max_mm": np.max(points_mm, axis=0).tolist(),
+            "xyz_span_mm": mm_xyz_span.tolist(),
+            "coordinate_scale_to_mm": float(args.coordinate_scale_to_mm),
+        }
         print(f"[StemDiameter] points={len(points_raw):,}", flush=True)
         print(f"[StemDiameterInput] raw_xyz_span={_format_xyz(raw_xyz_span)}", flush=True)
         print(f"[StemDiameterInput] coordinate_scale_to_mm={args.coordinate_scale_to_mm:.9g}", flush=True)
         print(f"[StemDiameterInput] mm_xyz_span={_format_xyz(mm_xyz_span)}", flush=True)
+        diagnostic("[StemDiameter][STAGE][OK] INPUT " + " ".join(
+            f"{key}={value}" for key, value in input_diagnostics.items()
+        ))
 
         params = StemDiameterParams(
             measurement_interval_mm=args.measurement_interval_mm,
             centerline_step_mm=args.centerline_step_mm,
+            min_centerline_bin_points=args.min_centerline_bin_points,
+            centerline_axis_mode=args.centerline_axis,
+            centerline_model=args.centerline_model,
+            use_largest_component=args.use_largest_component,
+            component_knn_k=args.component_knn_k,
+            component_alpha=args.component_alpha,
             local_axis_radius_mm=args.local_axis_radius_mm,
             slice_roi_radius_mm=args.slice_roi_radius_mm,
             primary_slice_thickness_mm=args.primary_slice_thickness_mm,
             query_workers=args.query_workers,
         )
-        result = analyze_stem(points_mm, params, _progress)
+        stage = "ANALYSIS"
+        result = analyze_stem(points_mm, params, _progress, diagnostic)
+        result.diagnostics["input"].update(input_diagnostics)
+
+        stage = "OUTPUT"
+        diagnostic(f"[StemDiameter][STAGE][START] OUTPUT output_dir={output_dir}")
         _progress(0.93, "JSON、CSV、品質グラフを書き出し中...")
-        write_stem_diameter_outputs(args.output_dir, result, str(input_path), len(points_mm))
+        write_stem_diameter_outputs(output_dir, result, str(input_path), len(points_mm))
+        stale_error = output_dir / "stem_diameter_error.json"
+        if stale_error.exists():
+            try:
+                stale_error.unlink()
+            except OSError as exc:
+                diagnostic(f"[StemDiameter][WARNING] stale_error_json_not_removed={type(exc).__name__}")
         valid = [s.equivalent_diameter_mm for s in result.sections if s.equivalent_diameter_mm is not None]
+        output_diagnostics = {
+            "json_path": str(output_dir / "stem_diameter.json"),
+            "csv_path": str(output_dir / "stem_diameter.csv"),
+            "png_paths": [str(output_dir / "diameter_profile.png"), str(output_dir / "quality_profile.png")],
+            "valid_section_count": len(valid),
+        }
+        diagnostic("[StemDiameter][STAGE][OK] OUTPUT " + " ".join(
+            f"{key}={value}" for key, value in output_diagnostics.items()
+        ))
         print("================ Stem diameter result ================", flush=True)
         print(f"centerline_length_mm={result.centerline_length_mm:.3f}", flush=True)
         print(f"sections={len(result.sections)} valid_primary={len(valid)}", flush=True)
+        print(f"max_segment_length_mm={result.diagnostics['centerline_model'].get('max_segment_length_mm', 'n/a')}", flush=True)
+        print(f"median_segment_length_mm={result.diagnostics['centerline_model'].get('median_segment_length_mm', 'n/a')}", flush=True)
         if valid:
             print(f"median_primary_diameter_mm={float(np.median(valid)):.4f}", flush=True)
-        print(f"output_dir={Path(args.output_dir).resolve()}", flush=True)
+        print(f"output_dir={output_dir}", flush=True)
         _progress(1.0, "茎径プロファイル解析が完了しました。")
         return 0
     except Exception as exc:
-        print(f"[StemDiameterError] {type(exc).__name__}: {exc}", file=sys.stderr, flush=True)
+        error_stage = exc.stage if isinstance(exc, StemDiameterStageError) else stage
+        if error_stage == "ANALYSIS":
+            error_stage = "UNKNOWN_ANALYSIS_STAGE"
+        error_parameters = exc.parameters if isinstance(exc, StemDiameterStageError) else parameters
+        error_diagnostics = exc.diagnostics if isinstance(exc, StemDiameterStageError) else input_diagnostics
+        diagnostic(f"[StemDiameter][STAGE][FAIL] {error_stage} message={str(exc).replace(' ', '_')}")
+        report = {
+            "stage": error_stage,
+            "message": str(exc),
+            "parameters": error_parameters,
+            "diagnostics": error_diagnostics,
+            "exception_type": type(exc).__name__,
+        }
+        try:
+            write_stem_diameter_error(output_dir, report)
+            diagnostic(f"[StemDiameter][ERROR_JSON] {output_dir / 'stem_diameter_error.json'}")
+        except Exception as report_exc:
+            print(f"[StemDiameterErrorReportFailure] {type(report_exc).__name__}: {report_exc}",
+                  file=sys.stderr, flush=True)
+        print(f"[StemDiameterError] stage={error_stage} {type(exc).__name__}: {exc}",
+              file=sys.stderr, flush=True)
+        traceback.print_exc(file=sys.stderr)
         return 2
 
 
