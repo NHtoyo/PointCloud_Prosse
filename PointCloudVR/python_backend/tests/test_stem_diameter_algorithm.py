@@ -77,6 +77,13 @@ class StemDiameterAlgorithmTests(unittest.TestCase):
                 ]
                 self.assertGreater(len(values), 5)
                 self.assertAlmostEqual(float(np.median(values)), 8.0, delta=0.35)
+                perimeter_values = [
+                    item.perimeter_mm for section in result.sections[2:-2]
+                    for item in section.slice_results
+                    if item.thickness_mm == 5.0 and item.perimeter_mm is not None
+                ]
+                self.assertGreater(len(perimeter_values), 5)
+                self.assertAlmostEqual(float(np.median(perimeter_values)), math.pi * 8.0, delta=0.6)
                 self.assertTrue(all(section.diameter_3mm is not None and
                                     section.diameter_5mm is not None and
                                     section.diameter_7mm is not None

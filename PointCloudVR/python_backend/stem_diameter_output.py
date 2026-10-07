@@ -103,7 +103,7 @@ def _write_json(path: Path, result, input_path: str, point_count: int):
 def _write_csv(path: Path, result):
     fields = [
         "index", "position_mm", "calculation_status", "equivalent_diameter_mm",
-        "cross_section_area_mm2", "diameter_3mm", "diameter_5mm", "diameter_7mm",
+        "cross_section_area_mm2", "perimeter_mm", "diameter_3mm", "diameter_5mm", "diameter_7mm",
         "slice_diameter_range_mm", "slice_diameter_std_mm", "raw_point_count",
         "used_point_count", "outlier_fraction", "angular_coverage", "max_gap_deg",
         "interpolated_fraction", "shape_axis_ratio", "circularity",
@@ -121,7 +121,7 @@ def _write_csv(path: Path, result):
             values = {field: getattr(section, field, None) for field in fields}
             if primary is not None:
                 for field in (
-                    "raw_point_count", "used_point_count", "outlier_fraction",
+                    "perimeter_mm", "raw_point_count", "used_point_count", "outlier_fraction",
                     "angular_coverage", "max_gap_deg", "interpolated_fraction",
                     "shape_axis_ratio", "circularity",
                 ):
@@ -139,9 +139,8 @@ def _profile_values(result, field):
 def _write_plots(directory: Path, result):
     x = np.asarray([section.position_mm for section in result.sections], dtype=np.float64)
     fig, ax = plt.subplots(figsize=(9, 4.8), constrained_layout=True)
-    for field, label in (("diameter_3mm", "3 mm slab"), ("diameter_5mm", "5 mm slab (primary)"),
-                         ("diameter_7mm", "7 mm slab")):
-        ax.plot(x, _profile_values(result, field), label=label, linewidth=1.4)
+    ax.plot(x, _profile_values(result, "diameter_5mm"),
+            label="Equivalent diameter (5 mm slab)", linewidth=1.6)
     ax.set_xlabel("Distance from top [mm]")
     ax.set_ylabel("Equivalent diameter [mm]")
     params = result.parameters

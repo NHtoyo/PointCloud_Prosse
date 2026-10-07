@@ -69,6 +69,7 @@ class SliceResult:
     occupied_angular_bins: int = 0
     required_angular_bins: int = 0
     failure_detail: Optional[str] = None
+    perimeter_mm: Optional[float] = None
 
 
 @dataclass
@@ -95,6 +96,7 @@ class SectionResult:
     actual_local_axis_point_count: int = 0
     required_local_axis_point_count: int = 0
     failure_detail: Optional[str] = None
+    perimeter_mm: Optional[float] = None
 
 
 @dataclass
@@ -462,18 +464,20 @@ def _slice_measurement(points_mm, center_mm, axis, basis_u, basis_v, thickness_m
     contour = np.column_stack([filled_r * np.cos(angles), filled_r * np.sin(angles)])
 
     area = _polygon_area(contour)
-    if area <= 0 or not np.isfinite(area):
+    perimeter = _polygon_perimeter(contour)
+    if area <= 0 or not np.isfinite(area) or perimeter <= 0 or not np.isfinite(perimeter):
         return SliceResult(
             thickness_mm, None, None, raw_count, used_count,
             1.0 - used_count / max(raw_count, 1),
             coverage, max_gap_deg, interpolated_fraction,
             None, None, contour, "numerical_failure", occupied_count,
-            params.min_occupied_angular_bins, f"invalid_contour_area_mm2={area}",
+            params.min_occupied_angular_bins,
+            f"invalid_contour_area_mm2={area}; perimeter_mm={perimeter}",
+            perimeter_mm=float(perimeter) if np.isfinite(perimeter) else None,
         )
 
     deq = 2.0 * math.sqrt(area / math.pi)
-    perimeter = _polygon_perimeter(contour)
-    circularity = None if perimeter <= 0 else float(4.0 * math.pi * area / (perimeter * perimeter))
+    circularity = float(4.0 * math.pi * area / (perimeter * perimeter))
 
     return SliceResult(
         thickness_mm=float(thickness_mm),
@@ -491,6 +495,7 @@ def _slice_measurement(points_mm, center_mm, axis, basis_u, basis_v, thickness_m
         calculation_status="ok",
         occupied_angular_bins=occupied_count,
         required_angular_bins=params.min_occupied_angular_bins,
+        perimeter_mm=float(perimeter),
     )
 
 
@@ -892,6 +897,7 @@ def analyze_stem(
                 slice_results=slice_results,
                 equivalent_diameter_mm=None if primary_result is None else primary_result.equivalent_diameter_mm,
                 cross_section_area_mm2=None if primary_result is None else primary_result.area_mm2,
+                perimeter_mm=None if primary_result is None else primary_result.perimeter_mm,
                 diameter_3mm=diameter_at(3.0),
                 diameter_5mm=diameter_at(5.0),
                 diameter_7mm=diameter_at(7.0),

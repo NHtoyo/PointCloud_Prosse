@@ -36,6 +36,7 @@ namespace PointCloudWorkbench
         public StemDiameterSlice[] slice_results;
         public float equivalent_diameter_mm;
         public float cross_section_area_mm2;
+        public float perimeter_mm;
         public float diameter_3mm;
         public float diameter_5mm;
         public float diameter_7mm;
@@ -50,6 +51,7 @@ namespace PointCloudWorkbench
         public float thickness_mm;
         public float equivalent_diameter_mm;
         public float area_mm2;
+        public float perimeter_mm;
         public int raw_point_count;
         public int used_point_count;
         public float outlier_fraction;

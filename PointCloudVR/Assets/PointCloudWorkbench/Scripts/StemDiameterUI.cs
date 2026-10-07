@@ -17,6 +17,7 @@ public sealed class StemDiameterUI : MonoBehaviour
     private Vector2 contentScroll;
     private Texture2D panelBackgroundTexture;
     private GUIStyle panelBackgroundStyle;
+    private GUIStyle measurementValueStyle;
     private Process process;
     private volatile bool stdoutEnded;
     private volatile bool stderrEnded;
@@ -284,7 +285,7 @@ public sealed class StemDiameterUI : MonoBehaviour
 
     private void DrawMetricButtons()
     {
-        string[] labels = { "径 3/5/7 mm", "周方向 coverage", "最大欠損角", "局所軸角", "円形度", "軸比" };
+        string[] labels = { "等価茎径（5 mm厚）", "周方向 coverage", "最大欠損角", "局所軸角", "円形度", "軸比" };
         for (int row = 0; row < 2; row++)
         {
             GUILayout.BeginHorizontal();
@@ -335,9 +336,7 @@ public sealed class StemDiameterUI : MonoBehaviour
 
         if (metricMode == 0)
         {
-            DrawDiameterSeries(plot, min, max, "diameter_3mm", new Color(0.2f, 0.8f, 0.5f));
             DrawDiameterSeries(plot, min, max, "diameter_5mm", new Color(1f, 0.66f, 0.15f));
-            DrawDiameterSeries(plot, min, max, "diameter_7mm", new Color(0.3f, 0.65f, 1f));
         }
         else
         {
@@ -414,10 +413,12 @@ public sealed class StemDiameterUI : MonoBehaviour
         StemDiameterSection section = result.sections[selectedIndex];
         StemDiameterSlice primary = GetPrimarySlice(section);
         GUILayout.Label($"断面 {section.index + 1} / {result.sections.Length}    上端から {section.position_mm:F1} mm    状態: {section.calculation_status}");
-        string diameter3 = section.calculation_status == "ok" ? Format(section.diameter_3mm) : "--";
-        string diameter5 = section.calculation_status == "ok" ? Format(section.diameter_5mm) : "--";
-        string diameter7 = section.calculation_status == "ok" ? Format(section.diameter_7mm) : "--";
-        GUILayout.Label($"径 3/5/7 mm: {diameter3} / {diameter5} / {diameter7} mm");
+        float perimeter = section.calculation_status == "ok" && section.perimeter_mm > 0f
+            ? section.perimeter_mm : float.NaN;
+        float equivalentDiameter = section.calculation_status == "ok"
+            ? section.equivalent_diameter_mm : float.NaN;
+        GUILayout.Label($"周長：{Format(perimeter)} mm（5 mm厚断面）", GetMeasurementValueStyle(), GUILayout.Height(28f));
+        GUILayout.Label($"等価茎径：{Format(equivalentDiameter)} mm（5 mm厚断面）", GetMeasurementValueStyle(), GUILayout.Height(28f));
         if (primary != null)
         {
             GUILayout.Label($"面積 {Format(primary.area_mm2)} mm²   coverage {Format(primary.angular_coverage)}   最大欠損角 {Format(primary.max_gap_deg)}°");
@@ -434,6 +435,19 @@ public sealed class StemDiameterUI : MonoBehaviour
             if (Mathf.Abs(section.slice_results[i].thickness_mm - 5f) < 0.001f &&
                 section.slice_results[i].calculation_status == "ok") return section.slice_results[i];
         return null;
+    }
+
+    private GUIStyle GetMeasurementValueStyle()
+    {
+        if (measurementValueStyle == null)
+        {
+            measurementValueStyle = new GUIStyle(GUI.skin.label)
+            {
+                fontSize = Mathf.Max(18, GUI.skin.label.fontSize + 5),
+                fontStyle = FontStyle.Bold
+            };
+        }
+        return measurementValueStyle;
     }
 
     private static string Format(float value)

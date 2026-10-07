@@ -89,6 +89,11 @@ class StemDiameterCliTests(unittest.TestCase):
                         self.assertEqual(row[field], "")
                     else:
                         self.assertAlmostEqual(float(row[field]), expected_value, places=10)
+                primary_slice = next(item for item in section["slice_results"]
+                                     if item["thickness_mm"] == 5.0)
+                self.assertGreater(primary_slice["perimeter_mm"], 0.0)
+                self.assertAlmostEqual(section["perimeter_mm"], primary_slice["perimeter_mm"], places=10)
+                self.assertAlmostEqual(float(row["perimeter_mm"]), primary_slice["perimeter_mm"], places=10)
             self.assertGreater((output_dir / "diameter_profile.png").stat().st_size, 0)
             self.assertGreater((output_dir / "quality_profile.png").stat().st_size, 0)
 
@@ -221,6 +226,7 @@ class StemDiameterCliTests(unittest.TestCase):
         ui_source = (project_root / "Assets/PointCloudWorkbench/Scripts/StemDiameterUI.cs").read_text(encoding="utf-8")
         renderer_source = (project_root / "Assets/PointCloudRenderer.cs").read_text(encoding="utf-8")
         visualizer_source = (project_root / "Assets/PointCloudWorkbench/Scripts/StemDiameterVisualizer.cs").read_text(encoding="utf-8")
+        result_source = (project_root / "Assets/PointCloudWorkbench/Scripts/StemDiameterResult.cs").read_text(encoding="utf-8")
 
         self.assertIn("JsonUtility.FromJson<StemDiameterResult>", ui_source)
         self.assertIn("visualizer.SetResult(targetRenderer, result);", ui_source)
@@ -232,6 +238,11 @@ class StemDiameterCliTests(unittest.TestCase):
         self.assertIn("targetRenderer.MillimetersToDataPoint(line[i].ToUnity())", visualizer_source)
         self.assertIn("targetRenderer.MillimetersToDataLength(axisHalfLengthMm)", visualizer_source)
         self.assertIn("targetRenderer.MillimetersToDataLength(point.u_mm)", visualizer_source)
+        self.assertIn("public float perimeter_mm;", result_source)
+        self.assertIn('DrawDiameterSeries(plot, min, max, "diameter_5mm"', ui_source)
+        self.assertNotIn('DrawDiameterSeries(plot, min, max, "diameter_3mm"', ui_source)
+        self.assertIn("周長：", ui_source)
+        self.assertIn("等価茎径：", ui_source)
 
         result_mm = np.array([1200.0, -600.0, 75.0])
         local_data = result_mm / 1200.0
