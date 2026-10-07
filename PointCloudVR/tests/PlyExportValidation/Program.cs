@@ -60,6 +60,72 @@ try
     PlyExportService.Write(new PlyExportRequest(points, cleanedPath, false, false, ExportPointMode.CleanedVisible), default);
     Assert(File.ReadAllText(cleanedPath).Contains("element vertex 2\n"), "cleaned-visible export behavior");
 
+    string originalPath = Path.Combine(directory, "original.ply");
+    File.WriteAllText(originalPath, "original source stays unchanged");
+    PointData[] stemPoints = Enumerable.Range(0, 103)
+        .Select(i => new PointData(i, i + 1, i + 2, 0xFF010203u, 1)).ToArray();
+    stemPoints[100].label |= 0x10000;
+    stemPoints[101].label |= 0x20000;
+    stemPoints[102].label |= 0x80000;
+    string originalContents = File.ReadAllText(originalPath);
+    StemDiameterInputExport stemExport = StemDiameterInputExport.Create(stemPoints, false);
+    string stemTempDirectory = stemExport.TemporaryDirectory;
+    PlyExportResult stemExportResult = await stemExport.WriteAsync(default);
+    Assert(stemExport.InputPath == Path.Combine(stemTempDirectory, "analysis_input.ply"), "stem input uses unique temp PLY");
+    Assert(stemExport.LoadedPointCount == 103 && stemExportResult.VertexCount == 101, "stem AllVisible export excludes deleted and noise-hidden points");
+    Assert(stemExportResult.OutputPath == stemExport.InputPath, "stem Python input is the live-point export");
+    byte[] stemPly = File.ReadAllBytes(stemExport.InputPath);
+    int stemHeaderMarker = Encoding.ASCII.GetString(stemPly).IndexOf("end_header", StringComparison.Ordinal);
+    int stemPayloadOffset = Array.IndexOf(stemPly, (byte)'\n', stemHeaderMarker) + 1;
+    Assert(BitConverter.ToSingle(stemPly, stemPayloadOffset + 100 * 19) == 100f,
+        "selected-but-not-deleted point remains with data-space XYZ");
+    Assert(File.ReadAllText(originalPath) == originalContents, "stem export leaves original PLY unchanged");
+    stemExport.ValidateComponentK(8);
+    try
+    {
+        stemExport.ValidateComponentK(101);
+        throw new Exception("expected K validation against visible export count");
+    }
+    catch (InvalidOperationException ex) when (ex.Message.Contains("書き出した可視点数")) { }
+    try
+    {
+        StemDiameterInputExport.ValidatePythonPointCount(101, 100);
+        throw new Exception("expected Python/export point-count mismatch rejection");
+    }
+    catch (InvalidDataException ex) when (ex.Message.Contains("点数が一致しません")) { }
+    stemExport.Cleanup();
+    Assert(!Directory.Exists(stemTempDirectory), "stem temp directory cleanup");
+
+    StemDiameterInputExport tooSmallExport = StemDiameterInputExport.Create(
+        Enumerable.Range(0, StemDiameterInputExport.MinimumPointCount - 1)
+            .Select(i => new PointData(i, i + 1, i + 2, 0xFF010203u, 1)).ToArray(), false);
+    string tooSmallDirectory = tooSmallExport.TemporaryDirectory;
+    try
+    {
+        await tooSmallExport.WriteAsync(default);
+        tooSmallExport.ValidateComponentK(8);
+        throw new Exception("expected minimum visible point-count rejection");
+    }
+    catch (InvalidOperationException ex) when (ex.Message.Contains("可視点が不足")) { }
+    finally { tooSmallExport.Cleanup(); }
+    Assert(!Directory.Exists(tooSmallDirectory), "too-small stem input temp directory cleanup");
+
+    PointData[] stemCancellationPoints = Enumerable.Range(0, 100_000)
+        .Select(i => new PointData(i, i + 1, i + 2, 0xFF010203u, 1)).ToArray();
+    StemDiameterInputExport cancelledStemExport = StemDiameterInputExport.Create(stemCancellationPoints, false);
+    string cancelledStemDirectory = cancelledStemExport.TemporaryDirectory;
+    using (CancellationTokenSource cancellation = new CancellationTokenSource())
+    {
+        try
+        {
+            await cancelledStemExport.WriteAsync(cancellation.Token, (_, _) => cancellation.Cancel());
+            throw new Exception("expected stem input export cancellation");
+        }
+        catch (OperationCanceledException) { }
+    }
+    cancelledStemExport.Cleanup();
+    Assert(!Directory.Exists(cancelledStemDirectory), "cancelled stem input temp directory cleanup");
+
     string asciiPath = Path.Combine(directory, "selected-ascii.ply");
     PlyExportService.Write(new PlyExportRequest(points, asciiPath, false, true, ExportPointMode.SelectedVisible), default);
     string[] asciiLines = File.ReadAllLines(asciiPath);
@@ -96,7 +162,7 @@ try
     Assert(File.ReadAllText(failurePath) == "previous-final", "failure preserves final");
     Assert(!Directory.GetFiles(directory, "failure.ply.*.tmp").Any(), "failure removes temporary file");
 
-    Console.WriteLine("PASS ProgressManager state transitions; binary/all-visible; binary-selected; empty selected-non-deleted rejection; cleaned-visible; ASCII-selected; RGB/XYZ/metadata; cancellation cleanup; failure cleanup; existing-final preservation");
+    Console.WriteLine("PASS ProgressManager state transitions; binary/all-visible; binary-selected; empty selected-non-deleted rejection; cleaned-visible; stem AllVisible temp input/count/K validation/original preservation/cancellation cleanup; ASCII-selected; RGB/XYZ/metadata; cancellation cleanup; failure cleanup; existing-final preservation");
 }
 finally
 {

@@ -224,11 +224,23 @@ class StemDiameterCliTests(unittest.TestCase):
     def test_unity_uses_completed_mm_result_and_inverse_scales_overlays(self):
         project_root = Path(__file__).resolve().parents[2]
         ui_source = (project_root / "Assets/PointCloudWorkbench/Scripts/StemDiameterUI.cs").read_text(encoding="utf-8")
+        input_export_source = (project_root / "Assets/PointCloudWorkbench/Scripts/StemDiameterInputExport.cs").read_text(encoding="utf-8")
         renderer_source = (project_root / "Assets/PointCloudRenderer.cs").read_text(encoding="utf-8")
         visualizer_source = (project_root / "Assets/PointCloudWorkbench/Scripts/StemDiameterVisualizer.cs").read_text(encoding="utf-8")
         result_source = (project_root / "Assets/PointCloudWorkbench/Scripts/StemDiameterResult.cs").read_text(encoding="utf-8")
 
         self.assertIn("JsonUtility.FromJson<StemDiameterResult>", ui_source)
+        self.assertIn("StemDiameterInputExport.Create(currentPoints", ui_source)
+        self.assertIn('"--input", Quote(activeInputExport.InputPath)', ui_source)
+        self.assertNotIn('"--input", Quote(inputPath)', ui_source)
+        self.assertIn("activeInputExport.ValidateComponentK(componentK);", ui_source)
+        self.assertIn("StemDiameterInputExport.ValidatePythonPointCount(expectedPointCount, parsed.point_count);", ui_source)
+        self.assertIn("loaded={activeInputExport.LoadedPointCount:N0}", ui_source)
+        self.assertIn("visible={exported.VertexCount:N0} excluded={excludedPointCount:N0}", ui_source)
+        self.assertIn("CleanupTemporaryInput();", ui_source)
+        self.assertIn("ExportPointMode.AllVisible", input_export_source)
+        self.assertIn('"stem_diameter_" + Guid.NewGuid().ToString("N")', input_export_source)
+        self.assertIn("public void Cleanup()", input_export_source)
         self.assertIn("visualizer.SetResult(targetRenderer, result);", ui_source)
         self.assertIn("DrawGraph(chart);", ui_source)
         self.assertIn("targetRenderer.DisplayScale.ToString(\"R\", CultureInfo.InvariantCulture)", ui_source)
