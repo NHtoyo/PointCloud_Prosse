@@ -12,6 +12,8 @@ import numpy as np
 
 import pointcloud_io
 import run_stem_diameter
+import stem_diameter_output
+from output_generations import resolve_current_generation
 from run_stem_diameter import _convert_points_to_mm, build_parser, main
 from test_stem_diameter_algorithm import cylinder_points_mm
 
@@ -36,12 +38,14 @@ class StemDiameterCliTests(unittest.TestCase):
             output_dir.mkdir()
             keep_file = output_dir / "user-notes.txt"
             keep_file.write_text("preserve this file", encoding="utf-8")
+            run_id = "cli_success_1"
 
             output = io.StringIO()
             with redirect_stdout(output):
                 code = main([
                     "--input", str(input_path),
                     "--output_dir", str(output_dir),
+                    "--run-id", run_id,
                     "--source-point-cloud-path", str(source_path),
                     "--source-loaded-point-count", str(len(points) + 2),
                     "--analysis-visible-point-count", str(len(points)),
@@ -55,13 +59,16 @@ class StemDiameterCliTests(unittest.TestCase):
             self.assertIn("[StemDiameterInput] coordinate_scale_to_mm=1", output.getvalue())
             self.assertIn("[StemDiameterInput] mm_xyz_span=", output.getvalue())
             expected = {
-                "stem_diameter.json", "stem_diameter.csv",
-                "diameter_profile.png", "quality_profile.png", "user-notes.txt",
+                "current_run.json", "runs", "user-notes.txt",
             }
             self.assertEqual({path.name for path in output_dir.iterdir()}, expected)
             self.assertEqual(keep_file.read_text(encoding="utf-8"), "preserve this file")
-            payload = json.loads((output_dir / "stem_diameter.json").read_text(encoding="utf-8"))
+            generation = resolve_current_generation(output_dir)
+            generation_dir = generation["generation_directory"]
+            self.assertEqual(generation["run_id"], run_id)
+            payload = json.loads((generation_dir / "stem_diameter.json").read_text(encoding="utf-8"))
             self.assertEqual(payload["schema_version"], 2)
+            self.assertEqual(payload["analysis_run_id"], run_id)
             self.assertNotIn("scale_mm_per_unit", payload)
             self.assertEqual(payload["point_count"], len(points))
             self.assertEqual(payload["input_path"], str(input_path.resolve()))
@@ -89,7 +96,7 @@ class StemDiameterCliTests(unittest.TestCase):
             section = payload["sections"][len(payload["sections"]) // 2]
             self.assertIsInstance(section["center_xyz_mm"], dict)
             self.assertIsInstance(section["slice_results"][0]["contour_uv_mm"][0], dict)
-            with (output_dir / "stem_diameter.csv").open(encoding="utf-8-sig") as csv_file:
+            with (generation_dir / "stem_diameter.csv").open(encoding="utf-8-sig") as csv_file:
                 rows = list(csv.DictReader(csv_file))
             self.assertEqual(len(rows), len(payload["sections"]))
             for row, section in zip(rows, payload["sections"]):
@@ -106,8 +113,33 @@ class StemDiameterCliTests(unittest.TestCase):
                 self.assertGreater(primary_slice["perimeter_mm"], 0.0)
                 self.assertAlmostEqual(section["perimeter_mm"], primary_slice["perimeter_mm"], places=10)
                 self.assertAlmostEqual(float(row["perimeter_mm"]), primary_slice["perimeter_mm"], places=10)
-            self.assertGreater((output_dir / "diameter_profile.png").stat().st_size, 0)
-            self.assertGreater((output_dir / "quality_profile.png").stat().st_size, 0)
+            self.assertGreater((generation_dir / "diameter_profile.png").stat().st_size, 0)
+            self.assertGreater((generation_dir / "quality_profile.png").stat().st_size, 0)
+
+            pointer_before_failure = (output_dir / "current_run.json").read_bytes()
+            manifest_before_failure = json.loads((generation_dir / "manifest.json").read_text(encoding="utf-8"))
+            artifact_bytes_before_failure = {
+                item["name"]: (generation_dir / item["name"]).read_bytes()
+                for item in manifest_before_failure["artifacts"]
+            }
+            failed_output = io.StringIO()
+            with patch.object(stem_diameter_output, "_write_csv", side_effect=OSError("injected CSV failure")), \
+                    redirect_stdout(failed_output), redirect_stderr(io.StringIO()):
+                failed_code = main([
+                    "--input", str(input_path), "--output_dir", str(output_dir),
+                    "--run-id", "cli_fault_1",
+                    "--source-point-cloud-path", str(source_path),
+                    "--source-loaded-point-count", str(len(points) + 2),
+                    "--analysis-visible-point-count", str(len(points)),
+                    "--analysis-visible-point-fingerprint", "sha256:" + "a" * 64,
+                    "--coordinate-scale-to-mm", "1", "--query-workers", "1",
+                ])
+            self.assertEqual(failed_code, 2)
+            self.assertEqual((output_dir / "current_run.json").read_bytes(), pointer_before_failure)
+            self.assertEqual(resolve_current_generation(output_dir)["run_id"], run_id)
+            for name, content in artifact_bytes_before_failure.items():
+                self.assertEqual((generation_dir / name).read_bytes(), content,
+                                 f"failed output generation preserves prior {name}")
 
     def test_raw_and_corrected_ply_are_scaled_before_analysis(self):
         display_scale = 1200.0
@@ -145,6 +177,7 @@ class StemDiameterCliTests(unittest.TestCase):
                         code = main([
                             "--input", str(input_path),
                             "--output_dir", str(output_dir),
+                            "--run-id", f"scale_{name}",
                             "--coordinate-scale-to-mm", str(display_scale),
                             "--query-workers", "1",
                         ])
@@ -156,7 +189,8 @@ class StemDiameterCliTests(unittest.TestCase):
                 self.assertIn("[StemDiameterInput] mm_xyz_span=", output.getvalue())
                 self.assertEqual(input_path.read_bytes(), original_file_bytes)
 
-                payload = json.loads((output_dir / "stem_diameter.json").read_text(encoding="utf-8"))
+                payload = json.loads((resolve_current_generation(output_dir)["generation_directory"] /
+                                      "stem_diameter.json").read_text(encoding="utf-8"))
                 self.assertGreaterEqual(len(payload["centerline"]["support_points_xyz_mm"]), 4)
                 support = np.array([
                     [point["x"], point["y"], point["z"]]
@@ -189,11 +223,12 @@ class StemDiameterCliTests(unittest.TestCase):
             with redirect_stderr(io.StringIO()):
                 code = main([
                     "--input", str(input_path), "--output_dir", str(output_dir),
+                    "--run-id", "bad_count",
                     "--coordinate-scale-to-mm", "1", "--query-workers", "1",
                     "--analysis-visible-point-count", str(len(points) - 1),
                 ])
             self.assertEqual(code, 2)
-            report = json.loads((output_dir / "stem_diameter_error.json").read_text(encoding="utf-8"))
+            report = json.loads((output_dir / "errors" / "bad_count.json").read_text(encoding="utf-8"))
             self.assertIn("analysis_visible_point_count must match", report["message"])
 
     def test_cli_model_and_component_options_are_saved(self):
@@ -207,6 +242,7 @@ class StemDiameterCliTests(unittest.TestCase):
             with redirect_stdout(output):
                 code = main([
                     "--input", str(input_path), "--output_dir", str(output_dir),
+                    "--run-id", "options_1",
                     "--coordinate-scale-to-mm", "1", "--query-workers", "1",
                     "--centerline-axis", "y", "--centerline-model", "spline",
                     "--no-largest-component", "--component-knn-k", str(len(points) + 1),
@@ -214,7 +250,8 @@ class StemDiameterCliTests(unittest.TestCase):
                     "--min-centerline-bin-points", "20",
                 ])
             self.assertEqual(code, 0, output.getvalue())
-            payload = json.loads((output_dir / "stem_diameter.json").read_text(encoding="utf-8"))
+            payload = json.loads((resolve_current_generation(output_dir)["generation_directory"] /
+                                  "stem_diameter.json").read_text(encoding="utf-8"))
             self.assertEqual(payload["centerline_axis_mode"], "y")
             self.assertEqual(payload["centerline_model"], "spline")
             self.assertFalse(payload["use_largest_component"])
@@ -240,6 +277,7 @@ class StemDiameterCliTests(unittest.TestCase):
             with redirect_stdout(stdout), redirect_stderr(stderr):
                 code = main([
                     "--input", str(input_path), "--output_dir", str(output_dir),
+                    "--run-id", "fatal_stage_1",
                     "--coordinate-scale-to-mm", "1", "--query-workers", "1",
                     "--centerline-axis", "y", "--no-largest-component",
                     "--min-centerline-bin-points", str(len(points) + 1),
@@ -247,7 +285,7 @@ class StemDiameterCliTests(unittest.TestCase):
             self.assertEqual(code, 2)
             self.assertIn("Traceback", stderr.getvalue())
             self.assertIn("CENTERLINE_BINNING", stdout.getvalue())
-            report = json.loads((output_dir / "stem_diameter_error.json").read_text(encoding="utf-8"))
+            report = json.loads((output_dir / "errors" / "fatal_stage_1.json").read_text(encoding="utf-8"))
             self.assertEqual(report["stage"], "CENTERLINE_BINNING")
             self.assertEqual(report["diagnostics"]["valid_support_bins"], 0)
             self.assertEqual(report["diagnostics"]["required_support_points"], 4)
@@ -278,7 +316,7 @@ class StemDiameterCliTests(unittest.TestCase):
         self.assertIn('"--analysis-visible-point-count", exported.VertexCount.ToString', ui_source)
         self.assertIn("loadGeneration != sourceGeneration", ui_source)
         self.assertIn("if (useLargestComponent) activeInputExport.ValidateComponentK(componentK);", ui_source)
-        self.assertIn("現在の点群編集状態と解析時の点数が異なります。再解析を推奨します。", ui_source)
+        self.assertIn("解析後に点群が変更されています。結果は閲覧のみで、点群には重ねません。再解析してください。", ui_source)
         self.assertIn("既存の茎径解析結果を読み込めませんでした。", ui_source)
         self.assertIn("ValidateResultPayload(parsed);", ui_source)
         self.assertIn("private void Start()", ui_source)
@@ -288,10 +326,12 @@ class StemDiameterCliTests(unittest.TestCase):
         self.assertIn("hasPreStartPointCloudEvent", ui_source)
         self.assertIn("GUI.enabled = optionsEnabled && useLargestComponent;", ui_source)
         self.assertIn("analysis_visible_point_fingerprint", ui_source)
+        self.assertIn('"--run-id", Quote(analysisRunId)', ui_source)
+        self.assertIn("OutputGenerationStore.ResolveGeneration", ui_source)
         self.assertIn('"--analysis-visible-point-fingerprint", Quote(visibleFingerprint.Fingerprint)', ui_source)
         self.assertIn("StemDiameterPointFingerprint.Compute(currentPoints, ExportPointMode.AllVisible", ui_source)
         self.assertIn("visualizer.SelectSection(selectedIndex);", ui_source)
-        self.assertIn("visualizer.SetVisible(showOverlay);", ui_source)
+        self.assertIn("visualizer.SetVisible(!stale && showOverlay);", ui_source)
         self.assertIn("ExportPointMode.AllVisible", input_export_source)
         self.assertIn('"stem_diameter_" + Guid.NewGuid().ToString("N")', input_export_source)
         self.assertIn("public void Cleanup()", input_export_source)

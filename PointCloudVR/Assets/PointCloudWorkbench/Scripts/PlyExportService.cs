@@ -51,12 +51,30 @@ namespace PointCloudWorkbench
         private const int NoiseHiddenBit = 0x80000;
         private const int CancellationCheckInterval = 4096;
 
+        private struct ExportPoint
+        {
+            public float X;
+            public float Y;
+            public float Z;
+            public uint Color;
+            public int Label;
+
+            public ExportPoint(PointData point)
+            {
+                X = point.position.x;
+                Y = point.position.y;
+                Z = point.position.z;
+                Color = point.originalColor;
+                Label = point.label;
+            }
+        }
+
         public static PlyExportResult Write(PlyExportRequest request, CancellationToken cancellationToken,
             Action<float, string> reportProgress = null)
         {
             if (request == null) throw new ArgumentNullException(nameof(request));
-            PointData[] points = request.Points;
-            if (points.Length == 0) throw new InvalidOperationException("エクスポートする点群がありません。");
+            PointData[] sourcePoints = request.Points;
+            if (sourcePoints.Length == 0) throw new InvalidOperationException("エクスポートする点群がありません。");
 
             string outputPath = Path.GetFullPath(request.OutputPath);
             string directory = Path.GetDirectoryName(outputPath);
@@ -64,7 +82,8 @@ namespace PointCloudWorkbench
             Directory.CreateDirectory(directory);
             string temporaryPath = outputPath + "." + Guid.NewGuid().ToString("N") + ".tmp";
 
-            int vertexCount = CountIncludedPoints(points, request.Mode, cancellationToken);
+            ExportPoint[] points = CaptureSnapshot(sourcePoints, request.Mode, cancellationToken);
+            int vertexCount = points.Length;
             if ((request.Mode == ExportPointMode.SelectedVisible ||
                  request.Mode == ExportPointMode.SelectedNonDeleted) && vertexCount == 0)
                 throw new InvalidOperationException("エクスポート対象の選択された点がありません。");
@@ -72,9 +91,9 @@ namespace PointCloudWorkbench
             try
             {
                 if (request.AsBinary)
-                    WriteBinary(request, temporaryPath, vertexCount, cancellationToken, reportProgress);
+                    WriteBinary(request, points, temporaryPath, cancellationToken, reportProgress);
                 else
-                    WriteAscii(request, temporaryPath, vertexCount, cancellationToken, reportProgress);
+                    WriteAscii(request, points, temporaryPath, cancellationToken, reportProgress);
 
                 cancellationToken.ThrowIfCancellationRequested();
                 Commit(temporaryPath, outputPath);
@@ -107,9 +126,29 @@ namespace PointCloudWorkbench
             return count;
         }
 
-        private static void WriteBinary(PlyExportRequest request, string path, int count, CancellationToken token,
+        private static ExportPoint[] CaptureSnapshot(PointData[] source, ExportPointMode mode, CancellationToken token)
+        {
+            int count = CountIncludedPoints(source, mode, token);
+            ExportPoint[] snapshot = new ExportPoint[count];
+            int written = 0;
+            for (int i = 0; i < source.Length; i++)
+            {
+                if ((i & (CancellationCheckInterval - 1)) == 0) token.ThrowIfCancellationRequested();
+                PointData point = source[i];
+                if (!IsIncluded(point.label, mode)) continue;
+                if (written >= snapshot.Length)
+                    throw new InvalidOperationException("点群がエクスポート準備中に変更されました。処理をやり直してください。");
+                snapshot[written++] = new ExportPoint(point);
+            }
+            if (written != snapshot.Length)
+                throw new InvalidOperationException("点群がエクスポート準備中に変更されました。処理をやり直してください。");
+            return snapshot;
+        }
+
+        private static void WriteBinary(PlyExportRequest request, ExportPoint[] points, string path, CancellationToken token,
             Action<float, string> reportProgress)
         {
+            int count = points.Length;
             using (FileStream stream = new FileStream(path, FileMode.CreateNew, FileAccess.Write, FileShare.None, 1024 * 1024, FileOptions.SequentialScan))
             using (BinaryWriter writer = new BinaryWriter(stream, Encoding.ASCII))
             {
@@ -121,25 +160,25 @@ namespace PointCloudWorkbench
                 writer.Write(Encoding.ASCII.GetBytes(header));
                 int written = 0;
                 int progressInterval = Math.Max(1024, count / 100);
-                PointData[] points = request.Points;
                 for (int i = 0; i < points.Length; i++)
                 {
                     if ((i & (CancellationCheckInterval - 1)) == 0) token.ThrowIfCancellationRequested();
-                    PointData point = points[i];
-                    if (!IsIncluded(point.label, request.Mode)) continue;
-                    WriteBinaryPoint(writer, point);
+                WriteBinaryPoint(writer, points[i]);
                     written++;
                     if (written % progressInterval == 0)
                         reportProgress?.Invoke(count == 0 ? 1f : (float)written / count, $"データを書き出し中... ({written:N0} / {count:N0} 点)");
                 }
+                if (written != count)
+                    throw new InvalidDataException("PLYヘッダー点数と書き込み点数が一致しません。");
                 writer.Flush();
                 stream.Flush(true);
             }
         }
 
-        private static void WriteAscii(PlyExportRequest request, string path, int count, CancellationToken token,
+        private static void WriteAscii(PlyExportRequest request, ExportPoint[] points, string path, CancellationToken token,
             Action<float, string> reportProgress)
         {
+            int count = points.Length;
             using (FileStream stream = new FileStream(path, FileMode.CreateNew, FileAccess.Write, FileShare.None, 1024 * 1024, FileOptions.SequentialScan))
             using (StreamWriter writer = new StreamWriter(stream, Encoding.ASCII, 1024 * 1024, true))
             {
@@ -149,51 +188,50 @@ namespace PointCloudWorkbench
                 writer.Write("property uchar red\nproperty uchar green\nproperty uchar blue\nproperty int label\nend_header\n");
                 int written = 0;
                 int progressInterval = Math.Max(1024, count / 100);
-                PointData[] points = request.Points;
                 for (int i = 0; i < points.Length; i++)
                 {
                     if ((i & (CancellationCheckInterval - 1)) == 0) token.ThrowIfCancellationRequested();
-                    PointData point = points[i];
-                    if (!IsIncluded(point.label, request.Mode)) continue;
-                    WriteAsciiPoint(writer, point);
+                WriteAsciiPoint(writer, points[i]);
                     written++;
                     if (written % progressInterval == 0)
                         reportProgress?.Invoke(count == 0 ? 1f : (float)written / count, $"データを書き出し中... ({written:N0} / {count:N0} 点)");
                 }
+                if (written != count)
+                    throw new InvalidDataException("PLYヘッダー点数と書き込み点数が一致しません。");
                 writer.Flush();
                 stream.Flush(true);
             }
         }
 
-        private static void WriteBinaryPoint(BinaryWriter writer, PointData point)
+        private static void WriteBinaryPoint(BinaryWriter writer, ExportPoint point)
         {
-            uint color = point.originalColor;
-            writer.Write(point.position.x);
-            writer.Write(point.position.y);
-            writer.Write(point.position.z);
+            uint color = point.Color;
+            writer.Write(point.X);
+            writer.Write(point.Y);
+            writer.Write(point.Z);
             writer.Write((byte)(color & 0xff));
             writer.Write((byte)((color >> 8) & 0xff));
             writer.Write((byte)((color >> 16) & 0xff));
-            writer.Write(point.label & 0xff);
+            writer.Write(point.Label & 0xff);
         }
 
-        private static void WriteAsciiPoint(StreamWriter writer, PointData point)
+        private static void WriteAsciiPoint(StreamWriter writer, ExportPoint point)
         {
-            uint color = point.originalColor;
-            writer.Write(point.position.x.ToString("R", CultureInfo.InvariantCulture)); writer.Write(' ');
-            writer.Write(point.position.y.ToString("R", CultureInfo.InvariantCulture)); writer.Write(' ');
-            writer.Write(point.position.z.ToString("R", CultureInfo.InvariantCulture)); writer.Write(' ');
+            uint color = point.Color;
+            writer.Write(point.X.ToString("R", CultureInfo.InvariantCulture)); writer.Write(' ');
+            writer.Write(point.Y.ToString("R", CultureInfo.InvariantCulture)); writer.Write(' ');
+            writer.Write(point.Z.ToString("R", CultureInfo.InvariantCulture)); writer.Write(' ');
             writer.Write((color & 0xff).ToString(CultureInfo.InvariantCulture)); writer.Write(' ');
             writer.Write(((color >> 8) & 0xff).ToString(CultureInfo.InvariantCulture)); writer.Write(' ');
             writer.Write(((color >> 16) & 0xff).ToString(CultureInfo.InvariantCulture)); writer.Write(' ');
-            writer.WriteLine((point.label & 0xff).ToString(CultureInfo.InvariantCulture));
+            writer.WriteLine((point.Label & 0xff).ToString(CultureInfo.InvariantCulture));
         }
 
         public static bool IsIncluded(int label, ExportPointMode mode)
         {
             if (mode == ExportPointMode.SelectedNonDeleted)
             {
-                return (label & SelectedBit) != 0 && (label & DeletedBit) == 0;
+                return (label & SelectedBit) != 0 && (label & (DeletedBit | NoiseHiddenBit)) == 0;
             }
             if ((label & (DeletedBit | NoiseHiddenBit)) != 0) return false;
             return mode != ExportPointMode.SelectedVisible || (label & SelectedBit) != 0;

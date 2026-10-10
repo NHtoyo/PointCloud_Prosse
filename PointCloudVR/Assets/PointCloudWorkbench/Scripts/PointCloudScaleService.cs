@@ -56,21 +56,9 @@ namespace PointCloudWorkbench
 
         public static bool IsCalibratedPointCloud(string pointCloudPath)
         {
-            if (string.IsNullOrWhiteSpace(pointCloudPath)) return false;
-            string name = Path.GetFileNameWithoutExtension(pointCloudPath);
-            foreach (string marker in new[] { "_calibrated_mm", "_calibrated_m", "_calibrated" })
-            {
-                if (HasMarkerSuffix(name, marker)) return true;
-            }
-            return false;
-        }
-
-        private static bool HasMarkerSuffix(string name, string marker)
-        {
-            int index = name.LastIndexOf(marker, StringComparison.OrdinalIgnoreCase);
-            if (index < 0) return false;
-            string suffix = name.Substring(index + marker.Length);
-            return suffix.Length == 0 || suffix.StartsWith("_");
+            if (string.IsNullOrWhiteSpace(pointCloudPath) || !File.Exists(pointCloudPath) ||
+                !string.Equals(Path.GetExtension(pointCloudPath), ".ply", StringComparison.OrdinalIgnoreCase)) return false;
+            return PointCloudPlyReader.HasScaleCalibrationMarker(pointCloudPath);
         }
 
         public static string BuildCalibratedOutputPath(string sourcePath, string outputDirectory)
@@ -107,10 +95,13 @@ namespace PointCloudWorkbench
             return !File.Exists(path) && !File.Exists(path + ".pcwb.json");
         }
 
-        public static void WriteCalibratedPlyAtomic(PointData[] points, string outputPath, CancellationToken cancellationToken)
+        public static void WriteCalibratedPlyAtomic(PointData[] points, string outputPath, CancellationToken cancellationToken,
+            float coordinateCorrection = 1f)
         {
             if (points == null || points.Length == 0) throw new System.ArgumentException("No point data to write.", nameof(points));
             if (string.IsNullOrWhiteSpace(outputPath)) throw new System.ArgumentException("Output path is required.", nameof(outputPath));
+            if (float.IsNaN(coordinateCorrection) || float.IsInfinity(coordinateCorrection) || coordinateCorrection <= 0f)
+                throw new ArgumentOutOfRangeException(nameof(coordinateCorrection));
 
             string fullPath = Path.GetFullPath(outputPath);
             string directory = Path.GetDirectoryName(fullPath);
@@ -140,10 +131,15 @@ namespace PointCloudWorkbench
                     {
                         cancellationToken.ThrowIfCancellationRequested();
                         PointData point = points[i];
+                        Vector3 correctedPosition = point.position * coordinateCorrection;
+                        if (float.IsNaN(correctedPosition.x) || float.IsInfinity(correctedPosition.x) ||
+                            float.IsNaN(correctedPosition.y) || float.IsInfinity(correctedPosition.y) ||
+                            float.IsNaN(correctedPosition.z) || float.IsInfinity(correctedPosition.z))
+                            throw new InvalidDataException("校正後の点座標にNaNまたはInfinityがあります。");
                         Color32 color = PointData.UnpackColor(point.originalColor);
-                        writer.Write(point.position.x);
-                        writer.Write(point.position.y);
-                        writer.Write(point.position.z);
+                        writer.Write(correctedPosition.x);
+                        writer.Write(correctedPosition.y);
+                        writer.Write(correctedPosition.z);
                         writer.Write(color.r);
                         writer.Write(color.g);
                         writer.Write(color.b);

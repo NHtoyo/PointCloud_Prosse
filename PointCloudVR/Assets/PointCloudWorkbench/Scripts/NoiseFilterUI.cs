@@ -13,6 +13,7 @@ namespace PointCloudWorkbench
     public class NoiseFilterUI : MonoBehaviour
     {
         private PointCloudEditor editor;
+        private PointCloudOperation activeOperation;
         public NoiseFilterParams Params = new NoiseFilterParams();
 
 
@@ -46,18 +47,19 @@ namespace PointCloudWorkbench
 
         private void DrawModeSection(float width, GUIStyle textStyle, GUIStyle buttonStyle, GUIStyle activeButtonStyle)
         {
-            GUILayout.Label("⚙ 処理モード設定", textStyle);
+            GUILayout.Label("処理モード設定", textStyle);
             GUILayout.BeginHorizontal();
             if (GUILayout.Button("Full (全体適用)", Params.processMode == "full" ? activeButtonStyle : buttonStyle, GUILayout.Width((width - 35) / 2f)))
             {
                 Params.processMode = "full";
             }
+            bool previousEnabled = GUI.enabled;
             GUI.enabled = false; // 点数不一致バグ回避のため一時的に無効化
             if (GUILayout.Button("Downsample (プレビュー)", Params.processMode == "downsample" ? activeButtonStyle : buttonStyle, GUILayout.Width((width - 35) / 2f)))
             {
                 Params.processMode = "downsample";
             }
-            GUI.enabled = true;
+            GUI.enabled = previousEnabled;
             GUILayout.EndHorizontal();
 
             if (Params.processMode == "downsample")
@@ -214,7 +216,7 @@ namespace PointCloudWorkbench
 
         private void DrawControlButtons(GUIStyle buttonStyle, GUIStyle activeButtonStyle)
         {
-            if (GUILayout.Button("🚀 ノイズフィルタ解析を実行", activeButtonStyle, GUILayout.Height(35)))
+            if (GUILayout.Button("ノイズフィルタ解析を実行", activeButtonStyle, GUILayout.Height(35)))
             {
                 RunNoiseFilterAnalysis();
             }
@@ -226,44 +228,51 @@ namespace PointCloudWorkbench
                 GUILayout.BeginHorizontal();
                 if (GUILayout.Button("確定 (Commit)", activeButtonStyle))
                 {
-                    mgr.CommitRemoval(editor.targetRenderer);
-                    editor.MarkStatsDirty();
+                    if (mgr.CommitRemoval(editor.targetRenderer)) editor.MarkStatsDirty();
+                    else PointCloudProgressManager.Instance.ShowError("ノイズ確定", MutationFailure(mgr, "点群ラベルを更新できませんでした。"));
                 }
                 if (GUILayout.Button("プレビュークリア", buttonStyle))
                 {
-                    mgr.ClearPreview(editor.targetRenderer);
+                    if (!mgr.ClearPreview(editor.targetRenderer))
+                        PointCloudProgressManager.Instance.ShowError("ノイズプレビュー", MutationFailure(mgr, "プレビューを解除できませんでした。"));
                 }
                 GUILayout.EndHorizontal();
             }
 
             GUILayout.Space(5);
             GUILayout.BeginHorizontal();
-            GUI.enabled = mgr.CanUndo;
+            bool previousEnabled = GUI.enabled;
+            GUI.enabled = previousEnabled && mgr.CanUndo;
             if (GUILayout.Button("↩ 元に戻す (Undo)", buttonStyle))
             {
-                mgr.Undo(editor.targetRenderer);
-                editor.MarkStatsDirty();
+                if (mgr.Undo(editor.targetRenderer)) editor.MarkStatsDirty();
+                else PointCloudProgressManager.Instance.ShowError("ノイズUndo", MutationFailure(mgr, "履歴を適用できませんでした。"));
             }
-            GUI.enabled = mgr.CanRedo;
+            GUI.enabled = previousEnabled && mgr.CanRedo;
             if (GUILayout.Button("↪ やり直す (Redo)", buttonStyle))
             {
-                mgr.Redo(editor.targetRenderer);
-                editor.MarkStatsDirty();
+                if (mgr.Redo(editor.targetRenderer)) editor.MarkStatsDirty();
+                else PointCloudProgressManager.Instance.ShowError("ノイズRedo", MutationFailure(mgr, "履歴を適用できませんでした。"));
             }
-            GUI.enabled = true;
+            GUI.enabled = previousEnabled;
             GUILayout.EndHorizontal();
 
-            if (GUILayout.Button("🗑 すべてのノイズフィルタを解除", buttonStyle))
+            if (GUILayout.Button("すべてのノイズフィルタを解除", buttonStyle))
             {
-                mgr.ResetAllFilterFlags(editor.targetRenderer);
-                editor.MarkStatsDirty();
+                if (mgr.ResetAllFilterFlags(editor.targetRenderer)) editor.MarkStatsDirty();
+                else PointCloudProgressManager.Instance.ShowError("ノイズ状態リセット", MutationFailure(mgr, "ノイズ状態をリセットできませんでした。"));
             }
 
             GUILayout.Space(8);
-            if (GUILayout.Button("💾 クリーンアップ済PLYをエクスポート", activeButtonStyle, GUILayout.Height(35)))
+            if (GUILayout.Button("クリーンアップ済PLYをエクスポート", activeButtonStyle, GUILayout.Height(35)))
             {
                 editor.ExportCleanedPoints();
             }
+        }
+
+        private static string MutationFailure(NoiseFilterManager manager, string fallback)
+        {
+            return string.IsNullOrWhiteSpace(manager.LastMutationFailure) ? fallback : manager.LastMutationFailure;
         }
 
         public void RunNoiseFilterAnalysis()
@@ -286,30 +295,41 @@ namespace PointCloudWorkbench
 
             string outputDir = Path.GetFullPath(Path.Combine(Application.dataPath, "../python_backend/output"));
             PointData[] points = editor.targetRenderer.GetPointData();
+            PointCloudRenderer rendererSnapshot = editor.targetRenderer;
+            long datasetGeneration = rendererSnapshot.DatasetGeneration;
+            long contentRevision = rendererSnapshot.ContentRevision;
             float coordinateScaleToMm = editor.targetRenderer.DisplayScale;
             NoiseFilterParams parameterSnapshot = JsonUtility.FromJson<NoiseFilterParams>(JsonUtility.ToJson(Params));
             PointCloudProgressManager pm = PointCloudProgressManager.Instance;
-            if (!pm.Start("空中モヤ・浮遊点ノイズ除去", "Pythonプロセスを準備中...")) return;
-            CancellationToken token = pm.CancellationToken;
+            PointCloudOperation operation = pm.TryStart("空中モヤ・浮遊点ノイズ除去", "Pythonプロセスを準備中...");
+            if (operation == null) return;
+            activeOperation = operation;
+            CancellationToken token = operation.CancellationToken;
 
             try
             {
                 NoiseFilterResult result = await PythonBridge.RunDenoiserAsync(
-                    inputPath, outputDir, parameterSnapshot, points, coordinateScaleToMm, token);
+                    inputPath, outputDir, parameterSnapshot, points, coordinateScaleToMm, operation, token);
                 token.ThrowIfCancellationRequested();
-                NoiseFilterManager.Instance.SetResult(result);
-                NoiseFilterManager.Instance.ApplyPreview(editor.targetRenderer);
+                if (editor == null || editor.targetRenderer != rendererSnapshot ||
+                    !NoiseFilterManager.Instance.SetResult(result, rendererSnapshot, datasetGeneration, contentRevision) ||
+                    !NoiseFilterManager.Instance.ApplyPreview(rendererSnapshot))
+                    throw new InvalidOperationException("点群または編集状態が解析中に変化しました。古い結果は適用していません。");
                 editor.MarkStatsDirty();
-                pm.Complete();
+                operation.Complete();
             }
             catch (OperationCanceledException)
             {
-                pm.CompleteCancelled("ノイズ解析をキャンセルしました。点群の選択状態は変更していません。");
+                operation.CompleteCancelled("ノイズ解析をキャンセルしました。点群の選択状態は変更していません。");
             }
             catch (Exception ex)
             {
-                pm.Fail("空中モヤ・浮遊点ノイズ除去", "Python解析に失敗しました。点群の編集内容は適用していません。", ex.ToString());
+                operation.Fail("空中モヤ・浮遊点ノイズ除去", "Python解析に失敗しました。点群の編集内容は適用していません。", ex.ToString());
                 UnityEngine.Debug.LogWarning($"[RecoverableOperationError] ノイズ解析: {ex}");
+            }
+            finally
+            {
+                if (ReferenceEquals(activeOperation, operation)) activeOperation = null;
             }
         }
 
@@ -352,62 +372,24 @@ namespace PointCloudWorkbench
             legendStylesInitialized = true;
         }
 
-        void OnGUI()
+        public void DrawPreviewLegendContents()
         {
-            // ノイズプレビューが有効なときのみ表示
-            if (NoiseFilterManager.Instance == null || !NoiseFilterManager.Instance.IsPreviewActive || editor == null || editor.targetRenderer == null)
+            NoiseFilterManager manager = NoiseFilterManager.Instance;
+            if (manager == null || !manager.IsPreviewActive)
             {
                 return;
             }
 
             InitializeLegendStyles();
-
-            // 現在プレビュー状態にある各理由ごとの点数をリアルタイム集計
-            int countSor = 0;
-            int countRor = 0;
-            int countDensity = 0;
-            int countDbscan = 0;
-            int countCc = 0;
-            int countWhiteHaze = 0;
-
-            PointData[] points = editor.targetRenderer.GetPointData();
-            if (points != null)
-            {
-                for (int i = 0; i < points.Length; i++)
-                {
-                    int label = points[i].label;
-                    if ((label & NoiseFilterManager.NOISE_CANDIDATE_BIT) != 0)
-                    {
-                        int reason = (label & NoiseFilterManager.NOISE_REASON_MASK) >> NoiseFilterManager.NOISE_REASON_SHIFT;
-                        if (reason == 1)      countSor++;
-                        else if (reason == 2) countRor++;
-                        else if (reason == 3) countDensity++;
-                        else if (reason == 4) countDbscan++;
-                        else if (reason == 5) countCc++;
-                        else if (reason == 7) countWhiteHaze++;
-                    }
-                }
-            }
-
-            // 画面左下に配置する（十分な大きさにする、凡例1つ増え、点数が入るため幅を400f、高さを210fに）
-            float width = 400f;
-            float height = 210f;
-            float posX = 20f;
-            float posY = Screen.height - height - 20f;
-
-            GUILayout.BeginArea(new Rect(posX, posY, width, height), legendStyle);
-
-            GUILayout.Label("🧹 除去対象ノイズ凡例 (プレビュー)", legendTitleStyle);
+            GUILayout.Label("除去対象ノイズ凡例 (プレビュー)", legendTitleStyle);
             GUILayout.Space(8);
 
-            DrawLegendItem(new Color(0.0f, 0.85f, 1.0f, 1.0f), $"空中白モヤ (White Haze)：水色 ({countWhiteHaze:N0} 点)");
-            DrawLegendItem(new Color(1.0f, 0.12f, 0.12f, 1.0f), $"SOR (統計的ノイズ除去)：赤 ({countSor:N0} 点)");
-            DrawLegendItem(new Color(1.0f, 0.55f, 0.0f, 1.0f), $"ROR (半径外れ値除去)：橙 ({countRor:N0} 点)");
-            DrawLegendItem(new Color(0.63f, 0.12f, 0.9f, 1.0f), $"低密度ノイズ除去：紫 ({countDensity:N0} 点)");
-            DrawLegendItem(new Color(1.0f, 0.86f, 0.0f, 1.0f), $"クラスタノイズ (DBSCAN)：黄 ({countDbscan:N0} 点)");
-            DrawLegendItem(new Color(1.0f, 0.0f, 0.5f, 1.0f), $"平面推定 (CC風)ノイズ：ピンク ({countCc:N0} 点)");
-
-            GUILayout.EndArea();
+            DrawLegendItem(new Color(0.0f, 0.85f, 1.0f, 1.0f), $"空中白モヤ (White Haze)：水色 ({manager.GetPreviewReasonCount(7):N0} 点)");
+            DrawLegendItem(new Color(1.0f, 0.12f, 0.12f, 1.0f), $"SOR (統計的ノイズ除去)：赤 ({manager.GetPreviewReasonCount(1):N0} 点)");
+            DrawLegendItem(new Color(1.0f, 0.55f, 0.0f, 1.0f), $"ROR (半径外れ値除去)：橙 ({manager.GetPreviewReasonCount(2):N0} 点)");
+            DrawLegendItem(new Color(0.63f, 0.12f, 0.9f, 1.0f), $"低密度ノイズ除去：紫 ({manager.GetPreviewReasonCount(3):N0} 点)");
+            DrawLegendItem(new Color(1.0f, 0.86f, 0.0f, 1.0f), $"クラスタノイズ (DBSCAN)：黄 ({manager.GetPreviewReasonCount(4):N0} 点)");
+            DrawLegendItem(new Color(1.0f, 0.0f, 0.5f, 1.0f), $"平面推定 (CC風)ノイズ：ピンク ({manager.GetPreviewReasonCount(5):N0} 点)");
         }
 
         private void DrawLegendItem(Color color, string label)
@@ -430,6 +412,7 @@ namespace PointCloudWorkbench
 
         void OnDestroy()
         {
+            activeOperation?.Cancel();
             if (legendBgTexture != null) Destroy(legendBgTexture);
             if (colorTexture != null) Destroy(colorTexture);
         }

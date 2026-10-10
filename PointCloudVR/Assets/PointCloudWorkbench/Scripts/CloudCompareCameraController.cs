@@ -27,6 +27,7 @@ public class CloudCompareCameraController : MonoBehaviour
     private CameraRotationGuide rotationGuide;
     private PointCloudPicker pointCloudPicker;
     private PointCloudEditorUI editorUI;
+    private PointCloudManager pointCloudManager;
     private Camera mainCamera;
     private float minimumOrbitDistance = 0.000001f;
 
@@ -35,6 +36,7 @@ public class CloudCompareCameraController : MonoBehaviour
         mainCamera = GetComponent<Camera>();
         if (mainCamera == null) mainCamera = Camera.main;
         editorUI = Object.FindAnyObjectByType<PointCloudEditorUI>();
+        pointCloudManager = Object.FindAnyObjectByType<PointCloudManager>();
 
         // PCモード: TrackedPoseDriver を無効化してマウス操作を有効にする
         var trackedPoseDriver = GetComponent<UnityEngine.InputSystem.XR.TrackedPoseDriver>();
@@ -135,11 +137,9 @@ public class CloudCompareCameraController : MonoBehaviour
         {
             return editorUI.IsMouseOverUI();
         }
-        float mouseX = Input.mousePosition.x;
-        float mouseY = Input.mousePosition.y;
-        bool overLeftUI = (mouseX >= 10f && mouseX <= 410f && mouseY >= (Screen.height - 850f) && mouseY <= Screen.height);
-        bool overRightUI = (mouseX >= Screen.width - 430f && mouseX <= Screen.width - 10f && mouseY >= (Screen.height - 770f) && mouseY <= Screen.height);
-        return overLeftUI || overRightUI;
+        Vector2 guiMousePosition = new Vector2(Input.mousePosition.x, Screen.height - Input.mousePosition.y);
+        return GUIUtility.hotControl != 0 ||
+               (pointCloudManager != null && pointCloudManager.LastPanelRect.Contains(guiMousePosition));
     }
 
     Vector2 GetScreenPivotCenter()

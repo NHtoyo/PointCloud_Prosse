@@ -36,6 +36,7 @@ namespace PointCloudWorkbench
         private Vector2 presetScroll = Vector2.zero;
         private Rect presetPopupRect;
         private Rect lastPanelRect;
+        private readonly List<Rect> classBlockRects = new List<Rect>();
 
         // UI設定 (パラメータパネルを廃止して高さはTOP_Hのみ)
         private float BAR_X => Mathf.Min(460f, Screen.width * 0.25f) + 30f;
@@ -130,7 +131,7 @@ namespace PointCloudWorkbench
             Texture2D Tex(Color c) { var t = new Texture2D(1, 1); t.SetPixel(0, 0, c); t.Apply(); return t; }
 
             panelStyle = new GUIStyle(GUI.skin.box);
-            panelStyle.normal.background = Tex(new Color(0.09f, 0.11f, 0.15f, 0.85f));
+            panelStyle.normal.background = Tex(new Color(0.09f, 0.11f, 0.15f, 0.98f));
             panelStyle.border = new RectOffset(1, 1, 1, 1);
 
             titleStyle = new GUIStyle(GUI.skin.label) { fontSize = 17, fontStyle = FontStyle.Bold }; // 14 -> 17
@@ -145,7 +146,7 @@ namespace PointCloudWorkbench
             blockStyle = new GUIStyle(GUI.skin.button) { fontSize = 15, fontStyle = FontStyle.Bold }; // 13 -> 15
             blockStyle.normal.textColor = Color.white;
             blockStyle.normal.background = Tex(new Color(0.24f, 0.28f, 0.36f));
-            blockStyle.wordWrap = false;
+            blockStyle.wordWrap = true;
 
             activeBlockStyle = new GUIStyle(blockStyle);
             activeBlockStyle.normal.background = Tex(new Color(0.1f, 0.55f, 0.28f)); // Green highlight
@@ -165,10 +166,13 @@ namespace PointCloudWorkbench
             InitStyles();
 
             float barW = Screen.width - BAR_X - RIGHT_W - 30f;
-            float barH = TOP_H; // パネルの高さは160px固定
+            float laneWidth = Mathf.Max(120f, barW - PAL_W - 11f);
+            int laneRows = GetClassLaneRowCount(laneWidth);
+            float wrappedLaneHeight = (barW < 800f ? 54f : 46f) + laneRows * 36f + Mathf.Max(0, laneRows - 1) * 3f;
+            float barH = Mathf.Max(TOP_H, wrappedLaneHeight);
 
             Rect bar = new Rect(BAR_X, currentY, barW, barH);
-            lastPanelRect = bar;
+            lastPanelRect = new Rect(bar.x, bar.y + 15f, bar.width, bar.height);
             GUI.Box(bar, "", panelStyle);
 
             // 1. パレット部分（新規追加・名前変更・適用・Undo/Redo）
@@ -191,7 +195,34 @@ namespace PointCloudWorkbench
         {
             Vector3 mouse = Input.mousePosition;
             mouse.y = Screen.height - mouse.y;
-            return lastPanelRect.Contains(mouse) || (isPresetPopupOpen && presetPopupRect.Contains(mouse));
+            Rect popupScreenRect = new Rect(presetPopupRect.x, presetPopupRect.y + 15f, presetPopupRect.width, presetPopupRect.height);
+            return lastPanelRect.Contains(mouse) || (isPresetPopupOpen && popupScreenRect.Contains(mouse));
+        }
+
+        private int GetClassLaneRowCount(float laneWidth)
+        {
+            if (activePreset == null || activePreset.classes == null || activePreset.classes.Count == 0) return 1;
+            float maximumBlockWidth = Mathf.Max(1f, laneWidth - 10f);
+            float x = 0f;
+            int rows = 1;
+            for (int i = 0; i < activePreset.classes.Count; i++)
+            {
+                var cls = activePreset.classes[i];
+                string label = $"{(editor.activeLabelClass == cls.id ? "★ " : "")}{cls.name} ({cls.id})";
+                float width = GetClassBlockWidth(label, maximumBlockWidth);
+                if (x > 0f && x + width > maximumBlockWidth)
+                {
+                    rows++;
+                    x = 0f;
+                }
+                x += width + 8f;
+            }
+            return rows;
+        }
+
+        private float GetClassBlockWidth(string label, float maximumWidth)
+        {
+            return Mathf.Min(maximumWidth, Mathf.Max(120f, blockStyle.CalcSize(new GUIContent(label)).x + 24f));
         }
 
         private void DrawControlPalette(Rect bar)
@@ -218,12 +249,13 @@ namespace PointCloudWorkbench
             
             // 選択中のクラス名変更 (未分類=0 は変更不可)
             bool canEdit = selectedClassId > 0;
-            GUI.enabled = canEdit;
-            if (GUI.Button(new Rect(px + halfBtnW + 6f, py, halfBtnW, 30f), "✏ 変更", paletteBlockStyle))
+            bool previousEnabled = GUI.enabled;
+            GUI.enabled = previousEnabled && canEdit;
+            if (GUI.Button(new Rect(px + halfBtnW + 6f, py, halfBtnW, 30f), "変更", paletteBlockStyle))
             {
                 RenameClass(selectedClassId, classNameInput);
             }
-            GUI.enabled = true;
+            GUI.enabled = previousEnabled;
             py += 36f;
 
             // 上書き防止設定
@@ -231,7 +263,7 @@ namespace PointCloudWorkbench
             py += 24f;
 
             // 選択した点にラベルを適用
-            if (GUI.Button(new Rect(px, py, bW, 34f), "🏷 選択点に適用", activeBlockStyle))
+            if (GUI.Button(new Rect(px, py, bW, 34f), "選択点に適用", activeBlockStyle))
             {
                 editor.activeLabelClass = selectedClassId;
                 editor.AssignLabelToSelected();
@@ -243,9 +275,10 @@ namespace PointCloudWorkbench
         {
             const float p = 5f;
             const float titleH = 20f;
-            const float presetW = 90f;
-            const float redoW = 80f;
-            const float undoW = 80f;
+            bool compact = bar.width < 800f;
+            float presetW = compact ? 58f : 90f;
+            float redoW = compact ? 90f : 80f;
+            float undoW = compact ? 52f : 80f;
 
             float lx = bar.x + PAL_W + 6f;
             float btnX = bar.x + bar.width - p - presetW;
@@ -253,22 +286,24 @@ namespace PointCloudWorkbench
             float undoX = redoX - 6f - undoW;
             float laneW = btnX + presetW - lx;
 
-            GUI.Label(new Rect(lx, bar.y + p + 2f, undoX - lx - 4, titleH), "アノテーションクラス (D&Dで順序/番号入れ替え, Deleteで削除)", titleStyle);
+            if (!compact)
+                GUI.Label(new Rect(lx, bar.y + p + 2f, Mathf.Max(0f, undoX - lx - 4), titleH), "分類クラス", titleStyle);
 
             // Undo / Redo ボタンの横並び配置 (モヤ処理と同様にレーン上部に集約)
-            GUI.enabled = editor.CanAnnotationUndo;
-            if (GUI.Button(new Rect(undoX, bar.y + p, undoW, 28f), "元に戻す", blockStyle))
+            bool allowInteraction = GUI.enabled;
+            GUI.enabled = allowInteraction && editor.CanAnnotationUndo;
+            if (GUI.Button(new Rect(undoX, bar.y + p, undoW, 28f), compact ? "戻す" : "元に戻す", blockStyle))
             {
                 editor.AnnotationUndo();
             }
-            GUI.enabled = editor.CanAnnotationRedo;
+            GUI.enabled = allowInteraction && editor.CanAnnotationRedo;
             if (GUI.Button(new Rect(redoX, bar.y + p, redoW, 28f), "やり直す", blockStyle))
             {
                 editor.AnnotationRedo();
             }
-            GUI.enabled = true;
+            GUI.enabled = allowInteraction;
 
-            if (GUI.Button(new Rect(btnX, bar.y + p, presetW, 28f), "プリセット", blockStyle))
+            if (GUI.Button(new Rect(btnX, bar.y + p, presetW, 28f), compact ? "設定" : "プリセット", blockStyle))
             {
                 isPresetPopupOpen = !isPresetPopupOpen;
                 if (isPresetPopupOpen)
@@ -280,16 +315,18 @@ namespace PointCloudWorkbench
             }
 
             // レーン背景
-            float laneY = bar.y + p + titleH + 6f;
-            float laneH = bar.y + TOP_H - laneY - p;
+            float laneY = bar.y + p + (compact ? 28f : titleH) + 6f;
+            float laneH = bar.y + bar.height - laneY - p;
             Rect lane = new Rect(lx, laneY, laneW, laneH);
             GUI.Box(lane, "", GUI.skin.textField);
 
-            // 各クラスブロックを横並びで描画
+            float blockMaxWidth = Mathf.Max(1f, lane.width - 10f);
             float bx = lane.x + 5f;
-            float bH = Mathf.Min(50f, lane.height - 10f);
-            float sy = lane.y + (lane.height - bH) / 2f;
-            float bSpacing = 12f;
+            float by = lane.y + 5f;
+            const float blockHeight = 36f;
+            const float blockSpacing = 8f;
+            const float rowSpacing = 3f;
+            classBlockRects.Clear();
 
             var ev = Event.current;
 
@@ -305,20 +342,15 @@ namespace PointCloudWorkbench
                     txt = "★ " + txt;
                 }
 
-                // テキストに合わせてサイズを動的に計算 (CalcSizeを使用し、見切れを防ぐ)
-                float bW = Mathf.Max(120f, blockStyle.CalcSize(new GUIContent(txt)).x + 24f);
-
-                float blockX = bx;
-                bx += bW + bSpacing;
-
-                // レーン幅に収まりきらない場合は "…" 表示
-                if (blockX + bW > lane.x + lane.width - 16f)
+                float bW = GetClassBlockWidth(txt, blockMaxWidth);
+                if (bx > lane.x + 5f && bx + bW > lane.x + lane.width - 5f)
                 {
-                    GUI.Label(new Rect(lane.x + lane.width - 15f, sy + (bH - 18f) / 2f, 15f, 18f), "…", titleStyle);
-                    break;
+                    bx = lane.x + 5f;
+                    by += blockHeight + rowSpacing;
                 }
 
-                Rect br = new Rect(blockX, sy, bW, bH);
+                Rect br = new Rect(bx, by, bW, blockHeight);
+                classBlockRects.Add(br);
                 Color originalBg = GUI.backgroundColor;
                 GUI.backgroundColor = cls.GetColor();
 
@@ -327,7 +359,7 @@ namespace PointCloudWorkbench
                 GUI.backgroundColor = originalBg;
 
                 // クリックして選択 / D&D開始 (未分類=0 のD&D移動は禁止し、インデックス0固定)
-                if (ev.type == EventType.MouseDown && br.Contains(ev.mousePosition) && ev.button == 0)
+                if (allowInteraction && ev.type == EventType.MouseDown && br.Contains(ev.mousePosition) && ev.button == 0)
                 {
                     selectedClassId = cls.id;
                     classNameInput = cls.name;
@@ -343,9 +375,10 @@ namespace PointCloudWorkbench
                     }
                     ev.Use();
                 }
+                bx += bW + blockSpacing;
             }
 
-            if (ev.type == EventType.MouseDrag && draggingClassIndex > 0)
+            if (allowInteraction && ev.type == EventType.MouseDrag && draggingClassIndex > 0)
             {
                 if (Vector2.Distance(ev.mousePosition, dragStartMousePos) > 5f)
                 {
@@ -354,7 +387,7 @@ namespace PointCloudWorkbench
             }
 
             // D&D のドロップ処理 (可変幅ブロックに対応した位置走査型に変更)
-            if (ev.type == EventType.MouseUp)
+            if (allowInteraction && ev.type == EventType.MouseUp)
             {
                 if (draggingClassIndex > 0 && GUIUtility.hotControl != 0)
                 {
@@ -366,31 +399,15 @@ namespace PointCloudWorkbench
                     isDragging = false;
                     if (lane.Contains(ev.mousePosition) && draggingClassIndex > 0)
                     {
-                        var draggedCls = activePreset.classes[draggingClassIndex];
-                        string draggedTxt = $"{(editor.activeLabelClass == draggedCls.id ? "★ " : "")}{draggedCls.name} ({draggedCls.id})";
-                        float draggedW = Mathf.Max(120f, blockStyle.CalcSize(new GUIContent(draggedTxt)).x + 24f);
-                        float ghostCenterX = ev.mousePosition.x - dragMouseOffset.x + draggedW / 2f;
-
                         int targetIndex = 1; // 未分類(0)は移動不可なので1以上
-
-                        float curX = lane.x + 5f;
-                        for (int i = 1; i < activePreset.classes.Count; i++)
+                        float nearestDistance = float.MaxValue;
+                        for (int i = 1; i < classBlockRects.Count; i++)
                         {
-                            var cls = activePreset.classes[i];
-                            string txt = $"{(editor.activeLabelClass == cls.id ? "★ " : "")}{cls.name} ({cls.id})";
-                            float bW = Mathf.Max(120f, blockStyle.CalcSize(new GUIContent(txt)).x + 24f);
-
-                            // ゴーストの中央位置を境にドロップ先インデックスを判定
-                            if (ghostCenterX < curX + bW / 2f)
-                            {
-                                targetIndex = i;
-                                break;
-                            }
-                            else
-                            {
-                                targetIndex = i + 1;
-                            }
-                            curX += bW + bSpacing;
+                            Rect candidate = classBlockRects[i];
+                            float distance = (ev.mousePosition - candidate.center).sqrMagnitude;
+                            if (distance >= nearestDistance) continue;
+                            nearestDistance = distance;
+                            targetIndex = ev.mousePosition.x < candidate.center.x ? i : i + 1;
                         }
                         // 最後尾への追加も許可するため Count までClamp
                         targetIndex = Mathf.Clamp(targetIndex, 1, activePreset.classes.Count);

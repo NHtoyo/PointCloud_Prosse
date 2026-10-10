@@ -1,0 +1,2 @@
+BENCH ExactNearestNeighbor3D references=50000 queries=5000 build_ms=48 query_ms=8 total_ms=56
+PASS bounded history and text; safe event dispatch; transactional noise labels and dataset binding; output generation integrity; downsample path isolation; exact nearest-neighbor; PLY parsing/export; operation lifecycle; recovery checks; source-keyed stem cache; selection visibility; snapshot export; cancellation/failure preservation

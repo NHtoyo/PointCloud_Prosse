@@ -13,6 +13,7 @@ import numpy as np
 import pointcloud_io
 import run_noise_filter
 import run_support_cylinder
+from output_generations import resolve_current_generation
 from coordinate_units import (
     convert_points_from_mm_to_data,
     convert_points_to_mm_in_place,
@@ -89,7 +90,8 @@ class CoordinateBoundaryTests(unittest.TestCase):
                     self.assertIsNone(result)
                     self.assertAlmostEqual(captured["span"], expected_span, places=4)
                     self.assertEqual(captured["count"], 2)
-                    metadata = json.loads((root / "noise-output" / "metadata.json").read_text(encoding="utf-8"))
+                    generation = resolve_current_generation(root / "noise-output")
+                    metadata = json.loads((generation["generation_directory"] / "metadata.json").read_text(encoding="utf-8"))
                     self.assertEqual(metadata["coordinate_unit"], "mm")
                     self.assertEqual(metadata["coordinate_scale_to_mm"], scale)
                     self.assertEqual(metadata["scalar_units"]["density_score"], "1/mm")
@@ -118,7 +120,9 @@ class CoordinateBoundaryTests(unittest.TestCase):
                     "--filters", "none",
                 ])
 
-            preview = np.asarray(run_noise_filter.o3d.io.read_point_cloud(str(output_dir / "preview.ply")).points)
+            generation = resolve_current_generation(output_dir)
+            preview = np.asarray(run_noise_filter.o3d.io.read_point_cloud(
+                str(generation["generation_directory"] / "preview.ply")).points)
             self.assertGreater(float(np.ptp(preview[:, 1])), 0.0)
             self.assertLess(float(np.max(np.abs(preview))), 1.6)
 

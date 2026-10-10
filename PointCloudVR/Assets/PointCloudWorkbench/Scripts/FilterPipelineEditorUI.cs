@@ -38,6 +38,7 @@ namespace PointCloudWorkbench
         private Vector2 presetScroll = Vector2.zero;
         private Rect presetPopupRect;
         private Rect lastPanelRect;
+        private const float CenterGroupScreenY = 15f;
 
         // スタイル
         private GUIStyle panelStyle, titleStyle, hintStyle, labelStyle;
@@ -48,8 +49,7 @@ namespace PointCloudWorkbench
         private float BAR_X  => Mathf.Min(460f, Screen.width * 0.25f) + 30f;
         private const float BAR_Y      = 15f;
         private float RIGHT_W => Mathf.Min(460f, Screen.width * 0.25f) + 20f;
-        private const float PAL_W      = 175f;     // パレット列幅 (文字拡大に合わせて広げる)
-        private const float TOP_H      = 160f;     // 上段高さ(パレット+レーン) (130->160へ拡大)
+        private const float PAL_W      = 175f;
         private const float PARAM_H    = 140f;     // 下段高さ(パラメータ) (90->140へ拡大)
 
         private static readonly string[] AvailableTypes =
@@ -114,7 +114,7 @@ namespace PointCloudWorkbench
             Texture2D Tex(Color c) { var t = new Texture2D(1, 1); t.SetPixel(0, 0, c); t.Apply(); return t; }
 
             panelStyle = new GUIStyle(GUI.skin.box);
-            panelStyle.normal.background = Tex(new Color(0.09f, 0.11f, 0.15f, 0.85f));
+            panelStyle.normal.background = Tex(new Color(0.09f, 0.11f, 0.15f, 0.98f));
             panelStyle.border = new RectOffset(1, 1, 1, 1);
 
             titleStyle = new GUIStyle(GUI.skin.label) { fontSize = 15, fontStyle = FontStyle.Bold };
@@ -148,29 +148,38 @@ namespace PointCloudWorkbench
             if (editor == null || noiseFilterUI == null) return;
             InitStyles();
 
-            float barW = Screen.width - BAR_X - RIGHT_W - 30f; // Calculate space in betweenleft and right panels
-            
-            // ブロック選択の有無に応じて高さを動的に変更 (非選択時はパラメータ領域を非表示に)
+            float barW = Mathf.Max(280f, Screen.width - BAR_X - RIGHT_W - 30f);
             var pl = noiseFilterUI?.Params?.customPipeline;
             bool hasSelection = selectedBlockIndex >= 0 && pl != null && selectedBlockIndex < pl.Count;
-            float barH = hasSelection ? (TOP_H + PARAM_H) : TOP_H;
+            bool compact = barW < 780f;
+            float paletteWidth = compact ? 122f : PAL_W;
+            float laneWidth = Mathf.Max(120f, barW - paletteWidth - 22f);
+            float blockWidth = compact ? 108f : 130f;
+            float blockSpacing = compact ? 10f : 22f;
+            float blockHeight = compact ? 40f : 50f;
+            int columns = Mathf.Max(1, Mathf.FloorToInt((laneWidth - 10f + blockSpacing) / (blockWidth + blockSpacing)));
+            int rows = Mathf.Max(1, Mathf.CeilToInt(Mathf.Max(1, pl?.Count ?? 0) / (float)columns));
+            float headerHeight = compact ? 100f : 40f;
+            float contentHeight = rows * (blockHeight + 12f) + 14f;
+            float topHeight = Mathf.Max(160f, headerHeight + contentHeight + 14f);
+            float barH = topHeight + (hasSelection ? PARAM_H : 0f);
             Rect bar = new Rect(BAR_X, currentY, barW, barH);
-            lastPanelRect = bar;
+            lastPanelRect = new Rect(bar.x, bar.y + CenterGroupScreenY, bar.width, bar.height);
 
             // バー背景
             GUI.Box(bar, "", panelStyle);
 
             // 上段: パレット + レーン
-            DrawPalette(bar);
-            DrawLane(bar);
+            DrawPalette(bar, topHeight, paletteWidth, compact);
+            DrawLane(bar, topHeight, paletteWidth, compact, columns, blockWidth, blockSpacing, blockHeight);
 
             if (hasSelection)
             {
                 // 区切り線
-                DrawDivider(new Rect(BAR_X + 5, currentY + TOP_H, barW - 10, 1));
+                DrawDivider(new Rect(BAR_X + 5, currentY + topHeight, barW - 10, 1));
 
                 // 下段: パラメータ（バー内に統合、選択時のみ描画）
-                DrawParamPanel(new Rect(BAR_X, currentY + TOP_H + 1, barW, PARAM_H - 1));
+                DrawParamPanel(new Rect(BAR_X, currentY + topHeight + 1, barW, PARAM_H - 1));
             }
 
             // ドラッグゴースト / コンテキストメニュー
@@ -197,8 +206,9 @@ namespace PointCloudWorkbench
             Vector3 mouse = Input.mousePosition;
             mouse.y = Screen.height - mouse.y;
             if (lastPanelRect.Contains(mouse)) return true;
-            if (isPresetPopupOpen && presetPopupRect.Contains(mouse)) return true;
-            return showContextMenu && new Rect(contextMenuPos.x, contextMenuPos.y, 88f, 72f).Contains(mouse);
+            if (isPresetPopupOpen && new Rect(presetPopupRect.x, presetPopupRect.y + CenterGroupScreenY,
+                presetPopupRect.width, presetPopupRect.height).Contains(mouse)) return true;
+            return showContextMenu && new Rect(contextMenuPos.x, contextMenuPos.y + CenterGroupScreenY, 88f, 72f).Contains(mouse);
         }
 
         private void DrawPresetMenu()
@@ -278,17 +288,16 @@ namespace PointCloudWorkbench
         // =========================================================
         // パレット描画（絶対座標）
         // =========================================================
-        private void DrawPalette(Rect bar)
+        private void DrawPalette(Rect bar, float topHeight, float paletteWidth, bool compact)
         {
             if (IsMouseBlockedByContextMenu()) return;
             float px   = bar.x + 5f;
             float py   = bar.y + 4f;
-            float bW   = PAL_W - 8f;
+            float bW   = paletteWidth - 8f;
             float titleH = 22f; // タイトル高さを文字拡大に合わせて少し広げる
             // ボタン高さ: 上段高さから title と余白を引いてボタン数で割る
-            float usable = TOP_H - titleH - 8f - (AvailableTypes.Length - 1) * 3f;
+            float usable = topHeight - titleH - 8f - (AvailableTypes.Length - 1) * 3f;
             float bH = Mathf.Floor(usable / AvailableTypes.Length);
-            bH = Mathf.Clamp(bH, 18f, 32f); // パレットボタンの高さ制限を拡大 (14-22 -> 18-32)
             bH = Mathf.Clamp(bH, 18f, 32f);
 
             GUI.Label(new Rect(px, py, bW, titleH), "パレット", titleStyle);
@@ -297,7 +306,7 @@ namespace PointCloudWorkbench
             for (int i = 0; i < AvailableTypes.Length; i++)
             {
                 string type = AvailableTypes[i];
-                string lbl  = D(type);
+                string lbl  = compact ? DCompact(type) : D(type);
                 Rect r = new Rect(px, py + i * (bH + 2f), bW, bH);
 
                 if (GUI.Button(r, lbl, paletteBlockStyle))
@@ -308,7 +317,7 @@ namespace PointCloudWorkbench
                 }
 
                 var ev = Event.current;
-                if (ev.type == EventType.MouseDown && r.Contains(ev.mousePosition) && ev.button == 0)
+                if (GUI.enabled && ev.type == EventType.MouseDown && r.Contains(ev.mousePosition) && ev.button == 0)
                 {
                     draggingBlockType  = type;
                     draggingSourceIndex = -1;
@@ -321,120 +330,123 @@ namespace PointCloudWorkbench
         // =========================================================
         // レーン描画
         // =========================================================
-        private void DrawLane(Rect bar)
+        private void DrawLane(Rect bar, float topHeight, float paletteWidth, bool compact, int columns,
+            float blockWidth, float blockSpacing, float blockHeight)
         {
             if (IsMouseBlockedByContextMenu()) return;
+            bool allowInteraction = GUI.enabled;
             const float p      = 5f;
             const float titleH = 22f;
-            const float btnW   = 85f;
-            const float commitW = 95f;
-            const float presetW = 85f;
-            const float resetW = 95f;
-            const float undoW = 80f;
-            const float redoW = 80f;
-            const float modeW  = 120f;
-
-            float lx   = bar.x + PAL_W + 6f;
-            float btnX = bar.x + bar.width - p - btnW;
+            float lx   = bar.x + paletteWidth + 6f;
+            float laneRight = bar.x + bar.width - p;
             bool hasPreview = NoiseFilterManager.Instance.IsPreviewActive;
-            float commitX = hasPreview ? btnX - 6f - commitW : btnX;
-            float presetX = commitX - 6f - presetW;
-            float resetX = presetX - 6f - resetW;
-            float redoX = resetX - 6f - redoW;
-            float undoX = redoX - 6f - undoW;
-            float modeX = undoX - 6f - modeW;
+            float headerY = bar.y + p;
+            float actionY;
+            float laneY;
 
-            GUI.Label(new Rect(lx, bar.y + p + 2f, modeX - lx - 4, titleH), "パイプライン・レーン", titleStyle);
-
-            if (noiseFilterUI.Params != null)
+            if (compact)
             {
-                if (GUI.Button(new Rect(modeX, bar.y + p, modeW, 28f), $"処理: {noiseFilterUI.Params.processMode}", blockStyle))
+                GUI.Label(new Rect(lx, headerY + 2f, Mathf.Max(80f, laneRight - lx - 100f), 22f), "パイプライン", titleStyle);
+                if (noiseFilterUI.Params != null && GUI.Button(new Rect(laneRight - 98f, headerY, 98f, 28f),
+                    $"処理: {noiseFilterUI.Params.processMode}", blockStyle))
                 {
                     noiseFilterUI.Params.processMode = noiseFilterUI.Params.processMode == "full" ? "downsample" : "full";
                 }
-            }
-
-            GUI.enabled = NoiseFilterManager.Instance.CanUndo;
-            if (GUI.Button(new Rect(undoX, bar.y + p, undoW, 28f), "元に戻す", blockStyle))
-            {
-                NoiseFilterManager.Instance.Undo(editor.targetRenderer);
-                editor.MarkStatsDirty();
-            }
-            GUI.enabled = NoiseFilterManager.Instance.CanRedo;
-            if (GUI.Button(new Rect(redoX, bar.y + p, redoW, 28f), "やり直す", blockStyle))
-            {
-                NoiseFilterManager.Instance.Redo(editor.targetRenderer);
-                editor.MarkStatsDirty();
-            }
-            GUI.enabled = true;
-            if (GUI.Button(new Rect(resetX, bar.y + p, resetW, 28f), "標準構成", blockStyle))
-            {
-                ResetToDefaultPipeline();
-            }
-            if (GUI.Button(new Rect(presetX, bar.y + p, presetW, 28f), "プリセット", blockStyle))
-            {
-                isPresetPopupOpen = !isPresetPopupOpen;
-                if (isPresetPopupOpen)
+                actionY = headerY + 32f;
+                float gap = 4f;
+                float buttonW = Mathf.Max(48f, (laneRight - lx - gap * 3f) / 4f);
+                DrawHistoryButton(new Rect(lx, actionY, buttonW, 25f), "元に戻す", true);
+                DrawHistoryButton(new Rect(lx + buttonW + gap, actionY, buttonW, 25f), "やり直す", false);
+                if (GUI.Button(new Rect(lx + (buttonW + gap) * 2f, actionY, buttonW, 25f), "標準", blockStyle))
+                    ResetToDefaultPipeline();
+                if (GUI.Button(new Rect(lx + (buttonW + gap) * 3f, actionY, buttonW, 25f), "プリセット", blockStyle))
                 {
-                    presetSaveName = "NewPreset";
-                    presetPopupRect = new Rect(presetX - 100f, bar.y + p + 30f, 300f, 320f); // 少し左に広げる
-                    shouldFocusPresetField = true;
+                    OpenPresetPopup(lx + (buttonW + gap) * 3f, actionY);
                 }
+                actionY += 29f;
+                float runW = Mathf.Min(90f, (laneRight - lx - (hasPreview ? gap : 0f)) / (hasPreview ? 2f : 1f));
+                if (GUI.Button(new Rect(lx, actionY, runW, 25f), "▶ 実行", activeBlockStyle))
+                    noiseFilterUI.RunNoiseFilterAnalysis();
+                if (hasPreview && GUI.Button(new Rect(lx + runW + gap, actionY, runW, 25f), "確定", activeBlockStyle))
+                {
+                    CommitPreview();
+                }
+                laneY = actionY + 31f;
             }
-            if (hasPreview && GUI.Button(new Rect(commitX, bar.y + p, commitW, 28f), "確定", activeBlockStyle))
+            else
             {
-                NoiseFilterManager.Instance.CommitRemoval(editor.targetRenderer);
-                editor.MarkStatsDirty();
+                const float buttonHeight = 28f;
+                const float gap = 6f;
+                float cursor = laneRight;
+                float runW = 85f;
+                cursor -= runW;
+                if (GUI.Button(new Rect(cursor, headerY, runW, buttonHeight), "▶ 実行", activeBlockStyle))
+                    noiseFilterUI.RunNoiseFilterAnalysis();
+                if (hasPreview)
+                {
+                    cursor -= gap + 82f;
+                    if (GUI.Button(new Rect(cursor, headerY, 82f, buttonHeight), "確定", activeBlockStyle)) CommitPreview();
+                }
+                cursor -= gap + 85f;
+                if (GUI.Button(new Rect(cursor, headerY, 85f, buttonHeight), "プリセット", blockStyle)) OpenPresetPopup(cursor, headerY);
+                cursor -= gap + 95f;
+                if (GUI.Button(new Rect(cursor, headerY, 95f, buttonHeight), "標準構成", blockStyle)) ResetToDefaultPipeline();
+                cursor -= gap + 74f;
+                DrawHistoryButton(new Rect(cursor, headerY, 74f, buttonHeight), "やり直す", false);
+                cursor -= gap + 74f;
+                DrawHistoryButton(new Rect(cursor, headerY, 74f, buttonHeight), "元に戻す", true);
+                cursor -= gap + 112f;
+                if (noiseFilterUI.Params != null && GUI.Button(new Rect(cursor, headerY, 112f, buttonHeight),
+                    $"処理: {noiseFilterUI.Params.processMode}", blockStyle))
+                {
+                    noiseFilterUI.Params.processMode = noiseFilterUI.Params.processMode == "full" ? "downsample" : "full";
+                }
+                GUI.Label(new Rect(lx, headerY + 2f, Mathf.Max(80f, cursor - lx - 8f), titleH), "パイプライン・レーン", titleStyle);
+                laneY = headerY + titleH + 6f;
             }
-            // 実行ボタン (高さ 28f に拡大してフォントに合わせる)
-            if (GUI.Button(new Rect(btnX, bar.y + p, btnW, 28f), "▶ 実行", activeBlockStyle))
-                noiseFilterUI.RunNoiseFilterAnalysis();
 
             // レーン背景
-            float laneY = bar.y + p + titleH + 6f;
-            float laneH = bar.y + TOP_H - laneY - p;
-            float laneW = btnX + btnW - lx; // 右端までレーンを伸ばす
+            float laneH = bar.y + topHeight - laneY - p;
+            float laneW = laneRight - lx;
             Rect lane = new Rect(lx, laneY, laneW, laneH);
             GUI.Box(lane, "", GUI.skin.textField);
 
             EnsurePipeline();
             var pl = noiseFilterUI.Params.customPipeline;
 
-            // ブロックサイズを大きくして文字潰れを防ぐ
-            const float bW       = 130f; // ブロック幅を 100 -> 130f に拡張
-            const float bSpacing = 22f;  // 間隔を 16 -> 22f に拡張
             float sx = lane.x + 5f;
-            float bH = Mathf.Min(50f, lane.height - 10f); // ブロック高さを 32 -> 50f に拡張
-            float sy = lane.y + (lane.height - bH) / 2f;
+            float bW = blockWidth;
+            float bH = Mathf.Min(blockHeight, lane.height - 10f);
+            float rowStep = blockHeight + 12f;
+            float sy = lane.y + 5f;
 
             bool clickedBlock = false;
             var  ev = Event.current;
 
             for (int i = 0; i < pl.Count; i++)
             {
-                float bx = sx + i * (bW + bSpacing);
-
-                // レーン右端を超えたら "…" を出して打ち切り
-                if (bx + bW > lane.x + lane.width - 16f)
-                {
-                    GUI.Label(new Rect(lane.x + lane.width - 15f, sy + (bH - 18f) / 2f, 15f, 18f), "…", titleStyle);
-                    break;
-                }
+                int row = i / columns;
+                int column = i % columns;
+                float bx = sx + column * (bW + blockSpacing);
+                float by = sy + row * rowStep;
 
                 var step = pl[i];
-                Rect br   = new Rect(bx, sy, bW, bH);
+                Rect br   = new Rect(bx, by, bW, bH);
                 string txt = D(step.name) + (step.enabled ? "" : "\n(無効)");
                 bool selected = selectedBlockIndex == i;
                 GUI.Box(br, txt, selected ? activeBlockStyle : blockStyle);
 
-                // 矢印（次ブロックが収まる場合のみ表示）
-                bool nextFits = i < pl.Count - 1 &&
-                                bx + bW + bSpacing + bW <= lane.x + lane.width - 16f;
-                if (nextFits)
-                    GUI.Label(new Rect(bx + bW + 4f, sy + (bH - 18f) / 2f, 14f, 18f), "▶", titleStyle);
+                if (i < pl.Count - 1)
+                {
+                    bool rowEnd = column == columns - 1;
+                    Rect arrow = rowEnd
+                        ? new Rect(lane.x + lane.width - 17f, by + (bH - 18f) / 2f, 14f, 18f)
+                        : new Rect(bx + bW + 1f, by + (bH - 18f) / 2f, Mathf.Max(8f, blockSpacing - 2f), 18f);
+                    GUI.Label(arrow, rowEnd ? "↓" : "▶", titleStyle);
+                }
 
                 // クリック / 右クリック / D&D 開始
-                if (ev.type == EventType.MouseDown && br.Contains(ev.mousePosition))
+                if (allowInteraction && ev.type == EventType.MouseDown && br.Contains(ev.mousePosition))
                 {
                     clickedBlock = true;
                     if (ev.button == 0)
@@ -459,14 +471,14 @@ namespace PointCloudWorkbench
             }
 
             // ブロック以外のレーン内クリック → 選択解除
-            if (!clickedBlock && ev.type == EventType.MouseDown && lane.Contains(ev.mousePosition))
+            if (allowInteraction && !clickedBlock && ev.type == EventType.MouseDown && lane.Contains(ev.mousePosition))
             {
                 selectedBlockIndex = -1;
                 ev.Use();
             }
 
             // ドラッグ開始判定
-            if (ev.type == EventType.MouseDrag && draggingBlockType != null)
+            if (allowInteraction && ev.type == EventType.MouseDrag && draggingBlockType != null)
             {
                 if (Vector2.Distance(ev.mousePosition, dragStartMousePos) > 5f)
                 {
@@ -475,7 +487,7 @@ namespace PointCloudWorkbench
             }
 
             // ドロップ処理
-            if (ev.type == EventType.MouseUp)
+            if (allowInteraction && ev.type == EventType.MouseUp)
             {
                 if (draggingBlockType != null && GUIUtility.hotControl != 0)
                 {
@@ -486,15 +498,16 @@ namespace PointCloudWorkbench
                 {
                     if (lane.Contains(ev.mousePosition))
                     {
-                        const float targetBlockWidth = 130f;
-                        const float targetSpacing = 22f;
-                        
                         // マウス位置ではなく、ゴーストUIの中央座標を基準にする
-                        float ghostCenterX = ev.mousePosition.x - dragMouseOffset.x + (targetBlockWidth / 2f);
-                        float relativeX = ghostCenterX - (lane.x + 5f);
-                        int ins = Mathf.Clamp(
-                            Mathf.RoundToInt(relativeX / (targetBlockWidth + targetSpacing)),
-                            0, pl.Count);
+                        float ghostCenterX = ev.mousePosition.x - dragMouseOffset.x + (bW / 2f);
+                        float ghostCenterY = ev.mousePosition.y - dragMouseOffset.y + (bH / 2f);
+                        float relativeX = ghostCenterX - sx;
+                        float relativeY = ghostCenterY - sy;
+                        int targetColumn = Mathf.Clamp(Mathf.RoundToInt(relativeX / (bW + blockSpacing)), 0, columns - 1);
+                        int targetRow = Mathf.Max(0, Mathf.RoundToInt(relativeY / rowStep));
+                        int ins = Mathf.Clamp(targetRow * columns + targetColumn, 0, pl.Count);
+                        float cellX = relativeX - targetColumn * (bW + blockSpacing);
+                        if (cellX > bW * 0.55f) ins = Mathf.Min(pl.Count, ins + 1);
 
                         if (draggingSourceIndex >= 0)
                         {
@@ -524,6 +537,49 @@ namespace PointCloudWorkbench
                 draggingSourceIndex = -1;
                 isDragging = false;
             }
+        }
+
+        private void DrawHistoryButton(Rect rect, string label, bool undo)
+        {
+            bool wasEnabled = GUI.enabled;
+            bool canRun = undo ? NoiseFilterManager.Instance.CanUndo : NoiseFilterManager.Instance.CanRedo;
+            GUI.enabled = wasEnabled && canRun;
+            if (GUI.Button(rect, label, blockStyle))
+            {
+                if (undo) NoiseFilterManager.Instance.Undo(editor.targetRenderer);
+                else NoiseFilterManager.Instance.Redo(editor.targetRenderer);
+                editor.MarkStatsDirty();
+            }
+            GUI.enabled = wasEnabled;
+        }
+
+        private void OpenPresetPopup(float x, float y)
+        {
+            isPresetPopupOpen = !isPresetPopupOpen;
+            if (!isPresetPopupOpen) return;
+
+            presetSaveName = "NewPreset";
+            float popupWidth = Mathf.Min(300f, Screen.width - 10f);
+            float popupHeight = Mathf.Min(320f, Screen.height - 10f);
+            presetPopupRect = new Rect(
+                Mathf.Clamp(x - 100f, 5f, Screen.width - popupWidth - 5f),
+                Mathf.Clamp(y + 30f, 5f, Screen.height - popupHeight - 5f),
+                popupWidth,
+                popupHeight);
+            shouldFocusPresetField = true;
+        }
+
+        private void CommitPreview()
+        {
+            if (NoiseFilterManager.Instance.CommitRemoval(editor.targetRenderer))
+            {
+                editor.MarkStatsDirty();
+                return;
+            }
+
+            string detail = NoiseFilterManager.Instance.LastMutationFailure;
+            PointCloudProgressManager.Instance.ShowError("ノイズ確定",
+                string.IsNullOrWhiteSpace(detail) ? "点群ラベルを更新できませんでした。" : detail);
         }
 
         // =========================================================
@@ -556,22 +612,36 @@ namespace PointCloudWorkbench
             }
 
             var step = pl[selectedBlockIndex];
+            bool guiEnabledBeforeParameters = GUI.enabled;
+            bool compactParameters = r.width < 560f;
+            int previousLabelFontSize = labelStyle.fontSize;
+            labelStyle.fontSize = compactParameters ? 11 : 13;
             float x  = r.x + 8f;
             float y  = r.y + 4f;
             float lh = 21f;
 
-            // --- 行1: タイトル + 有効化 + 除外 ---
-            GUI.Label(new Rect(x, y, 175f, 22f), $"⚙ {D(step.name)}", titleStyle);
-            step.enabled          = GUI.Toggle(new Rect(x + 190f, y + 2f, 85f, 20f), step.enabled, " 有効");
-            step.excludeFromNext  = GUI.Toggle(new Rect(x + 285f, y + 2f, 230f, 20f), step.excludeFromNext, " 次段から除外 (exclude)");
-            y += lh + 4f;
+            GUI.Label(new Rect(x, y, compactParameters ? r.width - 20f : 175f, 22f), D(step.name), titleStyle);
+            if (compactParameters)
+            {
+                y += 22f;
+                step.enabled = GUI.Toggle(new Rect(x, y, 100f, 20f), step.enabled, "有効");
+                y += 20f;
+                step.excludeFromNext = GUI.Toggle(new Rect(x, y, r.width - 20f, 20f), step.excludeFromNext, "次段から除外");
+                y += 25f;
+            }
+            else
+            {
+                step.enabled = GUI.Toggle(new Rect(x + 190f, y + 2f, 85f, 20f), step.enabled, " 有効");
+                step.excludeFromNext = GUI.Toggle(new Rect(x + 285f, y + 2f, 230f, 20f), step.excludeFromNext, " 次段から除外 (exclude)");
+                y += lh + 4f;
+            }
 
             // --- 行2〜: スライダー (左右2カラム) ---
             float colW = (r.width - 20f) / 2f;
-            float lw   = 175f; // Label width expanded for larger font
-            float sw   = Mathf.Max(colW - lw - 15f, 30f);
+            float lw   = compactParameters ? 125f : 175f;
+            float sw   = Mathf.Max(colW - lw - 15f, compactParameters ? 38f : 30f);
 
-            GUI.enabled = step.enabled;
+            GUI.enabled = guiEnabledBeforeParameters && step.enabled;
 
             if (step is WhiteHazeConfig wh)
             {
@@ -626,7 +696,8 @@ namespace PointCloudWorkbench
                 cc.removeIsolated = GUI.Toggle(new Rect(x, y, 180f, 20f), cc.removeIsolated, " 孤立点も除去");
             }
 
-            GUI.enabled = true;
+            GUI.enabled = guiEnabledBeforeParameters;
+            labelStyle.fontSize = previousLabelFontSize;
         }
 
         // =========================================================
@@ -751,5 +822,19 @@ namespace PointCloudWorkbench
         }
 
         private string D(string t) => DispNames.ContainsKey(t) ? DispNames[t] : t;
+
+        private string DCompact(string t)
+        {
+            switch (t)
+            {
+                case "white_haze": return "白モヤ除去";
+                case "cc_noise": return "平面推定";
+                case "sor": return "統計 (SOR)";
+                case "ror": return "半径 (ROR)";
+                case "density": return "低密度";
+                case "dbscan": return "DBSCAN";
+                default: return D(t);
+            }
+        }
     }
 }

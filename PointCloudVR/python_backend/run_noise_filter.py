@@ -15,6 +15,7 @@ os.environ.setdefault("NUMEXPR_NUM_THREADS", "1")
 
 import argparse
 import time
+import uuid
 import numpy as np
 import open3d as o3d
 
@@ -81,6 +82,7 @@ def setup_argparser():
     # JSON構成ファイルの指定（優先）
     parser.add_argument("--config_json", default=None, help="パイプラインの順序とパラメータを記述したJSON構成ファイルのパス")
     parser.add_argument("--deleted_mask", default=None, help="削除済みフラグ配列(deleted_mask.bin)のパス")
+    parser.add_argument("--operation_id", default=None, help="Unity operation ID for this immutable result generation")
     
     parser.add_argument("--filters", nargs="*", choices=["sor", "ror", "dbscan", "density", "cc_noise", "white_haze", "none"], default=None,
                         help="有効にするフィルタのリスト (noneを指定した場合はすべて無効)")
@@ -239,17 +241,23 @@ def run_downsample_mode(points, colors, params, enabled_filters, pipeline, args,
     results = pipeline.run(points_ds, colors_ds, deleted_mask=deleted_mask)
     
     # プレビュー表示用PLY保存
-    preview_ply_path = os.path.join(args.output_dir, "preview.ply")
+    os.makedirs(args.output_dir, exist_ok=True)
+    preview_ply_path = os.path.join(args.output_dir, f".preview-stage-{args.operation_id or uuid.uuid4().hex}.ply")
     points_ds_data = convert_points_from_mm_to_data(points_ds, args.coordinate_scale_to_mm)
     pointcloud_io.save_ply(preview_ply_path, points_ds_data, colors_ds)
-    print(f"プレビュー用点群ファイルを保存しました: {preview_ply_path}")
-    
-    # 結果の出力
-    result_writer.write_results(
-        args.output_dir, results, params, mode='downsample_preview',
-        original_count=original_count, analysis_count=analysis_count, voxel_size=v_size,
-        coordinate_scale_to_mm=args.coordinate_scale_to_mm
-    )
+    try:
+        published = result_writer.write_results(
+            args.output_dir, results, params, mode='downsample_preview',
+            original_count=original_count, analysis_count=analysis_count, voxel_size=v_size,
+            coordinate_scale_to_mm=args.coordinate_scale_to_mm, operation_id=args.operation_id,
+            source_path=args.input, additional_artifacts={"preview.ply": preview_ply_path}
+        )
+        print(f"[ResultGeneration] run_id={published['run_id']}", flush=True)
+    finally:
+        try:
+            os.remove(preview_ply_path)
+        except FileNotFoundError:
+            pass
     return results, analysis_count
 
 def run_full_mode(points, colors, params, enabled_filters, pipeline, args, original_count):
@@ -273,11 +281,13 @@ def run_full_mode(points, colors, params, enabled_filters, pipeline, args, origi
     if results['dbscan_mode'] == 'downsample':
         print(f"DBSCANのみ自動ダウンサンプリングされました (ダウンサンプル点数: {results['dbscan_analysis_count']:,})")
         
-    result_writer.write_results(
+    published = result_writer.write_results(
         args.output_dir, results, params, mode='full',
         original_count=original_count, analysis_count=analysis_count, voxel_size=None,
-        coordinate_scale_to_mm=args.coordinate_scale_to_mm
+        coordinate_scale_to_mm=args.coordinate_scale_to_mm, operation_id=args.operation_id,
+        source_path=args.input
     )
+    print(f"[ResultGeneration] run_id={published['run_id']}", flush=True)
     return results, analysis_count
 
 def print_summary(results, original_count, analysis_count, elapsed, args):

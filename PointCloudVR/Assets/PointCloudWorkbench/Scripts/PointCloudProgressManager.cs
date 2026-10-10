@@ -3,6 +3,34 @@ using System.Threading;
 
 namespace PointCloudWorkbench
 {
+    public sealed class PointCloudOperation
+    {
+        private readonly PointCloudProgressManager owner;
+        private readonly long operationId;
+
+        public CancellationToken CancellationToken { get; }
+        public bool IsCurrent => owner.IsCurrent(operationId);
+        public bool IsCancellationRequested => CancellationToken.IsCancellationRequested;
+
+        internal PointCloudOperation(PointCloudProgressManager owner, long operationId, CancellationToken cancellationToken)
+        {
+            this.owner = owner;
+            this.operationId = operationId;
+            CancellationToken = cancellationToken;
+        }
+
+        public bool Update(float value, string message = null) => owner.Update(operationId, value, message);
+        public bool Complete() => owner.Finish(operationId, PointCloudOperationStatus.Success, false, false, string.Empty, string.Empty);
+        public bool CompleteCancelled(string message = "処理をキャンセルしました。") =>
+            owner.Finish(operationId, PointCloudOperationStatus.Cancelled, false, false, message, string.Empty);
+        public bool CompleteWithWarning(string message, string exceptionDetail) =>
+            owner.Finish(operationId, PointCloudOperationStatus.SuccessWithWarning, false, true, message, exceptionDetail);
+        public bool Fail(string operationTitle, string message, string exceptionDetail = null) =>
+            owner.Finish(operationId, PointCloudOperationStatus.Failed, true, false, message,
+                exceptionDetail ?? message, operationTitle);
+        public bool Cancel() => owner.Cancel(operationId);
+    }
+
     public enum PointCloudOperationStatus
     {
         Idle,
@@ -57,6 +85,8 @@ namespace PointCloudWorkbench
         private string detail = string.Empty;
         private PointCloudOperationStatus operationStatus = PointCloudOperationStatus.Idle;
         private CancellationTokenSource cts;
+        private long nextOperationId;
+        private long currentOperationId;
 
         public bool IsRunning { get { lock (sync) return isRunning; } }
         public bool IsError { get { lock (sync) return hasError; } }
@@ -78,14 +108,16 @@ namespace PointCloudWorkbench
             }
         }
 
-        public bool Start(string operationTitle, string message)
+        public PointCloudOperation TryStart(string operationTitle, string message)
         {
             CancellationTokenSource oldSource;
+            PointCloudOperation operation;
             lock (sync)
             {
-                if (isRunning) return false;
+                if (isRunning) return null;
                 oldSource = cts;
                 cts = new CancellationTokenSource();
+                currentOperationId = ++nextOperationId;
                 isRunning = true;
                 hasError = false;
                 hasWarning = false;
@@ -95,52 +127,50 @@ namespace PointCloudWorkbench
                 notificationMessage = string.Empty;
                 detail = string.Empty;
                 operationStatus = PointCloudOperationStatus.Running;
+                operation = new PointCloudOperation(this, currentOperationId, cts.Token);
             }
             oldSource?.Dispose();
-            return true;
+            return operation;
         }
 
-        public void Update(float value, string message = null)
+        internal bool IsCurrent(long operationId)
         {
             lock (sync)
             {
-                if (!isRunning) return;
+                return isRunning && currentOperationId == operationId;
+            }
+        }
+
+        internal bool Update(long operationId, float value, string message)
+        {
+            lock (sync)
+            {
+                if (!isRunning || currentOperationId != operationId) return false;
                 progress = Math.Max(0f, Math.Min(1f, value));
                 if (message != null) statusMessage = message;
+                return true;
             }
         }
 
         public void Cancel()
         {
+            long operationId;
+            lock (sync) operationId = currentOperationId;
+            Cancel(operationId);
+        }
+
+        internal bool Cancel(long operationId)
+        {
             CancellationTokenSource source;
             lock (sync)
             {
-                if (!isRunning) return;
+                if (!isRunning || currentOperationId != operationId) return false;
                 source = cts;
                 statusMessage = "ユーザーによるキャンセルをリクエスト中...";
             }
             try { source?.Cancel(); }
             catch (ObjectDisposedException) { }
-        }
-
-        public void Complete()
-        {
-            Finish(PointCloudOperationStatus.Success, false, false, string.Empty, string.Empty);
-        }
-
-        public void CompleteCancelled(string message = "処理をキャンセルしました。")
-        {
-            Finish(PointCloudOperationStatus.Cancelled, false, false, message, string.Empty);
-        }
-
-        public void CompleteWithWarning(string message, string exceptionDetail)
-        {
-            Finish(PointCloudOperationStatus.SuccessWithWarning, false, true, message, exceptionDetail);
-        }
-
-        public void Fail(string operationTitle, string message, string exceptionDetail = null)
-        {
-            Finish(PointCloudOperationStatus.Failed, true, false, message, exceptionDetail ?? message, operationTitle);
+            return true;
         }
 
         public void ShowError(string operationTitle, string message)
@@ -169,12 +199,13 @@ namespace PointCloudWorkbench
             }
         }
 
-        private void Finish(PointCloudOperationStatus status, bool error, bool warning, string message,
+        internal bool Finish(long operationId, PointCloudOperationStatus status, bool error, bool warning, string message,
             string exceptionDetail, string operationTitle = null)
         {
             CancellationTokenSource source;
             lock (sync)
             {
+                if (!isRunning || currentOperationId != operationId) return false;
                 isRunning = false;
                 hasError = error;
                 hasWarning = warning;
@@ -189,6 +220,7 @@ namespace PointCloudWorkbench
                 cts = null;
             }
             source?.Dispose();
+            return true;
         }
     }
 }

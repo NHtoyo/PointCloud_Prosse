@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Threading;
 using UnityEngine;
 
 namespace PointCloudWorkbench
@@ -43,7 +44,8 @@ namespace PointCloudWorkbench
         /// <summary>
         /// 点群データからオクトリーを構築する（別スレッドからの呼び出しに対応）
         /// </summary>
-        public void Build(Vector3[] positions, int maxPointsPerNode = 512, int maxLevel = 8)
+        public void Build(Vector3[] positions, int maxPointsPerNode = 512, int maxLevel = 8,
+            CancellationToken cancellationToken = default)
         {
             isBuilt = false;
             this.maxPointsPerNode = maxPointsPerNode;
@@ -60,6 +62,7 @@ namespace PointCloudWorkbench
             Vector3 max = positions[0];
             for (int i = 1; i < positions.Length; i++)
             {
+                if ((i & 8191) == 0) cancellationToken.ThrowIfCancellationRequested();
                 Vector3 p = positions[i];
                 if (p.x < min.x) min.x = p.x;
                 if (p.y < min.y) min.y = p.y;
@@ -82,17 +85,19 @@ namespace PointCloudWorkbench
             List<int> initialIndices = new List<int>(positions.Length);
             for (int i = 0; i < positions.Length; i++)
             {
+                if ((i & 8191) == 0) cancellationToken.ThrowIfCancellationRequested();
                 initialIndices.Add(i);
             }
 
             // 2. 再帰的なサブディビジョン（分割）の開始
-            Subdivide(root, initialIndices, positions);
+            Subdivide(root, initialIndices, positions, cancellationToken);
 
             isBuilt = true;
         }
 
-        private void Subdivide(Node node, List<int> indices, Vector3[] positions)
+        private void Subdivide(Node node, List<int> indices, Vector3[] positions, CancellationToken cancellationToken)
         {
+            cancellationToken.ThrowIfCancellationRequested();
             if (indices.Count == 0) return;
 
             // このノードに留める代表点の数を決定
@@ -104,6 +109,7 @@ namespace PointCloudWorkbench
             
             for (int i = 0; i < targetCount; i++)
             {
+                if ((i & 8191) == 0) cancellationToken.ThrowIfCancellationRequested();
                 int listIdx = Math.Max(0, Math.Min((int)(i * stride), indices.Count - 1));
                 if (!selectedIndicesInList.Contains(listIdx))
                 {
@@ -116,6 +122,7 @@ namespace PointCloudWorkbench
             List<int> remainingIndices = new List<int>(indices.Count - node.pointIndices.Count);
             for (int i = 0; i < indices.Count; i++)
             {
+                if ((i & 8191) == 0) cancellationToken.ThrowIfCancellationRequested();
                 if (!selectedIndicesInList.Contains(i))
                 {
                     remainingIndices.Add(indices[i]);
@@ -159,6 +166,7 @@ namespace PointCloudWorkbench
 
             foreach (int idx in remainingIndices)
             {
+                if ((idx & 8191) == 0) cancellationToken.ThrowIfCancellationRequested();
                 Vector3 p = positions[idx];
                 int bucketIdx = 0;
                 if (p.x >= parentCenter.x) bucketIdx |= 1;
@@ -171,7 +179,7 @@ namespace PointCloudWorkbench
             // 子ノードごとに再帰的に分割処理を実行
             for (int i = 0; i < 8; i++)
             {
-                Subdivide(node.children[i], childBuckets[i], positions);
+                Subdivide(node.children[i], childBuckets[i], positions, cancellationToken);
             }
         }
 

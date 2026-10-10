@@ -113,5 +113,21 @@ namespace PointCloudWorkbench
             previewReason = previewReasons;
             reason = reasons;
         }
+
+        public bool HasValidArrayLengths(int expectedLength)
+        {
+            return expectedLength >= 0 && pointCount == expectedLength &&
+                previewMask != null && previewMask.Length == expectedLength &&
+                whiteHazeCandidateMask != null && whiteHazeCandidateMask.Length == expectedLength &&
+                removeMask != null && removeMask.Length == expectedLength &&
+                sorScore != null && sorScore.Length == expectedLength &&
+                densityScore != null && densityScore.Length == expectedLength &&
+                radiusNeighborCount != null && radiusNeighborCount.Length == expectedLength &&
+                ccNoiseScore != null && ccNoiseScore.Length == expectedLength &&
+                whiteHazeScore != null && whiteHazeScore.Length == expectedLength &&
+                clusterId != null && clusterId.Length == expectedLength &&
+                previewReason != null && previewReason.Length == expectedLength &&
+                reason != null && reason.Length == expectedLength;
+        }
     }
 }

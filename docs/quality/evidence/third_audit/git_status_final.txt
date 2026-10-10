@@ -1,0 +1,247 @@
+ M .gitignore
+ M PointCloudVR/Assets/Editor/SceneDumper.cs
+ M PointCloudVR/Assets/PointCloudLoader.cs
+ M PointCloudVR/Assets/PointCloudManager.cs
+ M PointCloudVR/Assets/PointCloudRenderer.cs
+ M PointCloudVR/Assets/PointCloudWorkbench/Scripts/FilterPipelineEditorUI.cs
+ M PointCloudVR/Assets/PointCloudWorkbench/Scripts/NoiseFilterManager.cs
+ M PointCloudVR/Assets/PointCloudWorkbench/Scripts/NoiseFilterResult.cs
+ M PointCloudVR/Assets/PointCloudWorkbench/Scripts/NoiseFilterUI.cs
+ M PointCloudVR/Assets/PointCloudWorkbench/Scripts/PlyExportService.cs
+ M PointCloudVR/Assets/PointCloudWorkbench/Scripts/PointCloudDownsampleService.cs
+ M PointCloudVR/Assets/PointCloudWorkbench/Scripts/PointCloudEditor.cs
+ M PointCloudVR/Assets/PointCloudWorkbench/Scripts/PointCloudEditorUI.cs
+ M PointCloudVR/Assets/PointCloudWorkbench/Scripts/PointCloudOctree.cs
+ M PointCloudVR/Assets/PointCloudWorkbench/Scripts/PointCloudProgressManager.cs
+ M PointCloudVR/Assets/PointCloudWorkbench/Scripts/PointCloudScaleService.cs
+ M PointCloudVR/Assets/PointCloudWorkbench/Scripts/PythonBridge.cs
+ M PointCloudVR/Assets/PointCloudWorkbench/Scripts/StemDiameterResult.cs
+ M PointCloudVR/Assets/PointCloudWorkbench/Scripts/StemDiameterResultCache.cs
+ M PointCloudVR/Assets/PointCloudWorkbench/Scripts/StemDiameterUI.cs
+ M PointCloudVR/ProjectSettings/EditorBuildSettings.asset
+ M PointCloudVR/python_backend/result_writer.py
+ M PointCloudVR/python_backend/run_noise_filter.py
+ M PointCloudVR/python_backend/run_stem_diameter.py
+ M PointCloudVR/python_backend/stem_diameter_output.py
+ M PointCloudVR/python_backend/tests/test_coordinate_unit_boundaries.py
+ M PointCloudVR/python_backend/tests/test_run_stem_diameter.py
+ M PointCloudVR/tests/PlyExportValidation/PlyExportValidation.csproj
+ M PointCloudVR/tests/PlyExportValidation/PointDataStub.cs
+ M PointCloudVR/tests/PlyExportValidation/Program.cs
+ M README.md
+?? LICENSE
+?? PointCloudVR/Assets/PointCloudWorkbench/Scripts/AtomicResourceFactory.cs
+?? PointCloudVR/Assets/PointCloudWorkbench/Scripts/AtomicResourceFactory.cs.meta
+?? PointCloudVR/Assets/PointCloudWorkbench/Scripts/BoundedHistory.cs
+?? PointCloudVR/Assets/PointCloudWorkbench/Scripts/BoundedHistory.cs.meta
+?? PointCloudVR/Assets/PointCloudWorkbench/Scripts/BoundedTextBuffer.cs
+?? PointCloudVR/Assets/PointCloudWorkbench/Scripts/BoundedTextBuffer.cs.meta
+?? PointCloudVR/Assets/PointCloudWorkbench/Scripts/ExactNearestNeighbor3D.cs
+?? PointCloudVR/Assets/PointCloudWorkbench/Scripts/ExactNearestNeighbor3D.cs.meta
+?? PointCloudVR/Assets/PointCloudWorkbench/Scripts/OutputGenerationStore.cs
+?? PointCloudVR/Assets/PointCloudWorkbench/Scripts/OutputGenerationStore.cs.meta
+?? PointCloudVR/Assets/PointCloudWorkbench/Scripts/PointCloudPlyReader.cs
+?? PointCloudVR/Assets/PointCloudWorkbench/Scripts/PointCloudPlyReader.cs.meta
+?? PointCloudVR/Assets/PointCloudWorkbench/Scripts/PointCloudRecoverySession.cs
+?? PointCloudVR/Assets/PointCloudWorkbench/Scripts/PointCloudRecoverySession.cs.meta
+?? PointCloudVR/Assets/PointCloudWorkbench/Scripts/PointCloudRevisionBinding.cs
+?? PointCloudVR/Assets/PointCloudWorkbench/Scripts/PointCloudRevisionBinding.cs.meta
+?? PointCloudVR/Assets/PointCloudWorkbench/Scripts/PointCloudSessionRecoveryStore.cs
+?? PointCloudVR/Assets/PointCloudWorkbench/Scripts/PointCloudSessionRecoveryStore.cs.meta
+?? PointCloudVR/Assets/PointCloudWorkbench/Scripts/SafeEventDispatch.cs
+?? PointCloudVR/Assets/PointCloudWorkbench/Scripts/SafeEventDispatch.cs.meta
+?? PointCloudVR/Assets/_Recovery.meta
+?? "PointCloudVR/Assets/_Recovery/0 (1).unity"
+?? "PointCloudVR/Assets/_Recovery/0 (1).unity.meta"
+?? "PointCloudVR/Assets/_Recovery/0 (2).unity"
+?? "PointCloudVR/Assets/_Recovery/0 (2).unity.meta"
+?? "PointCloudVR/Assets/_Recovery/0 (3).unity"
+?? "PointCloudVR/Assets/_Recovery/0 (3).unity.meta"
+?? PointCloudVR/Assets/_Recovery/0.unity
+?? PointCloudVR/Assets/_Recovery/0.unity.meta
+?? PointCloudVR/python_backend/output_generations.py
+?? PointCloudVR/python_backend/tests/test_output_generation_transactions.py
+?? PointCloudVR/tests/PlyExportValidation/UnityEngineJsonStub.cs
+?? THIRD_PARTY_NOTICES.md
+?? docs/legal/CC_CODE_PROVENANCE_AUDIT.md
+?? docs/legal/DEPENDENCY_INVENTORY.csv
+?? docs/legal/DISTRIBUTION_GUIDE.md
+?? docs/legal/LICENSE_AUDIT.md
+?? docs/quality/ASYNC_LIFECYCLE_AUDIT.md
+?? docs/quality/ATOMIC_OUTPUT_DESIGN.md
+?? docs/quality/BUG_INVENTORY.md
+?? docs/quality/DATA_INTEGRITY_AUDIT.md
+?? docs/quality/ENDURANCE_TEST_REPORT.md
+?? docs/quality/FAILURE_MODE_MATRIX.md
+?? docs/quality/FAULT_INJECTION_RESULTS.md
+?? docs/quality/FAULT_INJECTION_TESTS.md
+?? docs/quality/OPERATION_LIFECYCLE.md
+?? docs/quality/PERFORMANCE_BASELINE.md
+?? docs/quality/QUALITY_AUDIT.md
+?? docs/quality/RECOVERY_DESIGN.md
+?? docs/quality/RELEASE_READINESS.md
+?? docs/quality/RELIABILITY_AUDIT.md
+?? docs/quality/RELIABILITY_WORKLOG.md
+?? docs/quality/TEST_MATRIX.md
+?? docs/quality/THIRD_AUDIT_EXECUTION.md
+?? docs/quality/TROUBLESHOOTING.md
+?? docs/quality/UI_UX_AUDIT.md
+?? docs/quality/USER_GUIDE.md
+?? docs/quality/evidence/third_audit/compileall_final.log
+?? docs/quality/evidence/third_audit/dotnet_harness.log
+?? docs/quality/evidence/third_audit/dotnet_harness_final.log
+?? docs/quality/evidence/third_audit/editmode_results.xml
+?? docs/quality/evidence/third_audit/editmode_runner.log
+?? docs/quality/evidence/third_audit/editmode_runner_retry.log
+?? docs/quality/evidence/third_audit/git_diff_check_final.log
+?? docs/quality/evidence/third_audit/latest_qa_copy_sha256.tsv
+?? docs/quality/evidence/third_audit/latest_source_snapshot_sha256.tsv
+?? docs/quality/evidence/third_audit/player_crash_verify.log
+?? docs/quality/evidence/third_audit/player_crash_verify_final.log
+?? docs/quality/evidence/third_audit/player_crash_write.log
+?? docs/quality/evidence/third_audit/player_crash_write_final.log
+?? docs/quality/evidence/third_audit/player_crash_write_retry.log
+?? docs/quality/evidence/third_audit/player_python_smoke.log
+?? docs/quality/evidence/third_audit/playmode_results.xml
+?? docs/quality/evidence/third_audit/playmode_results_with_python.xml
+?? docs/quality/evidence/third_audit/playmode_runner.log
+?? docs/quality/evidence/third_audit/playmode_runner_with_python.log
+?? docs/quality/evidence/third_audit/pytest.log
+?? docs/quality/evidence/third_audit/pytest_final.log
+?? docs/quality/evidence/third_audit/python_backend_staging.log
+?? docs/quality/evidence/third_audit/python_version.log
+?? docs/quality/evidence/third_audit/snapshot_copy.log
+?? docs/quality/evidence/third_audit/unity_compile_after_fixes.log
+?? docs/quality/evidence/third_audit/unity_compile_editor.log
+?? docs/quality/evidence/third_audit/windows_player_smoke.log
+?? docs/quality/evidence/third_audit/windows_x64_build.log
+?? docs/quality/evidence/third_audit/windows_x64_build_crash_test_final.log
+?? docs/quality/evidence/third_audit/windows_x64_build_recovery_probe.log
+?? docs/quality/evidence/third_audit/windows_x64_build_recovery_probe_retry.log
+?? licenses/third_party/native/Apache-2.0.txt
+?? licenses/third_party/native/OpenBLAS-LICENSE.txt
+?? licenses/third_party/native/oneTBB-LICENSE.txt
+?? licenses/third_party/python/annotated_doc-0.0.4/LICENSE
+?? licenses/third_party/python/annotated_types-0.7.0/LICENSE
+?? licenses/third_party/python/anyio-4.13.0/LICENSE
+?? licenses/third_party/python/asttokens-3.0.1/LICENSE
+?? licenses/third_party/python/attrs-26.1.0/LICENSE
+?? licenses/third_party/python/blinker-1.9.0/LICENSE.txt
+?? licenses/third_party/python/certifi-2026.5.20/LICENSE
+?? licenses/third_party/python/charset_normalizer-3.4.7/LICENSE
+?? licenses/third_party/python/click-8.4.1/LICENSE.txt
+?? licenses/third_party/python/colorama-0.4.6/LICENSE.txt
+?? licenses/third_party/python/comm-0.2.3/LICENSE
+?? licenses/third_party/python/configargparse-1.7.5/LICENSE
+?? licenses/third_party/python/contourpy-1.4.0/LICENSE
+?? licenses/third_party/python/cycler-0.12.1/LICENSE
+?? licenses/third_party/python/dash-4.1.0/LICENSE
+?? licenses/third_party/python/decorator-5.3.1/LICENSE.txt
+?? licenses/third_party/python/executing-2.2.1/LICENSE.txt
+?? licenses/third_party/python/fastapi-0.136.3/LICENSE
+?? licenses/third_party/python/fastjsonschema-2.21.2/AUTHORS
+?? licenses/third_party/python/fastjsonschema-2.21.2/LICENSE
+?? licenses/third_party/python/flask-3.1.3/LICENSE.txt
+?? licenses/third_party/python/fonttools-4.66.1/LICENSE
+?? licenses/third_party/python/fonttools-4.66.1/LICENSE.external
+?? licenses/third_party/python/h11-0.16.0/LICENSE.txt
+?? licenses/third_party/python/idna-3.17/LICENSE.md
+?? licenses/third_party/python/importlib_metadata-9.0.0/LICENSE
+?? licenses/third_party/python/ipython-9.13.0/COPYING.rst
+?? licenses/third_party/python/ipython-9.13.0/LICENSE
+?? licenses/third_party/python/ipython_pygments_lexers-1.1.1/LICENSE
+?? licenses/third_party/python/ipywidgets-8.1.8/LICENSE
+?? licenses/third_party/python/itsdangerous-2.2.0/LICENSE.txt
+?? licenses/third_party/python/jedi-0.20.0/LICENSE.txt
+?? licenses/third_party/python/jinja2-3.1.6/LICENSE.txt
+?? licenses/third_party/python/jsonschema-4.26.0/COPYING
+?? licenses/third_party/python/jsonschema_specifications-2025.9.1/COPYING
+?? licenses/third_party/python/jupyter_core-5.9.1/LICENSE
+?? licenses/third_party/python/jupyterlab_widgets-3.0.16/LICENSE
+?? licenses/third_party/python/kiwisolver-1.5.1/LICENSE
+?? licenses/third_party/python/markupsafe-3.0.3/LICENSE.txt
+?? licenses/third_party/python/matplotlib-3.11.2/LICENSE
+?? licenses/third_party/python/matplotlib-3.11.2/LICENSE_DEJAVU
+?? licenses/third_party/python/matplotlib-3.11.2/LICENSE_STIX
+?? licenses/third_party/python/matplotlib_inline-0.2.2/LICENSE
+?? licenses/third_party/python/narwhals-2.21.2/LICENSE.md
+?? licenses/third_party/python/nbformat-5.10.4/LICENSE
+?? licenses/third_party/python/nest_asyncio-1.6.0/LICENSE
+?? licenses/third_party/python/numpy-2.4.6/LICENSE.txt
+?? licenses/third_party/python/numpy-2.4.6/numpy/_core/include/numpy/libdivide/LICENSE.txt
+?? licenses/third_party/python/numpy-2.4.6/numpy/_core/src/common/pythoncapi-compat/COPYING
+?? licenses/third_party/python/numpy-2.4.6/numpy/_core/src/highway/LICENSE
+?? licenses/third_party/python/numpy-2.4.6/numpy/_core/src/multiarray/dragon4_LICENSE.txt
+?? licenses/third_party/python/numpy-2.4.6/numpy/_core/src/npysort/x86-simd-sort/LICENSE.md
+?? licenses/third_party/python/numpy-2.4.6/numpy/_core/src/umath/svml/LICENSE
+?? licenses/third_party/python/numpy-2.4.6/numpy/fft/pocketfft/LICENSE.md
+?? licenses/third_party/python/numpy-2.4.6/numpy/linalg/lapack_lite/LICENSE.txt
+?? licenses/third_party/python/numpy-2.4.6/numpy/ma/LICENSE
+?? licenses/third_party/python/numpy-2.4.6/numpy/random/LICENSE.md
+?? licenses/third_party/python/numpy-2.4.6/numpy/random/src/distributions/LICENSE.md
+?? licenses/third_party/python/numpy-2.4.6/numpy/random/src/mt19937/LICENSE.md
+?? licenses/third_party/python/numpy-2.4.6/numpy/random/src/pcg64/LICENSE.md
+?? licenses/third_party/python/numpy-2.4.6/numpy/random/src/philox/LICENSE.md
+?? licenses/third_party/python/numpy-2.4.6/numpy/random/src/sfc64/LICENSE.md
+?? licenses/third_party/python/numpy-2.4.6/numpy/random/src/splitmix64/LICENSE.md
+?? licenses/third_party/python/open3d-0.19.0/LICENSE.txt
+?? licenses/third_party/python/open3d-0.19.0/bundled/Roboto-License.txt
+?? licenses/third_party/python/open3d-0.19.0/bundled/labextension-js.LICENSE.txt
+?? licenses/third_party/python/open3d-0.19.0/bundled/labextension-third-party-licenses.json
+?? licenses/third_party/python/open3d-0.19.0/bundled/nbextension-js.LICENSE.txt
+?? licenses/third_party/python/packaging-26.2/LICENSE
+?? licenses/third_party/python/packaging-26.2/LICENSE.APACHE
+?? licenses/third_party/python/packaging-26.2/LICENSE.BSD
+?? licenses/third_party/python/parso-0.8.7/LICENSE.txt
+?? licenses/third_party/python/pillow-12.3.0/LICENSE
+?? licenses/third_party/python/pip-24.0/LICENSE.txt
+?? licenses/third_party/python/platformdirs-4.10.0/LICENSE
+?? licenses/third_party/python/plotly-6.7.0/LICENSE.txt
+?? licenses/third_party/python/prompt_toolkit-3.0.52/AUTHORS.rst
+?? licenses/third_party/python/prompt_toolkit-3.0.52/LICENSE
+?? licenses/third_party/python/psutil-7.2.2/LICENSE
+?? licenses/third_party/python/pure_eval-0.2.3/LICENSE.txt
+?? licenses/third_party/python/pydantic-2.13.4/LICENSE
+?? licenses/third_party/python/pydantic_core-2.46.4/LICENSE
+?? licenses/third_party/python/pygments-2.20.0/AUTHORS
+?? licenses/third_party/python/pygments-2.20.0/LICENSE
+?? licenses/third_party/python/pyparsing-3.3.3/LICENSE
+?? licenses/third_party/python/python_dateutil-2.9.0.post0/LICENSE
+?? licenses/third_party/python/referencing-0.37.0/COPYING
+?? licenses/third_party/python/requests-2.34.2/LICENSE
+?? licenses/third_party/python/requests-2.34.2/NOTICE
+?? licenses/third_party/python/retrying-1.4.2/LICENSE.txt
+?? licenses/third_party/python/retrying-1.4.2/NOTICE.txt
+?? licenses/third_party/python/rpds_py-2026.5.1/LICENSE
+?? licenses/third_party/python/scipy-1.17.1/LICENSE.txt
+?? licenses/third_party/python/setuptools-82.0.1/LICENSE
+?? licenses/third_party/python/six-1.17.0/LICENSE
+?? licenses/third_party/python/stack_data-0.6.3/LICENSE.txt
+?? licenses/third_party/python/starlette-1.2.0/LICENSE.md
+?? licenses/third_party/python/traitlets-5.15.0/LICENSE
+?? licenses/third_party/python/typing_extensions-4.15.0/LICENSE
+?? licenses/third_party/python/typing_inspection-0.4.2/LICENSE
+?? licenses/third_party/python/urllib3-2.7.0/LICENSE.txt
+?? licenses/third_party/python/uvicorn-0.48.0/LICENSE.md
+?? licenses/third_party/python/wcwidth-0.7.0/LICENSE
+?? licenses/third_party/python/werkzeug-3.1.8/LICENSE.txt
+?? licenses/third_party/python/widgetsnbextension-4.0.15/LICENSE
+?? licenses/third_party/python/zipp-4.1.0/LICENSE
+?? licenses/third_party/runtime/Python-3.12.3-LICENSE_PYTHON.txt
+?? licenses/third_party/unity/Meta-Platform-Technologies-SDK-License-Agreement.html
+?? licenses/third_party/unity/Unity-Companion-License-v1.4.html
+?? licenses/third_party/unity/Unity-Package-Distribution-License-v2.1.html
+?? licenses/third_party/unity/com.unity.inputsystem@21a28c3a6c83/LICENSE.md
+?? licenses/third_party/unity/com.unity.mathematics@19a9377c4ffa/LICENSE.md
+?? licenses/third_party/unity/com.unity.mathematics@19a9377c4ffa/Unity.Mathematics/Noise/LICENSE
+?? licenses/third_party/unity/com.unity.multiplayer.center@f01f4ba8d00a/LICENSE.md
+?? "licenses/third_party/unity/com.unity.multiplayer.center@f01f4ba8d00a/Third Party Notices.md"
+?? licenses/third_party/unity/com.unity.ugui@4dc88464a83d/LICENSE.md
+?? licenses/third_party/unity/com.unity.xr.core-utils@a8b900321199/LICENSE.md
+?? licenses/third_party/unity/com.unity.xr.interaction.toolkit@07ec8e1205bc/LICENSE.md
+?? "licenses/third_party/unity/com.unity.xr.interaction.toolkit@07ec8e1205bc/Third Party Notices.md"
+?? licenses/third_party/unity/com.unity.xr.legacyinputhelpers@3f62d634f63b/LICENSE.md
+?? "licenses/third_party/unity/com.unity.xr.legacyinputhelpers@3f62d634f63b/Third Party Notices.md"
+?? licenses/third_party/unity/com.unity.xr.management@f589c7ba49ff/LICENSE.md
+?? licenses/third_party/unity/com.unity.xr.openxr@77e3723dca0e/LICENSE.md
+?? "licenses/third_party/unity/com.unity.xr.openxr@77e3723dca0e/Third Party Notices.md"

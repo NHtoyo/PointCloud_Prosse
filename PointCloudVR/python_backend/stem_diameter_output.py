@@ -7,6 +7,7 @@ import json
 import math
 import os
 import tempfile
+import shutil
 from dataclasses import asdict, is_dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -16,6 +17,7 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import numpy as np
+from output_generations import create_staging_directory, new_run_id, publish_generation
 
 
 OUTPUT_NAMES = (
@@ -46,7 +48,8 @@ def _write_json(path: Path, result, input_path: str, point_count: int,
                 source_point_cloud_path: str | None = None,
                 source_loaded_point_count: int | None = None,
                 analysis_visible_point_count: int | None = None,
-                analysis_visible_point_fingerprint: str | None = None):
+                analysis_visible_point_fingerprint: str | None = None,
+                run_id: str | None = None):
     def vector(value):
         if value is None:
             return None
@@ -76,6 +79,7 @@ def _write_json(path: Path, result, input_path: str, point_count: int,
 
     payload = {
         "schema_version": 2,
+        "analysis_run_id": run_id,
         "algorithm": "prototype-derived local-PCA cross-section profile",
         "created_utc": datetime.now(timezone.utc).isoformat(),
         "input_path": str(Path(input_path).resolve()),
@@ -198,35 +202,43 @@ def write_stem_diameter_outputs(output_dir, result, input_path: str, point_count
                                 source_point_cloud_path: str | None = None,
                                 source_loaded_point_count: int | None = None,
                                 analysis_visible_point_count: int | None = None,
-                                analysis_visible_point_fingerprint: str | None = None):
-    """Regenerate only the four named analysis outputs; preserve other user files."""
-    target = Path(output_dir)
-    target.mkdir(parents=True, exist_ok=True)
-    with tempfile.TemporaryDirectory(prefix=".stem-diameter-", dir=target) as staging:
-        stage = Path(staging)
+                                analysis_visible_point_fingerprint: str | None = None,
+                                run_id: str | None = None):
+    """Publish JSON, CSV and plots as one immutable output generation."""
+    target = Path(output_dir).expanduser().resolve()
+    run_id = str(run_id or new_run_id())
+    stage = create_staging_directory(target, run_id)
+    try:
         _write_json(
             stage / "stem_diameter.json", result, input_path, point_count,
             source_point_cloud_path, source_loaded_point_count, analysis_visible_point_count,
-            analysis_visible_point_fingerprint,
+            analysis_visible_point_fingerprint, run_id,
         )
         _write_csv(stage / "stem_diameter.csv", result)
         _write_plots(stage, result)
-        for filename in OUTPUT_NAMES:
-            os.replace(stage / filename, target / filename)
+        return publish_generation(target, stage, run_id, OUTPUT_NAMES,
+                                  {"kind": "stem_diameter", "point_count": int(point_count)})
+    finally:
+        if stage.exists():
+            shutil.rmtree(stage, ignore_errors=True)
 
 
-def write_stem_diameter_error(output_dir, payload: dict):
-    """Atomically write a diagnostic report for a failed analysis run."""
+def write_stem_diameter_error(output_dir, payload: dict, run_id: str | None = None):
+    """Write failure diagnostics separately without replacing a successful generation."""
     target = Path(output_dir)
-    target.mkdir(parents=True, exist_ok=True)
-    fd, temporary_name = tempfile.mkstemp(prefix=".stem-diameter-error-", suffix=".tmp", dir=target)
+    run_id = str(run_id or new_run_id())
+    errors = target / "errors"
+    errors.mkdir(parents=True, exist_ok=True)
+    report_path = errors / f"{run_id}.json"
+    fd, temporary_name = tempfile.mkstemp(prefix=f".{run_id}-", suffix=".tmp", dir=errors)
     try:
         with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as stream:
             json.dump(_json_value(payload), stream, ensure_ascii=False, allow_nan=False, indent=2)
             stream.write("\n")
             stream.flush()
             os.fsync(stream.fileno())
-        os.replace(temporary_name, target / "stem_diameter_error.json")
+        os.replace(temporary_name, report_path)
+        return report_path
     finally:
         if os.path.exists(temporary_name):
             os.unlink(temporary_name)

@@ -15,6 +15,7 @@ namespace PointCloudWorkbench
     [System.Serializable]
     public class NoiseFilterMetadata
     {
+        public string operation_id;
         public int point_count;
         public string mode;
         public string dbscan_mode;
@@ -107,6 +108,7 @@ namespace PointCloudWorkbench
             string outputJsonPath,
             int knnK,
             float connectivityAlpha,
+            PointCloudOperation operation,
             CancellationToken cancellationToken)
         {
             if (string.IsNullOrWhiteSpace(selectedPointPath) || !File.Exists(selectedPointPath))
@@ -114,10 +116,11 @@ namespace PointCloudWorkbench
             if (string.IsNullOrWhiteSpace(outputJsonPath))
                 throw new ArgumentException("推定結果JSONの出力先がありません。", nameof(outputJsonPath));
             if (knnK < 1) throw new ArgumentOutOfRangeException(nameof(knnK));
-            if (float.IsNaN(connectivityAlpha) || float.IsInfinity(connectivityAlpha) || connectivityAlpha <= 0f)
+            if (float.IsNaN(connectivityAlpha) || float.IsInfinity(connectivityAlpha) ||
+                connectivityAlpha <= 0f || connectivityAlpha > 10f)
                 throw new ArgumentOutOfRangeException(nameof(connectivityAlpha));
 
-            await EnsureEnvironmentReadyAsync(cancellationToken);
+            await EnsureEnvironmentReadyAsync(cancellationToken, operation);
             cancellationToken.ThrowIfCancellationRequested();
             string pythonPath = GetPythonPath();
             string scriptPath = GetReferenceSphereScriptPath();
@@ -144,8 +147,8 @@ namespace PointCloudWorkbench
                 StandardErrorEncoding = Encoding.UTF8
             };
 
-            var stdout = new StringBuilder();
-            var stderr = new StringBuilder();
+            var stdout = new BoundedTextBuffer();
+            var stderr = new BoundedTextBuffer();
             object logLock = new object();
             long lastActivityTicks = DateTime.UtcNow.Ticks;
             using (Process process = new Process())
@@ -156,16 +159,16 @@ namespace PointCloudWorkbench
                     if (e.Data == null) return;
                     System.Threading.Interlocked.Exchange(ref lastActivityTicks, DateTime.UtcNow.Ticks);
                     lock (logLock) stdout.AppendLine(e.Data);
-                    UnityEngine.Debug.Log("[Python Out] " + e.Data);
                     if (e.Data.StartsWith("[Progress]", StringComparison.Ordinal))
                     {
+                        UnityEngine.Debug.Log("[ReferenceSphere] " + e.Data);
                         string progressText = e.Data.Substring(10).Trim();
                         int separator = progressText.IndexOf(' ');
                         if (separator > 0 && float.TryParse(progressText.Substring(0, separator),
                             System.Globalization.NumberStyles.Float,
                             System.Globalization.CultureInfo.InvariantCulture, out float percent))
                         {
-                            PointCloudProgressManager.Instance.Update(0.15f + 0.72f * Mathf.Clamp01(percent / 100f),
+                            operation?.Update(0.15f + 0.72f * Mathf.Clamp01(percent / 100f),
                                 progressText.Substring(separator + 1));
                         }
                     }
@@ -267,80 +270,41 @@ namespace PointCloudWorkbench
         }
 
         /// <summary>
-        /// Pythonの実行環境（.venvと必要なライブラリ）が準備できているか確認し、
-        /// なければ自動的にバックグラウンドで構築（python -m venv .venv &amp; pip install）します。
+        /// Pythonの実行環境を確認し、必要ならプロジェクト内の.venvだけを構築します。
         /// </summary>
-        public static async Task EnsureEnvironmentReadyAsync(CancellationToken cancellationToken)
+        public static async Task EnsureEnvironmentReadyAsync(CancellationToken cancellationToken, PointCloudOperation operation = null)
         {
             string venvPythonPath = Path.Combine(Application.dataPath, "../python_backend/.venv/Scripts/python.exe");
+            string pythonBackendDir = Path.GetFullPath(Path.Combine(Application.dataPath, "../python_backend"));
+            operation?.Update(0.01f, "Python環境を検証中...");
+
             if (File.Exists(venvPythonPath))
             {
-                // .venv の python.exe があれば環境構築済みとみなす
+                bool ready = await CheckCommandExistsAsync(venvPythonPath,
+                    "-c \"import numpy, scipy, open3d\"", cancellationToken);
+                if (ready) return;
+
+                operation?.Update(0.08f, "プロジェクト内Python環境の依存ライブラリを修復中...");
+                await InstallBackendRequirementsAsync(venvPythonPath, pythonBackendDir, cancellationToken);
+                if (!await CheckCommandExistsAsync(venvPythonPath,
+                    "-c \"import numpy, scipy, open3d\"", cancellationToken))
+                    throw new InvalidOperationException("Python環境の検証に失敗しました。python_backend/requirements.txtと実行ログを確認してください。");
                 return;
             }
 
-            var pm = PointCloudProgressManager.Instance;
-            if (pm != null) pm.Update(0.01f, "Python環境を検証中...");
-
-            // 1. システムに Python がインストールされているか確認
             bool hasPython = await CheckCommandExistsAsync("python", "--version", cancellationToken);
             string pythonCommand = "python";
-
             if (!hasPython)
             {
-                // Windows では python ではなく py (Python Launcher) が動く場合もある
                 hasPython = await CheckCommandExistsAsync("py", "--version", cancellationToken);
-                if (!hasPython)
-                {
-                    // Python が見つからない → 自動でダウンロード・インストール
-                    if (pm != null) pm.Update(0.02f, "Pythonが見つかりません。自動インストール中... (数分かかります)");
-
-                    string installerUrl = "https://www.python.org/ftp/python/3.11.9/python-3.11.9-amd64.exe";
-                    string installerPath = Path.Combine(Path.GetTempPath(), "python_installer.exe");
-
-                    // ダウンロード
-                    using (var client = new System.Net.Http.HttpClient())
-                    {
-                        var data = await client.GetByteArrayAsync(installerUrl);
-                        File.WriteAllBytes(installerPath, data);
-                    }
-
-                    // サイレントインストール（全ユーザー対象・PATH自動追加）
-                    bool installSuccess = await RunCommandAsync(
-                        installerPath,
-                        "/quiet InstallAllUsers=1 PrependPath=1 Include_test=0",
-                        Path.GetTempPath(),
-                        cancellationToken);
-
-                    try { File.Delete(installerPath); } catch { }
-
-                    if (!installSuccess)
-                    {
-                        throw new Exception("Pythonの自動インストールに失敗しました。\n" +
-                                            "https://www.python.org/ から手動でインストールしてください。");
-                    }
-
-                    // インストール後に再確認
-                    hasPython = await CheckCommandExistsAsync("python", "--version", cancellationToken);
-                    if (!hasPython)
-                    {
-                        // PATH反映のためにUnityの再起動が必要な場合がある
-                        throw new Exception("Pythonのインストールは完了しましたが、PATHへの反映にUnityの再起動が必要です。\n" +
-                                            "Unityを一度閉じて再度開いてください。");
-                    }
-                }
                 pythonCommand = "py";
-
             }
+            if (!hasPython)
+                throw new InvalidOperationException("Pythonが見つかりません。Pythonを手動でインストールしてからUnityを再起動してください。システム全体への自動インストールは行いません。");
 
-            // 2. .venv 仮想環境を作成
-            if (pm != null) pm.Update(0.05f, "Python仮想環境(.venv)を作成中... (約30秒〜1分)");
-            string pythonBackendDir = Path.GetFullPath(Path.Combine(Application.dataPath, "../python_backend"));
-
+            operation?.Update(0.05f, "Python仮想環境(.venv)を作成中... (約30秒〜1分)");
             if (!Directory.Exists(pythonBackendDir))
-            {
                 Directory.CreateDirectory(pythonBackendDir);
-            }
 
             bool venvSuccess = await RunCommandAsync(pythonCommand, "-m venv .venv", pythonBackendDir, cancellationToken);
             if (!venvSuccess)
@@ -354,32 +318,21 @@ namespace PointCloudWorkbench
                 throw new Exception("仮想環境は作成されましたが、python.exe が見つかりませんでした。作成パスが異なる可能性があります。");
             }
 
-            // 3. ライブラリのインストール
-            if (pm != null) pm.Update(0.3f, "依存ライブラリをインストール中... (約1分〜2分)\n(Open3D, numpy, scipy等)");
-            string pipPath = Path.Combine(pythonBackendDir, ".venv/Scripts/pip.exe");
-            if (!File.Exists(pipPath))
-            {
-                pipPath = Path.Combine(pythonBackendDir, ".venv/Scripts/pip");
-            }
+            operation?.Update(0.3f, "依存ライブラリをインストール中... (約1分〜2分)\n(Open3D, numpy, scipy等)");
+            await InstallBackendRequirementsAsync(venvPythonPath, pythonBackendDir, cancellationToken);
+            if (!await CheckCommandExistsAsync(venvPythonPath,
+                "-c \"import numpy, scipy, open3d\"", cancellationToken))
+                throw new InvalidOperationException("インストール後のPython依存ライブラリ検証に失敗しました。");
+            operation?.Update(0.99f, "Python環境の自動セットアップが完了しました！");
+        }
 
-            string reqPath = Path.Combine(pythonBackendDir, "requirements.txt");
-            bool pipSuccess;
-            if (!File.Exists(reqPath))
-            {
-                pipSuccess = await RunCommandAsync(pipPath, "install open3d numpy scipy fastapi uvicorn pydantic", pythonBackendDir, cancellationToken);
-            }
-            else
-            {
-                pipSuccess = await RunCommandAsync(pipPath, "install -r requirements.txt", pythonBackendDir, cancellationToken);
-            }
-
-            if (!pipSuccess)
-            {
-                throw new Exception("pipによるライブラリのインストールに失敗しました。インターネット接続を確認してください。");
-            }
-
-            if (pm != null) pm.Update(0.99f, "Python環境の自動セットアップが完了しました！");
-            await Task.Delay(1000);
+        private static async Task InstallBackendRequirementsAsync(string pythonPath, string backendDir,
+            CancellationToken cancellationToken)
+        {
+            string requirementsPath = Path.Combine(backendDir, "requirements.txt");
+            if (!File.Exists(requirementsPath))
+                throw new FileNotFoundException("Python依存関係一覧がありません。", requirementsPath);
+            await RunCommandAsync(pythonPath, "-m pip install -r requirements.txt", backendDir, cancellationToken);
         }
 
         private static async Task<bool> CheckCommandExistsAsync(string command, string arguments, CancellationToken cancellationToken)
@@ -435,8 +388,8 @@ namespace PointCloudWorkbench
                 RedirectStandardOutput = true,
                 RedirectStandardError = true
             };
-            var stdout = new StringBuilder();
-            var stderr = new StringBuilder();
+            var stdout = new BoundedTextBuffer();
+            var stderr = new BoundedTextBuffer();
             object logLock = new object();
             using (Process process = new Process())
             {
@@ -481,13 +434,14 @@ namespace PointCloudWorkbench
             NoiseFilterParams filterParams,
             PointData[] points,
             float coordinateScaleToMm,
+            PointCloudOperation operation,
             CancellationToken cancellationToken = default)
         {
             if (float.IsNaN(coordinateScaleToMm) || float.IsInfinity(coordinateScaleToMm) || coordinateScaleToMm <= 0f)
             {
                 throw new ArgumentOutOfRangeException(nameof(coordinateScaleToMm), "座標からmmへの倍率は正の有限値である必要があります。");
             }
-            await EnsureEnvironmentReadyAsync(cancellationToken);
+            await EnsureEnvironmentReadyAsync(cancellationToken, operation);
 
             string pythonPath = GetPythonPath();
             string scriptPath = GetScriptPath();
@@ -499,9 +453,13 @@ namespace PointCloudWorkbench
 
             // 出力ディレクトリの作成
             Directory.CreateDirectory(outputDir);
+            string operationId = Guid.NewGuid().ToString("N");
 
             // 削除済みフラグのマスクを書き出す
-            string deletedMaskPath = Path.Combine(outputDir, "deleted_mask.bin");
+            string deletedMaskPath = Path.Combine(outputDir, "deleted_mask." + operationId + ".bin");
+            string configJsonPath = Path.Combine(outputDir, "pipeline_config." + operationId + ".json");
+            try
+            {
             if (points != null && points.Length > 0)
             {
                 byte[] deletedMask = new byte[points.Length];
@@ -517,7 +475,8 @@ namespace PointCloudWorkbench
             }
 
             // 引数の構築
-            string arguments = BuildArguments(scriptPath, inputPlyPath, outputDir, filterParams, deletedMaskPath, coordinateScaleToMm);
+            string arguments = BuildArguments(scriptPath, inputPlyPath, outputDir, filterParams,
+                deletedMaskPath, configJsonPath, coordinateScaleToMm, operationId);
 
             ProcessStartInfo psi = new ProcessStartInfo
             {
@@ -538,8 +497,8 @@ namespace PointCloudWorkbench
             {
                 process.StartInfo = psi;
 
-                StringBuilder outputLog = new StringBuilder();
-                StringBuilder errorLog = new StringBuilder();
+                BoundedTextBuffer outputLog = new BoundedTextBuffer();
+                BoundedTextBuffer errorLog = new BoundedTextBuffer();
                 object logLock = new object();
 
                 // 最後の活動時刻（処理時間はUTCの現在時刻のTick数）
@@ -566,21 +525,21 @@ namespace PointCloudWorkbench
                                 {
                                     // Python側の0〜100%の進捗を、C#全体の0.2f〜0.8f（20%〜80%）にマッピング
                                     float mappedProgress = 0.2f + 0.6f * (pct / 100f);
-                                    PointCloudProgressManager.Instance.Update(mappedProgress, msgStr);
+                                    operation?.Update(mappedProgress, msgStr);
                                 }
                             }
                         }
                         else if (e.Data.Contains("PLYファイルをロード中") || e.Data.Contains("PLY繝輔ぃ繧､繝ｫ繧偵Ο繝ｼ繝我ｸｭ"))
                         {
-                            PointCloudProgressManager.Instance.Update(0.1f, "点群データをPythonへロード中...");
+                            operation?.Update(0.1f, "点群データをPythonへロード中...");
                         }
                         else if (e.Data.Contains("処理を開始します") || e.Data.Contains("蜃ｦ逅ｒ髢句ｧ九＠縺ｾ縺"))
                         {
-                            PointCloudProgressManager.Instance.Update(0.2f, "ノイズ除去処理を開始します...");
+                            operation?.Update(0.2f, "ノイズ除去処理を開始します...");
                         }
                         else if (e.Data.Contains("結果出力ディレクトリ") || e.Data.Contains("邨先棡蜃ｺ蜉帙ョ繧｣繝ｬ繧ｯ繝医Μ"))
                         {
-                            PointCloudProgressManager.Instance.Update(0.8f, "結果バイナリデータを保存中...");
+                            operation?.Update(0.8f, "結果バイナリデータを保存中...");
                         }
                     }
                 };
@@ -642,13 +601,20 @@ namespace PointCloudWorkbench
             }
 
             // 終了後にバイナリファイルを読み込み
-            PointCloudProgressManager.Instance.Update(0.9f, "バイナリ結果データをロード中...");
-            string metadataPath = Path.Combine(outputDir, "metadata.json");
+            operation?.Update(0.9f, "バイナリ結果データをロード中...");
+            string generationDirectory = OutputGenerationStore.ResolveGeneration(outputDir, operationId);
+            string metadataPath = Path.Combine(generationDirectory, "metadata.json");
             string metadataJson = await Task.Run(() => File.ReadAllText(metadataPath), cancellationToken);
             NoiseFilterMetadata metadata = JsonUtility.FromJson<NoiseFilterMetadata>(metadataJson);
-            if (metadata == null || metadata.point_count < 0)
+            if (metadata == null || metadata.point_count < 0 || metadata.operation_id != operationId)
                 throw new InvalidDataException("ノイズ解析metadata.jsonの形式または点数が不正です。");
-            return await Task.Run(() => LoadFilterResult(outputDir, metadata), cancellationToken);
+            return await Task.Run(() => LoadFilterResult(generationDirectory, metadata), cancellationToken);
+            }
+            finally
+            {
+                TryDeleteTemporaryFile(deletedMaskPath);
+                TryDeleteTemporaryFile(configJsonPath);
+            }
         }
 
         /// <summary>
@@ -660,6 +626,7 @@ namespace PointCloudWorkbench
             float voxelSizeMm,
             float coordinateScaleToMm,
             string mergedOutputPath,
+            PointCloudOperation operation,
             int mode = 1,
             CancellationToken cancellationToken = default)
         {
@@ -696,13 +663,13 @@ namespace PointCloudWorkbench
             };
 
             UnityEngine.Debug.Log($"[PythonBridge] ダウンサンプリング実行コマンド: {pythonPath} {psi.Arguments}");
-            PointCloudProgressManager.Instance.Update(0.05f, "ダウンサンプリング処理を開始中...");
+            operation?.Update(0.05f, "ダウンサンプリング処理を開始中...");
 
             using (Process process = new Process())
             {
                 process.StartInfo = psi;
-                StringBuilder outputLog = new StringBuilder();
-                StringBuilder errorLog = new StringBuilder();
+                BoundedTextBuffer outputLog = new BoundedTextBuffer();
+                BoundedTextBuffer errorLog = new BoundedTextBuffer();
                 object logLock = new object();
 
                 long lastActivityTicks = System.DateTime.UtcNow.Ticks;
@@ -726,7 +693,7 @@ namespace PointCloudWorkbench
                                 if (float.TryParse(numStr, System.Globalization.NumberStyles.Any, System.Globalization.CultureInfo.InvariantCulture, out float pct))
                                 {
                                     float mappedProgress = pct / 100f;
-                                    PointCloudProgressManager.Instance.Update(mappedProgress, msgStr);
+                                    operation?.Update(mappedProgress, msgStr);
                                 }
                             }
                             else
@@ -734,7 +701,7 @@ namespace PointCloudWorkbench
                                 if (float.TryParse(partsStr, System.Globalization.NumberStyles.Any, System.Globalization.CultureInfo.InvariantCulture, out float pct))
                                 {
                                     float mappedProgress = pct / 100f;
-                                    PointCloudProgressManager.Instance.Update(mappedProgress, "実行中...");
+                                    operation?.Update(mappedProgress, "実行中...");
                                 }
                             }
                         }
@@ -791,7 +758,7 @@ namespace PointCloudWorkbench
                 }
             }
 
-            PointCloudProgressManager.Instance.Update(1.0f, "ダウンサンプリングが完了しました。");
+            operation?.Update(1.0f, "ダウンサンプリングが完了しました。");
             return true;
         }
 
@@ -799,7 +766,8 @@ namespace PointCloudWorkbench
         /// NoiseFilterParams オブジェクトから Python スクリプト実行用のコマンドライン引数を構築します。
         /// 同時に、順序と個別パラメータを含んだ JSON 構成ファイルを保存し、引数で渡します。
         /// </summary>
-        private static string BuildArguments(string scriptPath, string inputPlyPath, string outputDir, NoiseFilterParams p, string deletedMaskPath, float coordinateScaleToMm)
+        private static string BuildArguments(string scriptPath, string inputPlyPath, string outputDir, NoiseFilterParams p,
+            string deletedMaskPath, string configJsonPath, float coordinateScaleToMm, string operationId)
         {
             // パイプライン構成JSONの構築
             var pipelineSteps = p.GetPipeline();
@@ -871,7 +839,6 @@ namespace PointCloudWorkbench
             jsonBuilder.Append("}");
 
             // JSONファイルの書き出し
-            string configJsonPath = Path.Combine(outputDir, "pipeline_config.json");
             try
             {
                 File.WriteAllText(configJsonPath, jsonBuilder.ToString());
@@ -888,6 +855,7 @@ namespace PointCloudWorkbench
             argsBuilder.Append($" --output_dir \"{outputDir}\"");
             argsBuilder.Append($" --config_json \"{configJsonPath}\"");
             argsBuilder.Append($" --coordinate-scale-to-mm {coordinateScaleToMm.ToString(System.Globalization.CultureInfo.InvariantCulture)}");
+            argsBuilder.Append($" --operation_id {QuoteCommandLineArgument(operationId)}");
 
             if (!string.IsNullOrEmpty(deletedMaskPath) && File.Exists(deletedMaskPath))
             {
@@ -895,6 +863,18 @@ namespace PointCloudWorkbench
             }
 
             return argsBuilder.ToString();
+        }
+
+        private static void TryDeleteTemporaryFile(string path)
+        {
+            try
+            {
+                if (!string.IsNullOrEmpty(path) && File.Exists(path)) File.Delete(path);
+            }
+            catch (Exception exception)
+            {
+                UnityEngine.Debug.LogWarning($"[RecoverableOperationError] Python入力一時ファイルを削除できませんでした: {path}\n{exception.Message}");
+            }
         }
 
         /// <summary>

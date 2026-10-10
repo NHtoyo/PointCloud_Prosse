@@ -10,6 +10,7 @@ using PointCloudWorkbench;
 public class PointCloudEditorUI : MonoBehaviour
 {
     private PointCloudEditor editor;
+    private PointCloudOperation activeOperation;
 
     // GUI Styles
     private GUIStyle windowStyle;
@@ -18,6 +19,7 @@ public class PointCloudEditorUI : MonoBehaviour
     private GUIStyle buttonStyle;
     private GUIStyle activeButtonStyle;
     private GUIStyle textStyle;
+    private GUIStyle selectedCountStyle;
     private GUIStyle toggleStyle;
     private bool stylesInitialized = false;
 
@@ -28,6 +30,10 @@ public class PointCloudEditorUI : MonoBehaviour
 
     // UI Scroll Position
     private Vector2 mainScrollPos;
+    private Vector2 centerPanelScroll;
+    private Rect leftPanelRect;
+    private Rect centerPanelViewport;
+    private PointCloudManager pointCloudManager;
 
     // Foldout Statuses
     private bool foldoutRansac = false;
@@ -58,6 +64,12 @@ public class PointCloudEditorUI : MonoBehaviour
     // Progress Modal textures
     private Texture2D modalBackdropTex;
     private Texture2D progressBgTex;
+    private GUIStyle modalBackdropStyle;
+    private GUIStyle progressBarStyle;
+    private GUIStyle progressPercentStyle;
+    private GUIStyle notificationPanelStyle;
+    private GUIStyle errorTitleStyle;
+    private GUIStyle warningTitleStyle;
 
     // --- Scale Calibration / Downsampling Modals & Variables ---
     public bool showMeasurementUI = true;
@@ -79,6 +91,7 @@ public class PointCloudEditorUI : MonoBehaviour
 
     private float lastDownsampleVoxelSize = 0f; // 自動ロード時のファイル名解決に使用
     private Rect errorNotificationRect;
+    private bool showDiscardRecoveryConfirmation;
 
     public void LoadSettings()
     {
@@ -143,6 +156,7 @@ public class PointCloudEditorUI : MonoBehaviour
         {
             stemDiameterUI = gameObject.AddComponent<StemDiameterUI>();
         }
+        pointCloudManager = UnityEngine.Object.FindAnyObjectByType<PointCloudManager>();
         LoadSettings();
         RefreshFileList();
     }
@@ -188,7 +202,7 @@ public class PointCloudEditorUI : MonoBehaviour
         if (stylesInitialized) return;
 
         Texture2D bgTexture = new Texture2D(1, 1);
-        bgTexture.SetPixel(0, 0, new Color(0.08f, 0.1f, 0.12f, 0.85f)); // Sleek professional dark
+        bgTexture.SetPixel(0, 0, new Color(0.08f, 0.1f, 0.12f, 0.98f));
         bgTexture.Apply();
 
         windowStyle = new GUIStyle(GUI.skin.box);
@@ -234,6 +248,10 @@ public class PointCloudEditorUI : MonoBehaviour
         textStyle.fontSize = 14; // Enlarge from 12
         textStyle.normal.textColor = new Color(0.9f, 0.9f, 0.9f);
         textStyle.margin = new RectOffset(0, 0, 3, 3);
+        textStyle.wordWrap = true;
+        selectedCountStyle = new GUIStyle(textStyle);
+        selectedCountStyle.normal.textColor = new Color(0.1f, 0.8f, 0.4f);
+        selectedCountStyle.fontStyle = FontStyle.Bold;
 
         toggleStyle = new GUIStyle(GUI.skin.toggle);
         toggleStyle.fontSize = 14;
@@ -249,38 +267,41 @@ public class PointCloudEditorUI : MonoBehaviour
         progressBgTex.SetPixel(0, 0, new Color(0.12f, 0.15f, 0.18f, 1f)); // Dark slate grey for bar container
         progressBgTex.Apply();
 
+        modalBackdropStyle = new GUIStyle(GUI.skin.box);
+        modalBackdropStyle.normal.background = modalBackdropTex;
+        progressBarStyle = new GUIStyle(GUI.skin.box);
+        progressBarStyle.normal.background = progressBgTex;
+        progressPercentStyle = new GUIStyle(textStyle);
+        progressPercentStyle.alignment = TextAnchor.MiddleCenter;
+        progressPercentStyle.fontStyle = FontStyle.Bold;
+        progressPercentStyle.normal.textColor = Color.white;
+        notificationPanelStyle = new GUIStyle(windowStyle);
+        notificationPanelStyle.normal.background = progressBgTex;
+        errorTitleStyle = new GUIStyle(headerStyle);
+        errorTitleStyle.alignment = TextAnchor.MiddleLeft;
+        errorTitleStyle.normal.textColor = new Color(1f, 0.32f, 0.32f);
+        warningTitleStyle = new GUIStyle(headerStyle);
+        warningTitleStyle.alignment = TextAnchor.MiddleLeft;
+        warningTitleStyle.normal.textColor = new Color(1f, 0.72f, 0.2f);
+
         stylesInitialized = true;
     }
 
     public bool IsMouseOverUI()
     {
+        if (editor != null && editor.HasPendingRecovery) return true;
         // Block mouse interactions if modal progress dialog is running or parameters dialogs are open
         PointCloudProgressSnapshot progress = PointCloudProgressManager.Instance.GetSnapshot();
-        if (progress.IsRunning || showDownsampleDialog || showScaleCalibDialog || showReferenceSphereDialog || showExportDialog) return true;
+        if (progress.IsRunning || progress.HasError || progress.HasWarning || showDownsampleDialog || showScaleCalibDialog || showReferenceSphereDialog || showExportDialog) return true;
         Vector2 guiMousePosition = new Vector2(Input.mousePosition.x, Screen.height - Input.mousePosition.y);
-        if ((progress.HasError || progress.HasWarning) && errorNotificationRect.Contains(guiMousePosition)) return true;
         if (GUIUtility.hotControl != 0) return true;
+        if (leftPanelRect.Contains(guiMousePosition) || centerPanelViewport.Contains(guiMousePosition)) return true;
+        if (pointCloudManager != null && pointCloudManager.LastPanelRect.Contains(guiMousePosition)) return true;
         if (showNoiseFilterUI && pipelineEditorUI != null && pipelineEditorUI.IsMouseOverUI()) return true;
         if (showAnnotationUI && annotationPipelineEditorUI != null && annotationPipelineEditorUI.IsMouseOverUI()) return true;
         if (showMeasurementUI && distanceMeasurementUI != null && distanceMeasurementUI.IsMouseOverPanel()) return true;
         if (showStemDiameterUI && stemDiameterUI != null && stemDiameterUI.IsMouseOverPanel()) return true;
-
-        float mouseX = Input.mousePosition.x;
-        float mouseY = Input.mousePosition.y;
-        
-        float sideWidth = Mathf.Min(460f, Screen.width * 0.25f);
-        float barX = sideWidth + 30f;
-        float rightW = sideWidth + 20f;
-        float barMaxX = Screen.width - rightW;
-        
-        // Pipeline bar
-        bool overPipelineBar = (mouseX >= barX && mouseX <= barMaxX
-                             && mouseY >= Screen.height - 315f && mouseY <= Screen.height - 15f);
-        
-        // Left Panel & Right Panel bounds
-        bool overLeftUI = (mouseX >= 10f && mouseX <= sideWidth + 20f && mouseY >= (Screen.height - 950f) && mouseY <= (Screen.height - 20f));
-        bool overRightUI = (mouseX >= Screen.width - rightW && mouseX <= Screen.width - 10f && mouseY >= (Screen.height - 950f) && mouseY <= (Screen.height - 20f));
-        return overPipelineBar || overLeftUI || overRightUI;
+        return false;
     }
 
     public void SetStemDiameterPanelVisible(bool visible)
@@ -288,6 +309,19 @@ public class PointCloudEditorUI : MonoBehaviour
         if (showStemDiameterUI == visible) return;
         showStemDiameterUI = visible;
         SaveSettings();
+    }
+
+    private static string GetToolDisplayName(PointCloudEditor.EditTool tool)
+    {
+        switch (tool)
+        {
+            case PointCloudEditor.EditTool.Brush: return "3Dブラシ";
+            case PointCloudEditor.EditTool.Marquee: return "2D矩形選択";
+            case PointCloudEditor.EditTool.Lasso: return "なげなわ多角形選択";
+            case PointCloudEditor.EditTool.Connect: return "接続探索選択";
+            case PointCloudEditor.EditTool.Measure: return "距離計測";
+            default: return "カメラ操作";
+        }
     }
 
     public void OpenReferenceSphereDialog()
@@ -303,20 +337,62 @@ public class PointCloudEditorUI : MonoBehaviour
     {
         if (editor == null || editor.targetRenderer == null) return;
         InitializeStyles();
+        bool guiEnabledBeforeDraw = GUI.enabled;
+
+        if (editor.HasPendingRecovery)
+        {
+            DrawRecoveryDialog();
+            GUI.enabled = guiEnabledBeforeDraw;
+            return;
+        }
+
+        PointCloudProgressSnapshot initialProgress = PointCloudProgressManager.Instance.GetSnapshot();
+        if (!initialProgress.IsRunning && (initialProgress.HasError || initialProgress.HasWarning))
+        {
+            GUI.enabled = true;
+            GUI.Box(new Rect(0, 0, Screen.width, Screen.height), GUIContent.none, modalBackdropStyle);
+            DrawOperationNotification(initialProgress);
+            GUI.enabled = guiEnabledBeforeDraw;
+            return;
+        }
+
+        bool operationRunning = initialProgress.IsRunning;
+        if (operationRunning) GUI.enabled = false;
 
         PointData[] points = editor.targetRenderer.GetPointData();
         int totalPoints = points != null ? points.Length : 0;
 
         // 画面幅に応じてパネル幅を動的に決定（最大460、画面幅の25%を超えない）
         float width = Mathf.Min(460f, Screen.width * 0.25f);
+        bool compactTools = width < 340f;
+        headerStyle.fontSize = compactTools ? 16 : 22;
+        buttonStyle.fontSize = compactTools ? 12 : 14;
+        activeButtonStyle.fontSize = buttonStyle.fontSize;
+        foldoutHeaderStyle.fontSize = compactTools ? 12 : 15;
+        textStyle.fontSize = compactTools ? 12 : 14;
+        selectedCountStyle.fontSize = textStyle.fontSize;
+        toggleStyle.fontSize = compactTools ? 12 : 14;
+        buttonStyle.wordWrap = compactTools;
+        activeButtonStyle.wordWrap = compactTools;
+        foldoutHeaderStyle.wordWrap = compactTools;
         float height = Mathf.Min(930f, Screen.height - 40f);
         float posX = 20f;
         float posY = 20f;
+        leftPanelRect = new Rect(posX, posY, width, height);
+        float sideWidth = Mathf.Min(460f, Screen.width * 0.25f);
+        float centerX = sideWidth + 30f;
+        float centerRight = Screen.width - sideWidth - 30f;
+        centerPanelViewport = new Rect(centerX, 15f, Mathf.Max(0f, centerRight - centerX), Mathf.Max(0f, Screen.height - 30f));
 
-        GUILayout.BeginArea(new Rect(posX, posY, width, height), windowStyle);
+        GUILayout.BeginArea(leftPanelRect, windowStyle);
 
 
-        GUILayout.Label("🛠 植物点群アノテーションパネル", headerStyle);
+        GUILayout.Label(compactTools ? "点群アノテーション" : "植物点群アノテーションパネル", headerStyle);
+        PointCloudLoader statusLoader = editor.targetRenderer.GetComponent<PointCloudLoader>();
+        string currentFileName = statusLoader != null ? Path.GetFileName(statusLoader.GetFilePath()) : "不明";
+        GUILayout.Label($"対象: {currentFileName}", textStyle);
+        GUILayout.Label($"総点数 {totalPoints:N0}  |  表示可能 {Mathf.Max(0, totalPoints - editor.GetNoiseDeletedCount()):N0}  |  選択 {editor.SelectedPointCount:N0}", textStyle);
+        GUILayout.Label(statusLoader != null && statusLoader.CurrentPointCloudScaleIsCalibrated ? "スケール校正済み" : "スケール未校正", textStyle);
         GUILayout.Box("", GUILayout.Height(2));
         GUILayout.Space(5);
 
@@ -324,48 +400,54 @@ public class PointCloudEditorUI : MonoBehaviour
         mainScrollPos = GUILayout.BeginScrollView(mainScrollPos, GUILayout.Width(width - 15), GUILayout.Height(height - 40));
 
         // --- 1. Tool Selection ---
-        GUILayout.Label("🔧 操作ツール選択 (基本ツール)", textStyle);
+        GUILayout.Label("操作ツール選択 (基本ツール)", textStyle);
         
-        // Row 1
-        GUILayout.BeginHorizontal();
-        if (GUILayout.Button("なし (カメラ操作)", editor.activeTool == PointCloudEditor.EditTool.None ? activeButtonStyle : buttonStyle, GUILayout.Width((width - 35) / 3f)))
+        if (compactTools)
         {
-            editor.activeTool = PointCloudEditor.EditTool.None;
+            if (GUILayout.Button("カメラ操作", editor.activeTool == PointCloudEditor.EditTool.None ? activeButtonStyle : buttonStyle))
+                editor.activeTool = PointCloudEditor.EditTool.None;
+            if (GUILayout.Button("3Dブラシ", editor.activeTool == PointCloudEditor.EditTool.Brush ? activeButtonStyle : buttonStyle))
+                editor.activeTool = PointCloudEditor.EditTool.Brush;
+            if (GUILayout.Button("2D矩形選択", editor.activeTool == PointCloudEditor.EditTool.Marquee ? activeButtonStyle : buttonStyle))
+                editor.activeTool = PointCloudEditor.EditTool.Marquee;
+            if (GUILayout.Button("なげなわ選択", editor.activeTool == PointCloudEditor.EditTool.Lasso ? activeButtonStyle : buttonStyle))
+                editor.activeTool = PointCloudEditor.EditTool.Lasso;
+            if (GUILayout.Button("接続探索", editor.activeTool == PointCloudEditor.EditTool.Connect ? activeButtonStyle : buttonStyle))
+                editor.activeTool = PointCloudEditor.EditTool.Connect;
         }
-        if (GUILayout.Button("3Dブラシ", editor.activeTool == PointCloudEditor.EditTool.Brush ? activeButtonStyle : buttonStyle, GUILayout.Width((width - 35) / 3f)))
+        else
         {
-            editor.activeTool = PointCloudEditor.EditTool.Brush;
-        }
-        if (GUILayout.Button("2D矩形選択", editor.activeTool == PointCloudEditor.EditTool.Marquee ? activeButtonStyle : buttonStyle, GUILayout.Width((width - 35) / 3f)))
-        {
-            editor.activeTool = PointCloudEditor.EditTool.Marquee;
-        }
-        GUILayout.EndHorizontal();
+            GUILayout.BeginHorizontal();
+            if (GUILayout.Button("なし (カメラ操作)", editor.activeTool == PointCloudEditor.EditTool.None ? activeButtonStyle : buttonStyle, GUILayout.ExpandWidth(true)))
+                editor.activeTool = PointCloudEditor.EditTool.None;
+            if (GUILayout.Button("3Dブラシ", editor.activeTool == PointCloudEditor.EditTool.Brush ? activeButtonStyle : buttonStyle, GUILayout.ExpandWidth(true)))
+                editor.activeTool = PointCloudEditor.EditTool.Brush;
+            GUILayout.EndHorizontal();
 
-        // Row 2
-        GUILayout.BeginHorizontal();
-        if (GUILayout.Button("なげなわ多角形選択", editor.activeTool == PointCloudEditor.EditTool.Lasso ? activeButtonStyle : buttonStyle, GUILayout.Width((width - 30) / 2f)))
-        {
-            editor.activeTool = PointCloudEditor.EditTool.Lasso;
+            GUILayout.BeginHorizontal();
+            if (GUILayout.Button("2D矩形選択", editor.activeTool == PointCloudEditor.EditTool.Marquee ? activeButtonStyle : buttonStyle, GUILayout.ExpandWidth(true)))
+                editor.activeTool = PointCloudEditor.EditTool.Marquee;
+            if (GUILayout.Button("なげなわ多角形選択", editor.activeTool == PointCloudEditor.EditTool.Lasso ? activeButtonStyle : buttonStyle, GUILayout.ExpandWidth(true)))
+                editor.activeTool = PointCloudEditor.EditTool.Lasso;
+            GUILayout.EndHorizontal();
+
+            if (GUILayout.Button("接続探索選択", editor.activeTool == PointCloudEditor.EditTool.Connect ? activeButtonStyle : buttonStyle))
+                editor.activeTool = PointCloudEditor.EditTool.Connect;
         }
-        if (GUILayout.Button("接続探索選択", editor.activeTool == PointCloudEditor.EditTool.Connect ? activeButtonStyle : buttonStyle, GUILayout.Width((width - 30) / 2f)))
-        {
-            editor.activeTool = PointCloudEditor.EditTool.Connect;
-        }
-        GUILayout.EndHorizontal();
+        GUILayout.Label($"使用中: {GetToolDisplayName(editor.activeTool)}", textStyle);
         GUILayout.Space(5);
 
         // --- 2. Tool Configurations ---
         if (editor.activeTool == PointCloudEditor.EditTool.Brush)
         {
-            GUILayout.Label($"🖌 ブラシ半径: {editor.brushRadius:F0} mm", textStyle);
+            GUILayout.Label($"ブラシ半径: {editor.brushRadius:F0} mm", textStyle);
             editor.brushRadius = GUILayout.HorizontalSlider(editor.brushRadius, 20f, 200f);
             GUILayout.Label("ヒント: [Alt] + ホイールでブラシ半径を変更できます。", textStyle);
             GUILayout.Space(5);
         }
         else if (editor.activeTool == PointCloudEditor.EditTool.Lasso)
         {
-            GUILayout.Label("📝 なげなわ多角形選択の操作方法:", textStyle);
+            GUILayout.Label("なげなわ多角形選択の操作方法:", textStyle);
             GUILayout.Label("  - 画面上をクリックして頂点追加", textStyle);
             GUILayout.Label($"  - 現在の頂点数: {editor.LassoPoints.Count}", textStyle);
             GUILayout.Label("  - [Enter] または [右クリック] で多角形を閉じ、選択適用", textStyle);
@@ -373,7 +455,7 @@ public class PointCloudEditorUI : MonoBehaviour
         }
         else if (editor.activeTool == PointCloudEditor.EditTool.Connect)
         {
-            GUILayout.Label("🌀 空間近接（接続探索）設定", textStyle);
+            GUILayout.Label("空間近接（接続探索）設定", textStyle);
             editor.connectionRadius = Mathf.Clamp(editor.connectionRadius, 0.05f, 20f);
             GUILayout.Label($"  接続しきい値 (距離): {editor.connectionRadius:F2} mm", textStyle);
             editor.connectionRadius = GUILayout.HorizontalSlider(editor.connectionRadius, 0.05f, 20f);
@@ -418,7 +500,7 @@ public class PointCloudEditorUI : MonoBehaviour
         // --- 3. Selection Mode (Select vs Deselect) ---
         if (editor.activeTool != PointCloudEditor.EditTool.None)
         {
-            GUILayout.Label("⚡ 選択・解除 挙動", textStyle);
+        GUILayout.Label("選択・解除 挙動", textStyle);
             GUILayout.BeginHorizontal();
             if (GUILayout.Button("選択 (追加)", editor.brushSelectMode ? activeButtonStyle : buttonStyle))
             {
@@ -433,25 +515,29 @@ public class PointCloudEditorUI : MonoBehaviour
         }
 
         // --- 4. RANSAC Fitting (Foldout) ---
-        foldoutRansac = GUILayout.Toggle(foldoutRansac, (foldoutRansac ? "▼ " : "▶ ") + "📐 幾何形状検出 (RANSACフィット)", foldoutHeaderStyle);
+        foldoutRansac = GUILayout.Toggle(foldoutRansac, (foldoutRansac ? "▼ " : "▶ ") + "幾何形状検出 (RANSACフィット)", foldoutHeaderStyle);
         if (foldoutRansac)
         {
             GUILayout.Space(3);
             GUILayout.Label("対象の幾何形状:", textStyle);
-            GUILayout.BeginHorizontal();
-            if (GUILayout.Button("平面 (床・壁)", editor.ransacType == PointCloudEditor.RansacType.Plane ? activeButtonStyle : buttonStyle))
+            if (compactTools)
             {
-                editor.ransacType = PointCloudEditor.RansacType.Plane;
+                if (GUILayout.Button("平面 (床・壁)", editor.ransacType == PointCloudEditor.RansacType.Plane ? activeButtonStyle : buttonStyle))
+                    editor.ransacType = PointCloudEditor.RansacType.Plane;
+                if (GUILayout.Button("鉛直円柱", editor.ransacType == PointCloudEditor.RansacType.Cylinder ? activeButtonStyle : buttonStyle))
+                    editor.ransacType = PointCloudEditor.RansacType.Cylinder;
+                if (GUILayout.Button("支柱拡張", activeButtonStyle)) editor.ApplySupportCylinderFromSelection();
             }
-            if (GUILayout.Button("鉛直円柱", editor.ransacType == PointCloudEditor.RansacType.Cylinder ? activeButtonStyle : buttonStyle))
+            else
             {
-                editor.ransacType = PointCloudEditor.RansacType.Cylinder;
+                GUILayout.BeginHorizontal();
+                if (GUILayout.Button("平面 (床・壁)", editor.ransacType == PointCloudEditor.RansacType.Plane ? activeButtonStyle : buttonStyle))
+                    editor.ransacType = PointCloudEditor.RansacType.Plane;
+                if (GUILayout.Button("鉛直円柱", editor.ransacType == PointCloudEditor.RansacType.Cylinder ? activeButtonStyle : buttonStyle))
+                    editor.ransacType = PointCloudEditor.RansacType.Cylinder;
+                if (GUILayout.Button("支柱拡張", activeButtonStyle)) editor.ApplySupportCylinderFromSelection();
+                GUILayout.EndHorizontal();
             }
-            if (GUILayout.Button("支柱拡張", activeButtonStyle))
-            {
-                editor.ApplySupportCylinderFromSelection();
-            }
-            GUILayout.EndHorizontal();
 
             GUILayout.Label($"RANSAC用 許容誤差: {editor.ransacTolerance:F1} mm", textStyle);
             editor.ransacTolerance = GUILayout.HorizontalSlider(editor.ransacTolerance, 2f, 150f);
@@ -462,7 +548,7 @@ public class PointCloudEditorUI : MonoBehaviour
             GUILayout.Label($"支柱 太さ倍率: {editor.supportTubeMultiplier:F1}", textStyle);
             editor.supportTubeMultiplier = GUILayout.HorizontalSlider(editor.supportTubeMultiplier, 1.0f, 8.0f);
 
-            if (GUILayout.Button($"🚀 RANSAC 検出を実行 (インライア{(editor.brushSelectMode ? "選択" : "解除")})", activeButtonStyle))
+            if (GUILayout.Button($"RANSAC 検出を実行 (インライア{(editor.brushSelectMode ? "選択" : "解除")})", activeButtonStyle))
             {
                 editor.ApplyRansacSelection();
             }
@@ -470,7 +556,7 @@ public class PointCloudEditorUI : MonoBehaviour
         }
 
         // --- 5. Attribute Filter (Foldout) ---
-        foldoutFilter = GUILayout.Toggle(foldoutFilter, (foldoutFilter ? "▼ " : "▶ ") + "🎨 属性・カラー抽出フィルタ", foldoutHeaderStyle);
+        foldoutFilter = GUILayout.Toggle(foldoutFilter, (foldoutFilter ? "▼ " : "▶ ") + "属性・カラー抽出フィルタ", foldoutHeaderStyle);
         if (foldoutFilter)
         {
             GUILayout.Space(3);
@@ -536,7 +622,7 @@ public class PointCloudEditorUI : MonoBehaviour
             // Keep min <= max
             if (editor.filterMin > editor.filterMax) editor.filterMin = editor.filterMax;
 
-            if (GUILayout.Button($"🔍 属性フィルタ選択を実行 (範囲内を{(editor.brushSelectMode ? "選択" : "解除")})", activeButtonStyle))
+            if (GUILayout.Button($"属性フィルタ選択を実行 (範囲内を{(editor.brushSelectMode ? "選択" : "解除")})", activeButtonStyle))
             {
                 editor.ApplyAttributeFilterSelection();
             }
@@ -544,7 +630,7 @@ public class PointCloudEditorUI : MonoBehaviour
         }
 
         // --- 6. Operations (Foldout) ---
-        foldoutOperations = GUILayout.Toggle(foldoutOperations, (foldoutOperations ? "▼ " : "▶ ") + "✏ 選択オブジェクト操作", foldoutHeaderStyle);
+        foldoutOperations = GUILayout.Toggle(foldoutOperations, (foldoutOperations ? "▼ " : "▶ ") + "選択オブジェクト操作", foldoutHeaderStyle);
         if (foldoutOperations)
         {
             GUILayout.Space(3);
@@ -552,22 +638,29 @@ public class PointCloudEditorUI : MonoBehaviour
             // 選択点数の表示をここに常時表示
             if (editor.SelectedPointCount > 0)
             {
-                GUIStyle countStyle = new GUIStyle(textStyle);
-                countStyle.normal.textColor = new Color(0.1f, 0.8f, 0.4f); // 緑ハイライト
-                countStyle.fontStyle = FontStyle.Bold;
-                GUILayout.Label($"現在の選択点数: {editor.SelectedPointCount:N0} 点", countStyle);
+                GUILayout.Label($"現在の選択点数: {editor.SelectedPointCount:N0} 点", selectedCountStyle);
             }
             else
             {
                 GUILayout.Label($"現在の選択点数: {editor.SelectedPointCount:N0} 点", textStyle);
             }
             GUILayout.Space(5);
-            GUILayout.BeginHorizontal();
-            if (GUILayout.Button("選択クリア", buttonStyle)) editor.ClearSelection();
-            if (GUILayout.Button("選択反転", buttonStyle)) editor.InvertSelection();
-            if (GUILayout.Button("選択点を削除", buttonStyle)) editor.DeleteSelected();
-            GUILayout.EndHorizontal();
-            if (GUILayout.Button("削除した点を復元 (ノイズ除去クリア)", buttonStyle)) editor.RestoreDeleted();
+            if (compactTools)
+            {
+                if (GUILayout.Button("選択クリア", buttonStyle)) editor.ClearSelection();
+                if (GUILayout.Button("選択反転", buttonStyle)) editor.InvertSelection();
+                if (GUILayout.Button("選択点を削除", buttonStyle)) editor.DeleteSelected();
+            }
+            else
+            {
+                GUILayout.BeginHorizontal();
+                if (GUILayout.Button("選択クリア", buttonStyle)) editor.ClearSelection();
+                if (GUILayout.Button("選択反転", buttonStyle)) editor.InvertSelection();
+                if (GUILayout.Button("選択点を削除", buttonStyle)) editor.DeleteSelected();
+                GUILayout.EndHorizontal();
+            }
+            if (GUILayout.Button("削除した点を復元 (ノイズ除去クリア)", buttonStyle,
+                GUILayout.Height(compactTools ? 42f : 30f))) editor.RestoreDeleted();
             GUILayout.Space(10);
 
             // --- Annotation Layer Management ---
@@ -576,24 +669,25 @@ public class PointCloudEditorUI : MonoBehaviour
             {
                 GUILayout.Box("", GUILayout.Height(1)); // Separator line
                 GUILayout.Space(5);
-                GUILayout.Label("📑 アノテーションレイヤー管理 (マルチレイヤー)", textStyle);
+                GUILayout.Label("アノテーションレイヤー管理 (マルチレイヤー)", textStyle);
 
                 List<string> layers = rend.GetAnnotationLayerNames();
                 string activeLayer = rend.GetActiveAnnotationLayerName();
 
                 GUILayout.Label($"現在のアクティブレイヤー: {activeLayer}", textStyle);
 
+                int layersPerRow = compactTools ? 2 : 3;
                 GUILayout.BeginHorizontal();
                 for (int i = 0; i < layers.Count; i++)
                 {
                     string layer = layers[i];
                     bool isActive = layer == activeLayer;
-                    if (GUILayout.Button(layer, isActive ? activeButtonStyle : buttonStyle, GUILayout.Width((width - 45) / 3f)))
+                    if (GUILayout.Button(layer, isActive ? activeButtonStyle : buttonStyle, GUILayout.Width((width - 45) / layersPerRow)))
                     {
                         rend.SwitchAnnotationLayer(layer);
                         editor.MarkStatsDirty();
                     }
-                    if ((i + 1) % 3 == 0 && i < layers.Count - 1)
+                    if ((i + 1) % layersPerRow == 0 && i < layers.Count - 1)
                     {
                         GUILayout.EndHorizontal();
                         GUILayout.BeginHorizontal();
@@ -602,23 +696,26 @@ public class PointCloudEditorUI : MonoBehaviour
                 GUILayout.EndHorizontal();
                 GUILayout.Space(5);
 
-                GUILayout.BeginHorizontal();
-                newLayerName = GUILayout.TextField(newLayerName, GUILayout.Width(240));
-                if (GUILayout.Button("レイヤー追加", buttonStyle, GUILayout.Width(140)))
+                if (compactTools)
                 {
-                    if (!string.IsNullOrEmpty(newLayerName) && !layers.Contains(newLayerName))
+                    newLayerName = GUILayout.TextField(newLayerName, GUILayout.ExpandWidth(true));
+                    if (GUILayout.Button("レイヤー追加", buttonStyle))
                     {
-                        rend.AddAnnotationLayer(newLayerName);
-                        rend.SwitchAnnotationLayer(newLayerName);
-                        editor.MarkStatsDirty();
-                        newLayerName = "NewLayer";
+                        AddLayerIfValid(rend, layers);
                     }
                 }
-                GUILayout.EndHorizontal();
+                else
+                {
+                    GUILayout.BeginHorizontal();
+                    newLayerName = GUILayout.TextField(newLayerName, GUILayout.ExpandWidth(true));
+                    if (GUILayout.Button("レイヤー追加", buttonStyle, GUILayout.Width(Mathf.Min(140f, width * 0.42f))))
+                        AddLayerIfValid(rend, layers);
+                    GUILayout.EndHorizontal();
+                }
 
                 if (activeLayer != "Default")
                 {
-                    if (GUILayout.Button("❌ 現在のアクティブレイヤーを削除", activeButtonStyle))
+                    if (GUILayout.Button("現在のアクティブレイヤーを削除", activeButtonStyle))
                     {
                         rend.DeleteAnnotationLayer(activeLayer);
                         editor.MarkStatsDirty();
@@ -633,7 +730,7 @@ public class PointCloudEditorUI : MonoBehaviour
 
 
         // --- 7. Load File Selection (Foldout) ---
-        foldoutLoad = GUILayout.Toggle(foldoutLoad, (foldoutLoad ? "▼ " : "▶ ") + "📂 読み込みPLYファイル選択", foldoutHeaderStyle);
+        foldoutLoad = GUILayout.Toggle(foldoutLoad, (foldoutLoad ? "▼ " : "▶ ") + "読み込みPLYファイル選択", foldoutHeaderStyle);
         if (foldoutLoad)
         {
             GUILayout.Space(3);
@@ -650,7 +747,8 @@ public class PointCloudEditorUI : MonoBehaviour
                         {
                             string fName = Path.GetFileName(availablePlyFiles[i]);
                             bool isCurrent = loader.fileName == fName;
-                            GUI.enabled = !isCurrent;
+                            bool fileButtonPreviousEnabled = GUI.enabled;
+                            GUI.enabled = fileButtonPreviousEnabled && !isCurrent;
                             if (GUILayout.Button(fName, isCurrent ? activeButtonStyle : buttonStyle))
                             {
                                 if (!isCurrent && Time.time > 1.0f)
@@ -662,7 +760,7 @@ public class PointCloudEditorUI : MonoBehaviour
                                     editor.MarkStatsDirty();
                                 }
                             }
-                            GUI.enabled = true;
+                            GUI.enabled = fileButtonPreviousEnabled;
                         }
                         GUILayout.EndScrollView();
                     }
@@ -681,18 +779,24 @@ public class PointCloudEditorUI : MonoBehaviour
 
         // --- 10. PLY Export (Visible even when stats foldout is closed) ---
         GUILayout.Space(8);
-        if (GUILayout.Button("💾 PLYをエクスポート", activeButtonStyle))
+        if (GUILayout.Button("PLYをエクスポート", activeButtonStyle))
         {
             exportOnlySelected = false;
             showExportDialog = true;
         }
         GUILayout.Space(5);
-        if (GUILayout.Button("💾 選択点のみエクスポート", activeButtonStyle))
+        if (GUILayout.Button("選択点のみエクスポート", activeButtonStyle))
         {
             exportOnlySelected = true;
             showExportDialog = true;
         }
         GUILayout.Space(5);
+
+        if (noiseFilterUI != null && NoiseFilterManager.Instance != null && NoiseFilterManager.Instance.IsPreviewActive)
+        {
+            GUILayout.Box("", GUILayout.Height(1));
+            noiseFilterUI.DrawPreviewLegendContents();
+        }
 
         GUILayout.EndScrollView();
         GUILayout.EndArea();
@@ -704,7 +808,7 @@ public class PointCloudEditorUI : MonoBehaviour
         {
             downsampleDialogRect.x = (Screen.width - downsampleDialogRect.width) / 2f;
             downsampleDialogRect.y = (Screen.height - downsampleDialogRect.height) / 2f;
-            downsampleDialogRect = GUI.Window(997, downsampleDialogRect, DrawDownsampleWindow, "📥 ダウンサンプリングパラメータ設定", windowStyle);
+            downsampleDialogRect = GUI.Window(997, downsampleDialogRect, DrawDownsampleWindow, "ダウンサンプリングパラメータ設定", windowStyle);
             GUI.BringWindowToFront(997);
         }
 
@@ -721,7 +825,7 @@ public class PointCloudEditorUI : MonoBehaviour
         {
             scaleCalibDialogRect.x = (Screen.width - scaleCalibDialogRect.width) / 2f;
             scaleCalibDialogRect.y = (Screen.height - scaleCalibDialogRect.height) / 2f;
-            scaleCalibDialogRect = GUI.Window(998, scaleCalibDialogRect, DrawScaleCalibWindow, "📐 スケール校正パラメータ設定", windowStyle);
+            scaleCalibDialogRect = GUI.Window(998, scaleCalibDialogRect, DrawScaleCalibWindow, "スケール校正パラメータ設定", windowStyle);
             GUI.BringWindowToFront(998);
         }
 
@@ -747,7 +851,8 @@ public class PointCloudEditorUI : MonoBehaviour
         DrawLassoLines();
 
         // --- Draw Chained Pipeline/Annotation/Calibration Windows ---
-        float currentCenterY = 15f;
+        float currentCenterY = -centerPanelScroll.y;
+        GUI.BeginGroup(new Rect(0f, 15f, Screen.width, Mathf.Max(0f, Screen.height - 30f)));
         if (showNoiseFilterUI && pipelineEditorUI != null)
         {
             pipelineEditorUI.DrawGUI(ref currentCenterY);
@@ -764,21 +869,49 @@ public class PointCloudEditorUI : MonoBehaviour
         {
             stemDiameterUI.DrawGUI(ref currentCenterY);
         }
+        float centerContentHeight = Mathf.Max(0f, currentCenterY + centerPanelScroll.y);
+        GUI.EndGroup();
+
+        if (Event.current.type == EventType.ScrollWheel && centerPanelViewport.Contains(Event.current.mousePosition) && GUIUtility.hotControl == 0)
+        {
+            centerPanelScroll.y = Mathf.Clamp(centerPanelScroll.y + Event.current.delta.y * 24f,
+                0f, Mathf.Max(0f, centerContentHeight - centerPanelViewport.height));
+            Event.current.Use();
+        }
+        if (centerContentHeight > centerPanelViewport.height)
+        {
+            Rect scrollBarRect = new Rect(centerPanelViewport.xMax - 12f, centerPanelViewport.y, 12f, centerPanelViewport.height);
+            centerPanelScroll.y = GUI.VerticalScrollbar(scrollBarRect, centerPanelScroll.y,
+                centerPanelViewport.height, 0f, centerContentHeight);
+        }
+        else
+        {
+            centerPanelScroll.y = 0f;
+        }
 
         // Draw Progress Pop-up Window if running (Modal state)
         PointCloudProgressSnapshot progress = PointCloudProgressManager.Instance.GetSnapshot();
-        if (progress.IsRunning) DrawProgressDialog(progress);
-        else if (progress.HasError || progress.HasWarning) DrawOperationNotification(progress);
+        GUI.enabled = guiEnabledBeforeDraw;
+        if (progress.IsRunning)
+        {
+            DrawProgressDialog(progress);
+            GUI.enabled = false;
+        }
+        else if (progress.HasError || progress.HasWarning)
+        {
+            DrawOperationNotification(progress);
+        }
 
         // --- 11. Format Selection Dialog for Export ---
         if (showExportDialog)
         {
             exportDialogRect.x = (Screen.width - exportDialogRect.width) / 2f;
             exportDialogRect.y = (Screen.height - exportDialogRect.height) / 2f;
-            string title = exportOnlySelected ? "💾 選択点PLYエクスポート設定" : "💾 PLYエクスポート設定";
+            string title = exportOnlySelected ? "選択点PLYエクスポート設定" : "PLYエクスポート設定";
             exportDialogRect = GUI.Window(999, exportDialogRect, DrawExportDialogWindow, title, windowStyle);
             GUI.BringWindowToFront(999);
         }
+        GUI.enabled = guiEnabledBeforeDraw;
     }
 
     private void DrawExportDialogWindow(int windowID)
@@ -822,16 +955,72 @@ public class PointCloudEditorUI : MonoBehaviour
         }
     }
 
+    private void AddLayerIfValid(PointCloudRenderer renderer, List<string> layers)
+    {
+        if (string.IsNullOrEmpty(newLayerName) || layers.Contains(newLayerName)) return;
+        renderer.AddAnnotationLayer(newLayerName);
+        renderer.SwitchAnnotationLayer(newLayerName);
+        editor.MarkStatsDirty();
+        newLayerName = "NewLayer";
+    }
+
     private bool errorDetailsExpanded;
+
+    private void DrawRecoveryDialog()
+    {
+        GUI.Box(new Rect(0, 0, Screen.width, Screen.height), "", modalBackdropStyle);
+
+        float width = Mathf.Min(620f, Screen.width - 32f);
+        float height = Mathf.Min(380f, Screen.height - 32f);
+        float x = (Screen.width - width) * 0.5f;
+        float y = (Screen.height - height) * 0.5f;
+        GUILayout.BeginArea(new Rect(x, y, width, height), windowStyle);
+        if (showDiscardRecoveryConfirmation)
+        {
+            GUILayout.Label("復旧スナップショットを削除しますか？", headerStyle);
+            GUILayout.Space(8);
+            GUILayout.Label("復元せず続行すると、この編集スナップショットは削除され、今回の分類・選択・削除状態は戻せません。元PLYは変更しません。", textStyle);
+            GUILayout.FlexibleSpace();
+            GUILayout.BeginHorizontal();
+            if (GUILayout.Button("削除して続行", activeButtonStyle, GUILayout.Height(40)))
+            {
+                if (editor.DiscardPendingRecovery()) showDiscardRecoveryConfirmation = false;
+            }
+            if (GUILayout.Button("戻る", buttonStyle, GUILayout.Height(40)))
+                showDiscardRecoveryConfirmation = false;
+            GUILayout.EndHorizontal();
+        }
+        else
+        {
+            GUILayout.Label("前回の編集を復元しますか？", headerStyle);
+            GUILayout.Space(8);
+            GUILayout.Label("異常終了後のスナップショットを検出しました。", textStyle);
+            GUILayout.Label($"対象点群: {editor.PendingRecoverySourceName}　点数: {editor.PendingRecoveryPointCount:N0}", textStyle);
+            GUILayout.Label($"保存日時: {editor.PendingRecoverySavedAtLocalText}", textStyle);
+            GUILayout.Label("適合性: 元PLYのSHA-256・点数・復旧データの整合性を照合済み", textStyle);
+            GUILayout.Label("復元対象は分類・選択・削除状態です。座標・PLY本体・計測JSONは変更しません。", textStyle);
+            GUILayout.Space(6);
+            if (!string.IsNullOrEmpty(editor.RecoveryDecisionStatus))
+                GUILayout.Label(editor.RecoveryDecisionStatus, textStyle);
+            GUILayout.FlexibleSpace();
+            GUILayout.BeginHorizontal();
+            if (GUILayout.Button("復元する", activeButtonStyle, GUILayout.Height(40)))
+            {
+                if (editor.ApplyPendingRecovery()) showDiscardRecoveryConfirmation = false;
+            }
+            if (GUILayout.Button("復元しない", buttonStyle, GUILayout.Height(40)))
+                showDiscardRecoveryConfirmation = true;
+            GUILayout.EndHorizontal();
+        }
+        GUILayout.EndArea();
+    }
 
     private void DrawProgressDialog(PointCloudProgressSnapshot progress)
     {
         Color savedGuiColor = GUI.color;
-        GUIStyle backdropStyle = new GUIStyle();
-        if (modalBackdropTex != null) backdropStyle.normal.background = modalBackdropTex;
-        GUI.Box(new Rect(0, 0, Screen.width, Screen.height), "", backdropStyle);
+        GUI.Box(new Rect(0, 0, Screen.width, Screen.height), "", modalBackdropStyle);
 
-        const float width = 500f;
+        float width = Mathf.Min(500f, Screen.width - 32f);
         const float height = 210f;
         float x = (Screen.width - width) * 0.5f;
         float y = (Screen.height - height) * 0.5f;
@@ -842,9 +1031,7 @@ public class PointCloudEditorUI : MonoBehaviour
         GUILayout.Space(8);
 
         Rect progressRect = GUILayoutUtility.GetRect(width - 32, 26);
-        GUIStyle barBgStyle = new GUIStyle();
-        if (progressBgTex != null) barBgStyle.normal.background = progressBgTex;
-        GUI.Box(progressRect, "", barBgStyle);
+        GUI.Box(progressRect, "", progressBarStyle);
 
         float fillWidth = (progressRect.width - 4) * progress.Progress;
         if (fillWidth > 0.1f)
@@ -854,11 +1041,7 @@ public class PointCloudEditorUI : MonoBehaviour
                 lineTex != null ? lineTex : Texture2D.whiteTexture);
             GUI.color = Color.white;
         }
-        GUIStyle percentStyle = new GUIStyle(textStyle);
-        percentStyle.alignment = TextAnchor.MiddleCenter;
-        percentStyle.fontStyle = FontStyle.Bold;
-        percentStyle.normal.textColor = Color.white;
-        GUI.Label(progressRect, $"{progress.Progress * 100f:F1} %", percentStyle);
+        GUI.Label(progressRect, $"{progress.Progress * 100f:F1} %", progressPercentStyle);
 
         GUILayout.Space(15);
         if (GUILayout.Button("処理をキャンセル", activeButtonStyle, GUILayout.Height(35)))
@@ -871,16 +1054,11 @@ public class PointCloudEditorUI : MonoBehaviour
     {
         float width = Mathf.Min(560f, Screen.width - 24f);
         float height = errorDetailsExpanded ? Mathf.Min(350f, Screen.height - 24f) : 150f;
-        float x = Mathf.Max(12f, Screen.width - width - 18f);
-        float y = 18f;
+        float x = (Screen.width - width) * 0.5f;
+        float y = (Screen.height - height) * 0.5f;
         errorNotificationRect = new Rect(x, y, width, height);
-        GUIStyle panel = new GUIStyle(windowStyle);
-        if (progressBgTex != null) panel.normal.background = progressBgTex;
-        GUILayout.BeginArea(errorNotificationRect, panel);
-        GUIStyle titleStyle = new GUIStyle(headerStyle);
-        titleStyle.alignment = TextAnchor.MiddleLeft;
-        titleStyle.normal.textColor = progress.HasError ? new Color(1f, 0.32f, 0.32f) : new Color(1f, 0.72f, 0.2f);
-        GUILayout.Label($"{(progress.HasError ? "エラー" : "警告")} | {progress.Title}", titleStyle);
+        GUILayout.BeginArea(errorNotificationRect, notificationPanelStyle);
+        GUILayout.Label($"{(progress.HasError ? "エラー" : "警告")} | {progress.Title}", progress.HasError ? errorTitleStyle : warningTitleStyle);
         GUILayout.Label(progress.NotificationMessage, textStyle);
         GUILayout.BeginHorizontal();
         if (!string.IsNullOrEmpty(progress.Detail) && GUILayout.Button(errorDetailsExpanded ? "詳細を隠す" : "詳細", buttonStyle, GUILayout.Width(90f)))
@@ -1021,36 +1199,41 @@ public class PointCloudEditorUI : MonoBehaviour
         referenceSphereKStr = knnK.ToString(System.Globalization.CultureInfo.InvariantCulture);
         referenceSphereAlphaStr = alpha.ToString("R", System.Globalization.CultureInfo.InvariantCulture);
         SaveSettings();
-        if (!PointCloudProgressManager.Instance.Start("リファレンス球直径推定", "選択点を解析用一時PLYへ書き出し中...")) return;
+        PointCloudOperation operation = PointCloudProgressManager.Instance.TryStart("リファレンス球直径推定", "選択点を解析用一時PLYへ書き出し中...");
+        if (operation == null) return;
+        activeOperation = operation;
 
         int selectedCountSnapshot = referenceSphereSelectedCount;
         showReferenceSphereDialog = false;
-        RunReferenceSphereAnalysisAsync(knnK, alpha, selectedCountSnapshot);
+        RunReferenceSphereAnalysisAsync(knnK, alpha, selectedCountSnapshot, operation);
     }
 
-    private async void RunReferenceSphereAnalysisAsync(int knnK, float alpha, int expectedSelectedCount)
+    private async void RunReferenceSphereAnalysisAsync(int knnK, float alpha, int expectedSelectedCount, PointCloudOperation operation)
     {
-        PointCloudProgressManager progress = PointCloudProgressManager.Instance;
         string temporaryDirectory = Path.Combine(Path.GetTempPath(), "PointCloudVR",
             "reference_sphere_" + Guid.NewGuid().ToString("N"));
         try
         {
-            CancellationToken token = progress.CancellationToken;
-            PointData[] points = editor.targetRenderer.GetPointData();
+            CancellationToken token = operation.CancellationToken;
+            PointCloudRenderer rendererSnapshot = editor.targetRenderer;
+            long datasetGeneration = rendererSnapshot.DatasetGeneration;
+            PointData[] points = rendererSnapshot.GetPointData();
             Directory.CreateDirectory(temporaryDirectory);
             string inputPath = Path.Combine(temporaryDirectory, "selected_points.ply");
             string outputPath = Path.Combine(temporaryDirectory, "result.json");
             var exportRequest = new PlyExportRequest(points, inputPath, true, false, ExportPointMode.SelectedNonDeleted);
             PlyExportResult exported = await Task.Run(
                 () => PlyExportService.Write(exportRequest, token,
-                    (fraction, message) => progress.Update(0.02f + 0.13f * fraction, message)), token);
+                    (fraction, message) => operation.Update(0.02f + 0.13f * fraction, message)), token);
             if (exported.VertexCount != expectedSelectedCount)
                 throw new InvalidOperationException($"選択点数が処理開始時から変化しました ({expectedSelectedCount:N0} → {exported.VertexCount:N0})。");
 
-            progress.Update(0.15f, $"選択点{exported.VertexCount:N0}点のKNN・連結成分・球fitを実行中...");
+            operation.Update(0.15f, $"選択点{exported.VertexCount:N0}点のKNN・連結成分・球fitを実行中...");
             ReferenceSphereOutput result = await PythonBridge.RunReferenceSphereAsync(
-                inputPath, outputPath, knnK, alpha, token);
+                inputPath, outputPath, knnK, alpha, operation, token);
             token.ThrowIfCancellationRequested();
+            if (editor == null || editor.targetRenderer != rendererSnapshot || rendererSnapshot.DatasetGeneration != datasetGeneration)
+                throw new OperationCanceledException("推定中に点群が切り替わりました。結果は適用していません。", token);
 
             if (result.input_point_count != exported.VertexCount ||
                 result.component_point_count < 5 || result.component_point_count > result.input_point_count ||
@@ -1094,15 +1277,15 @@ public class PointCloudEditorUI : MonoBehaviour
             Debug.Log(created
                 ? "[ReferenceSphere] 「リファレンス直径」を作成しました。"
                 : "[ReferenceSphere] 「リファレンス直径」を更新しました。");
-            progress.Complete();
+            operation.Complete();
         }
         catch (OperationCanceledException)
         {
-            progress.CompleteCancelled("リファレンス球直径推定をキャンセルしました。点群と既存計測は変更していません。");
+            operation.CompleteCancelled("リファレンス球直径推定をキャンセルしました。点群と既存計測は変更していません。");
         }
         catch (Exception ex)
         {
-            progress.Fail("リファレンス球直径推定", "リファレンス球直径の推定に失敗しました。", ex.ToString());
+            operation.Fail("リファレンス球直径推定", "リファレンス球直径の推定に失敗しました。", ex.ToString());
             Debug.LogError("[ReferenceSphereError] リファレンス球直径の推定に失敗しました。\n" + ex);
         }
         finally
@@ -1115,6 +1298,7 @@ public class PointCloudEditorUI : MonoBehaviour
             {
                 Debug.LogWarning("[RecoverableOperationError] 球直径推定用の一時ファイルを削除できませんでした。\n" + cleanupException);
             }
+            if (ReferenceEquals(activeOperation, operation)) activeOperation = null;
         }
     }
 
@@ -1211,14 +1395,15 @@ public class PointCloudEditorUI : MonoBehaviour
 
         GUILayout.BeginHorizontal();
         bool hasValidInput = hasCalibrationMeasurement;
-        GUI.enabled = hasValidInput;
+        bool guiEnabledBeforeCalibrationButtons = GUI.enabled;
+        GUI.enabled = guiEnabledBeforeCalibrationButtons && hasValidInput;
         if (GUILayout.Button("校正実行", activeButtonStyle, GUILayout.Height(35)))
         {
             showScaleCalibDialog = false;
             SaveSettings();
             ExecuteScaleCalibration();
         }
-        GUI.enabled = true;
+        GUI.enabled = guiEnabledBeforeCalibrationButtons;
         GUILayout.Space(10);
         if (GUILayout.Button("キャンセル", buttonStyle, GUILayout.Height(35)))
         {
@@ -1265,30 +1450,33 @@ public class PointCloudEditorUI : MonoBehaviour
             return;
         }
 
-        if (!PointCloudProgressManager.Instance.Start("スケール校正", "点群座標を補正したPLYを作成中...")) return;
-        ApplyScaleCalibrationAndSaveAsync(correctionFactor);
+        PointCloudOperation operation = PointCloudProgressManager.Instance.TryStart("スケール校正", "点群座標を補正したPLYを作成中...");
+        if (operation == null) return;
+        activeOperation = operation;
+        ApplyScaleCalibrationAndSaveAsync(correctionFactor, operation);
     }
 
-    private async void ApplyScaleCalibrationAndSaveAsync(float correctionFactor)
+    private async void ApplyScaleCalibrationAndSaveAsync(float correctionFactor, PointCloudOperation operation)
     {
-        PointCloudProgressManager progress = PointCloudProgressManager.Instance;
         PointCloudLoader loader = editor != null && editor.targetRenderer != null
             ? editor.targetRenderer.GetComponent<PointCloudLoader>()
             : null;
         if (loader == null)
         {
-            progress.Fail("スケール校正", "点群ローダーが見つかりません。");
+            operation.Fail("スケール校正", "点群ローダーが見つかりません。");
+            if (ReferenceEquals(activeOperation, operation)) activeOperation = null;
             return;
         }
 
         try
         {
-            progress.Update(0.82f, "補正済みPLYをPointCloudDataへ保存中...");
+            operation.Update(0.82f, "補正済みPLYをPointCloudDataへ保存中...");
             string outputPath = await editor.ApplyScaleCalibrationAndSaveAsync(
                 correctionFactor,
                 loader.GetPointCloudDataDirectory(),
-                progress.CancellationToken);
-            if (!loader.AdoptSavedCalibratedPointCloud(outputPath))
+                operation.CancellationToken);
+            operation.CancellationToken.ThrowIfCancellationRequested();
+            if (!loader.AdoptSavedCalibratedPointCloud(outputPath, correctionFactor))
             {
                 throw new System.InvalidOperationException("補正済みPLYを現在の点群として切り替えられませんでした。");
             }
@@ -1296,12 +1484,12 @@ public class PointCloudEditorUI : MonoBehaviour
             if (!string.IsNullOrEmpty(editor.LastCalibrationSidecarWarning))
             {
                 string message = $"補正済みPLYは保存しましたが、計測JSONの保存に失敗しました: {outputPath}";
-                progress.CompleteWithWarning(message, editor.LastCalibrationSidecarWarning);
+                operation.CompleteWithWarning(message, editor.LastCalibrationSidecarWarning);
                 UnityEngine.Debug.LogWarning($"[RecoverableOperationError] {message}\n{editor.LastCalibrationSidecarWarning}");
             }
             else
             {
-                progress.Complete();
+                operation.Complete();
                 UnityEngine.Debug.Log($"補正済み点群を保存して切り替えました: {outputPath}");
             }
             var cameraController = UnityEngine.Object.FindAnyObjectByType<CloudCompareCameraController>();
@@ -1309,12 +1497,16 @@ public class PointCloudEditorUI : MonoBehaviour
         }
         catch (System.OperationCanceledException)
         {
-            progress.CompleteCancelled("スケール校正をキャンセルしました。元PLYは変更されていません。");
+            operation.CompleteCancelled("スケール校正をキャンセルしました。元PLYは変更されていません。");
         }
         catch (System.Exception ex)
         {
-            progress.Fail("スケール校正", "補正済みPLYの保存に失敗しました。", ex.ToString());
+            operation.Fail("スケール校正", "補正済みPLYの保存に失敗しました。", ex.ToString());
             UnityEngine.Debug.LogWarning($"[RecoverableOperationError] 補正済みPLYの保存に失敗しました。\n{ex}");
+        }
+        finally
+        {
+            if (ReferenceEquals(activeOperation, operation)) activeOperation = null;
         }
     }
 
@@ -1347,28 +1539,36 @@ public class PointCloudEditorUI : MonoBehaviour
         float coordinateScaleToMm = editor.targetRenderer.DisplayScale;
         int modeSnapshot = downsampleMode;
         MeasurementDocument measurementSnapshot = editor.CreateMeasurementSnapshotForExport();
-        PointCloudProgressManager pm = PointCloudProgressManager.Instance;
-        if (!pm.Start("ダウンサンプリング", "最新のアノテーション状態を一時保存中...")) return;
+        PointCloudOperation operation = PointCloudProgressManager.Instance.TryStart("ダウンサンプリング", "最新のアノテーション状態を一時保存中...");
+        if (operation == null) return;
+        activeOperation = operation;
         _ = RunDownsamplingAsync(loader, paths, parsedVoxelSize, coordinateScaleToMm,
-            modeSnapshot, measurementSnapshot, pm.CancellationToken);
+            modeSnapshot, measurementSnapshot, operation);
     }
 
     private async Task RunDownsamplingAsync(PointCloudLoader loader, DownsamplePaths paths, float voxelSize,
-        float coordinateScaleToMm, int mode, MeasurementDocument measurementSnapshot, CancellationToken token)
+        float coordinateScaleToMm, int mode, MeasurementDocument measurementSnapshot, PointCloudOperation operation)
     {
-        PointCloudProgressManager pm = PointCloudProgressManager.Instance;
+        CancellationToken token = operation.CancellationToken;
         try
         {
             Debug.Log($"[Downsample] Exporting latest annotations to: {paths.TemporaryLabeledPath}");
-            await editor.ExportLabeledPointsAsync(paths.TemporaryLabeledPath, true, token);
+            await editor.ExportLabeledPointsAsync(paths.TemporaryLabeledPath, true, token, operation);
             token.ThrowIfCancellationRequested();
 
-            pm.Update(0.1f, "Pythonプロセスを開始中...");
+            operation.Update(0.1f, "Pythonプロセスを開始中...");
             bool success = await PythonBridge.RunDownsamplingAsync(
                 paths.TemporaryLabeledPath, paths.OutputDirectory, voxelSize, coordinateScaleToMm,
-                paths.CombinedOutputPath, mode, token);
+                paths.StagedOutputPath, operation, mode, token);
             token.ThrowIfCancellationRequested();
             if (!success) throw new InvalidOperationException("Pythonダウンサンプリング処理が成功を返しませんでした。");
+            if (!File.Exists(paths.StagedOutputPath))
+                throw new InvalidDataException("ダウンサンプリングPLYが作成されませんでした。元点群は変更していません。");
+            int stagedPointCount = PointCloudPlyReader.Validate(paths.StagedOutputPath, token);
+            if (stagedPointCount <= 0)
+                throw new InvalidDataException("ダウンサンプリング結果に頂点がありません。元点群は変更していません。");
+            token.ThrowIfCancellationRequested();
+            File.Move(paths.StagedOutputPath, paths.CombinedOutputPath);
 
             string warningDetail = string.Empty;
             string warningMessage = string.Empty;
@@ -1391,12 +1591,12 @@ public class PointCloudEditorUI : MonoBehaviour
 
             if (!string.IsNullOrEmpty(warningMessage))
             {
-                pm.CompleteWithWarning(warningMessage, warningDetail);
+                operation.CompleteWithWarning(warningMessage, warningDetail);
                 Debug.LogWarning($"[RecoverableOperationError] ダウンサンプリング: {warningMessage}{Environment.NewLine}{warningDetail}");
             }
             else
             {
-                pm.Complete();
+                operation.Complete();
                 Debug.Log("ダウンサンプリング処理が正常に完了しました。");
             }
 
@@ -1416,18 +1616,33 @@ public class PointCloudEditorUI : MonoBehaviour
         }
         catch (OperationCanceledException)
         {
-            pm.CompleteCancelled("ダウンサンプリングをキャンセルしました。");
+            operation.CompleteCancelled("ダウンサンプリングをキャンセルしました。");
             Debug.LogWarning("[ダウンサンプリング] キャンセルされました。");
         }
         catch (Exception ex)
         {
-            pm.Fail("ダウンサンプリングエラー", "処理に失敗しました。点群編集は継続できます。", ex.ToString());
+            operation.Fail("ダウンサンプリングエラー", "処理に失敗しました。点群編集は継続できます。", ex.ToString());
             Debug.LogWarning($"[RecoverableOperationError] ダウンサンプリング: {ex}");
+        }
+        finally
+        {
+            try { PointCloudDownsampleService.CleanupWorkDirectory(paths.WorkDirectory); }
+            catch (Exception cleanupException)
+            {
+                Debug.LogWarning($"[RecoverableOperationError] ダウンサンプリング作業フォルダを削除できませんでした: {cleanupException}");
+            }
+            if (ReferenceEquals(activeOperation, operation)) activeOperation = null;
         }
     }
 
     void OnDestroy()
     {
+        if (activeOperation != null)
+        {
+            activeOperation.Cancel();
+            activeOperation.CompleteCancelled("処理画面が破棄されたため処理を中止しました。");
+            activeOperation = null;
+        }
         if (lineTex != null)
         {
             Destroy(lineTex);

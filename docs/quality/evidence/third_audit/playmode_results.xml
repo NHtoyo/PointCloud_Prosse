@@ -1,0 +1,45 @@
+<?xml version="1.0" encoding="utf-8"?>
+<test-run id="2" testcasecount="2" result="Passed" total="2" passed="2" failed="0" inconclusive="0" skipped="0" asserts="0" engine-version="3.5.0.0" clr-version="4.0.30319.42000" start-time="2026-10-09 11:40:21Z" end-time="2026-10-09 11:40:21Z" duration="0.5370449">
+  <test-suite type="TestSuite" id="1007" name="PointCloudVR" fullname="PointCloudVR" runstate="Runnable" testcasecount="2" result="Passed" start-time="2026-10-09 11:40:21Z" end-time="2026-10-09 11:40:21Z" duration="0.537045" total="2" passed="2" failed="0" inconclusive="0" skipped="0" asserts="0">
+    <properties>
+      <property name="platform" value="PlayMode" />
+    </properties>
+    <test-suite type="Assembly" id="1004" name="PCWB.PlayModeTests.dll" fullname="E:/pcwb-qa-20261009/PointCloudVR/Library/ScriptAssemblies/PCWB.PlayModeTests.dll" runstate="Runnable" testcasecount="2" result="Passed" start-time="2026-10-09 11:40:21Z" end-time="2026-10-09 11:40:21Z" duration="0.529345" total="2" passed="2" failed="0" inconclusive="0" skipped="0" asserts="0">
+      <properties>
+        <property name="_PID" value="40564" />
+        <property name="_APPDOMAIN" value="Unity Child Domain" />
+        <property name="platform" value="PlayMode" />
+        <property name="EditorOnly" value="False" />
+      </properties>
+      <test-suite type="TestFixture" id="1001" name="RuntimeRecoveryAndSceneTests" fullname="RuntimeRecoveryAndSceneTests" classname="RuntimeRecoveryAndSceneTests" runstate="Runnable" testcasecount="2" result="Passed" start-time="2026-10-09 11:40:21Z" end-time="2026-10-09 11:40:21Z" duration="0.528290" total="2" passed="2" failed="0" inconclusive="0" skipped="0" asserts="0">
+        <properties />
+        <test-case id="1003" name="RecoverySnapshotRoundTripsInPlayerRuntime" fullname="RuntimeRecoveryAndSceneTests.RecoverySnapshotRoundTripsInPlayerRuntime" methodname="RecoverySnapshotRoundTripsInPlayerRuntime" classname="RuntimeRecoveryAndSceneTests" runstate="Runnable" seed="342698846" result="Passed" start-time="2026-10-09 11:40:21Z" end-time="2026-10-09 11:40:21Z" duration="0.082605" asserts="0">
+          <properties>
+            <property name="_JOINTYPE" value="UnityCombinatorial" />
+            <property name="retryIteration" value="0" />
+            <property name="repeatIteration" value="0" />
+          </properties>
+        </test-case>
+        <test-case id="1002" name="StartupSceneLoadsWithCameraAndNoMissingScripts" fullname="RuntimeRecoveryAndSceneTests.StartupSceneLoadsWithCameraAndNoMissingScripts" methodname="StartupSceneLoadsWithCameraAndNoMissingScripts" classname="RuntimeRecoveryAndSceneTests" runstate="Runnable" seed="2067626707" result="Passed" start-time="2026-10-09 11:40:21Z" end-time="2026-10-09 11:40:21Z" duration="0.435792" asserts="0">
+          <properties>
+            <property name="_JOINTYPE" value="UnityCombinatorial" />
+            <property name="retryIteration" value="0" />
+            <property name="repeatIteration" value="0" />
+          </properties>
+          <output><![CDATA[[PointCloudLoader] Detected legacy/low maxPointsToLoad (20000000). Upgraded it dynamically to 20,000,000.
+[PointCloudLoader] Path is empty. Auto-resolved external path to relative: E:\pcwb-qa-20261009\PointCloudData
+[PointCloudRenderer] Removed obsolete ParticleSystem component to stop stray particles.
+[PointCloudRenderer] Removed obsolete ParticleSystemRenderer component.
+[PointCloudLoader] Generating sample PLY file at: E:\pcwb-qa-20261009\PointCloudData\sample.ply
+[PointCloudLoader] Loading file: E:\pcwb-qa-20261009\PointCloudData\sample.ply
+[PointCloudRenderer] Initialized with shader: PointCloudWorkbench/PointCloudShader
+[PointCloudRenderer] ComputeBuffer initialized with 50000 points.
+[CC_Camera] Auto-centered on point cloud.
+[PointCloudRenderer] Octree ready for LOD rendering. Node Count: 297
+Saving results to: E:\VR\docs\quality\evidence\third_audit\playmode_results.xml
+]]></output>
+        </test-case>
+      </test-suite>
+    </test-suite>
+  </test-suite>
+</test-run>

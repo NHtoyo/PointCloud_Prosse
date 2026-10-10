@@ -11,6 +11,7 @@ import numpy as np
 import pointcloud_io
 from stem_diameter_algorithm import StemDiameterParams, StemDiameterStageError, analyze_stem
 from stem_diameter_output import write_stem_diameter_error, write_stem_diameter_outputs
+from output_generations import new_run_id, validate_run_id
 
 
 def _progress(value: float, message: str) -> None:
@@ -35,6 +36,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Estimate a plant main-stem diameter profile.")
     parser.add_argument("--input", required=True, help="Input PLY or NPZ point cloud")
     parser.add_argument("--output_dir", required=True, help="Directory for JSON, CSV and PNG outputs")
+    parser.add_argument("--run-id", help="Unique Unity operation ID for this immutable output generation")
     parser.add_argument("--source-point-cloud-path", help="Original Unity-loaded point-cloud path (distinct from analysis input)")
     parser.add_argument("--source-loaded-point-count", type=int,
                         help="Number of points in the original loaded Unity point cloud")
@@ -66,6 +68,7 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv=None) -> int:
     args = build_parser().parse_args(argv)
     output_dir = Path(args.output_dir).expanduser().resolve()
+    run_id = validate_run_id(args.run_id) if args.run_id else new_run_id()
     stage = "INPUT"
     input_diagnostics = {}
     parameters = {
@@ -149,22 +152,18 @@ def main(argv=None) -> int:
         stage = "OUTPUT"
         diagnostic(f"[StemDiameter][STAGE][START] OUTPUT output_dir={output_dir}")
         _progress(0.93, "JSON、CSV、品質グラフを書き出し中...")
-        write_stem_diameter_outputs(
+        published = write_stem_diameter_outputs(
             output_dir, result, str(input_path), len(points_mm),
             args.source_point_cloud_path, args.source_loaded_point_count,
-            args.analysis_visible_point_count, args.analysis_visible_point_fingerprint,
+            args.analysis_visible_point_count, args.analysis_visible_point_fingerprint, run_id,
         )
-        stale_error = output_dir / "stem_diameter_error.json"
-        if stale_error.exists():
-            try:
-                stale_error.unlink()
-            except OSError as exc:
-                diagnostic(f"[StemDiameter][WARNING] stale_error_json_not_removed={type(exc).__name__}")
+        generation_dir = Path(published["generation_directory"])
         valid = [s.equivalent_diameter_mm for s in result.sections if s.equivalent_diameter_mm is not None]
         output_diagnostics = {
-            "json_path": str(output_dir / "stem_diameter.json"),
-            "csv_path": str(output_dir / "stem_diameter.csv"),
-            "png_paths": [str(output_dir / "diameter_profile.png"), str(output_dir / "quality_profile.png")],
+            "json_path": str(generation_dir / "stem_diameter.json"),
+            "csv_path": str(generation_dir / "stem_diameter.csv"),
+            "png_paths": [str(generation_dir / "diameter_profile.png"), str(generation_dir / "quality_profile.png")],
+            "run_id": run_id,
             "valid_section_count": len(valid),
         }
         diagnostic("[StemDiameter][STAGE][OK] OUTPUT " + " ".join(
@@ -178,6 +177,7 @@ def main(argv=None) -> int:
         if valid:
             print(f"median_primary_diameter_mm={float(np.median(valid)):.4f}", flush=True)
         print(f"output_dir={output_dir}", flush=True)
+        print(f"[ResultGeneration] run_id={run_id}", flush=True)
         _progress(1.0, "茎径プロファイル解析が完了しました。")
         return 0
     except Exception as exc:
@@ -188,6 +188,7 @@ def main(argv=None) -> int:
         error_diagnostics = exc.diagnostics if isinstance(exc, StemDiameterStageError) else input_diagnostics
         diagnostic(f"[StemDiameter][STAGE][FAIL] {error_stage} message={str(exc).replace(' ', '_')}")
         report = {
+            "run_id": run_id,
             "stage": error_stage,
             "message": str(exc),
             "parameters": error_parameters,
@@ -195,8 +196,8 @@ def main(argv=None) -> int:
             "exception_type": type(exc).__name__,
         }
         try:
-            write_stem_diameter_error(output_dir, report)
-            diagnostic(f"[StemDiameter][ERROR_JSON] {output_dir / 'stem_diameter_error.json'}")
+            error_path = write_stem_diameter_error(output_dir, report, run_id)
+            diagnostic(f"[StemDiameter][ERROR_JSON] {error_path}")
         except Exception as report_exc:
             print(f"[StemDiameterErrorReportFailure] {type(report_exc).__name__}: {report_exc}",
                   file=sys.stderr, flush=True)

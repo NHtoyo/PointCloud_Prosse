@@ -14,7 +14,7 @@ public class SceneDumper
         using (StreamWriter writer = new StreamWriter(logPath))
         {
             writer.WriteLine("--- Scene Dump ---");
-            GameObject[] allObjects = Object.FindObjectsByType<GameObject>(FindObjectsInactive.Include, FindObjectsSortMode.None);
+            GameObject[] allObjects = Object.FindObjectsByType<GameObject>(FindObjectsInactive.Include);
             writer.WriteLine($"Total GameObjects: {allObjects.Length}");
             
             foreach (var go in allObjects)

@@ -6,6 +6,7 @@ namespace PointCloudWorkbench
     public sealed class StemDiameterResult
     {
         public int schema_version;
+        public string analysis_run_id;
         public string input_path;
         public int point_count;
         public string source_point_cloud_path;

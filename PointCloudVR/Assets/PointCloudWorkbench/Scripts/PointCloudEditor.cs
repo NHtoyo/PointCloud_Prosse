@@ -5,6 +5,7 @@ using System.Threading;
 using System.Globalization;
 using System.Threading.Tasks;
 using System.Collections.Generic;
+using System.Collections.Concurrent;
 using System.Text;
 using PointCloudWorkbench;
 
@@ -108,18 +109,60 @@ public class PointCloudEditor : MonoBehaviour
     public int SelectedPointCount => selectedPointCount;
 
     // Annotation History (Deep copy labels)
-    private Stack<int[]> annotationUndoStack = new Stack<int[]>();
-    private Stack<int[]> annotationRedoStack = new Stack<int[]>();
     private const int MAX_ANNOTATION_HISTORY = 5;
+    private const long MAX_ANNOTATION_HISTORY_BYTES_PER_STACK = 16L * 1024 * 1024;
+    private BoundedHistory<int[]> annotationUndoStack = new BoundedHistory<int[]>(MAX_ANNOTATION_HISTORY,
+        MAX_ANNOTATION_HISTORY_BYTES_PER_STACK, labels => (long)labels.Length * sizeof(int));
+    private BoundedHistory<int[]> annotationRedoStack = new BoundedHistory<int[]>(MAX_ANNOTATION_HISTORY,
+        MAX_ANNOTATION_HISTORY_BYTES_PER_STACK, labels => (long)labels.Length * sizeof(int));
+
+    private sealed class RecoveryLoadResult
+    {
+        public bool Success;
+        public int[] Labels;
+        public long Revision;
+        public string FailureReason;
+    }
+
+    private const int RecoveryPointsPerFrame = 100000;
+    private const double RecoveryQuietSeconds = 4.0;
+    private bool recoveryWasUnclean;
+    private string recoverySourcePath = string.Empty;
+    private string recoverySourceHash = string.Empty;
+    private string recoveryCheckpointPath = string.Empty;
+    private long recoveryDatasetGeneration = -1;
+    private long recoveryObservedRevision = -1;
+    private long recoveryLastSavedRevision = -1;
+    private long recoverySnapshotRevision = -1;
+    private DateTime recoveryLastEditUtc = DateTime.UtcNow;
+    private DateTime recoveryRetryAfterUtc = DateTime.MinValue;
+    private Task<string> recoveryHashTask;
+    private Task<RecoveryLoadResult> recoveryLoadTask;
+    private Task<bool> recoveryWriteTask;
+    private string recoveryWriteCheckpointPath;
+    private long recoveryWriteRevision;
+    private int[] recoveryLabelSnapshot;
+    private int recoverySnapshotCursor;
+    private bool recoveryRestoreAttempted;
+    private int[] pendingRecoveryLabels;
+    private string pendingRecoverySavedAtLocalText = string.Empty;
+    private long pendingRecoveryGeneration = -1;
+    private long pendingRecoveryRevision = -1;
+    private string recoveryDecisionStatus = string.Empty;
+
+    public bool HasPendingRecovery => pendingRecoveryLabels != null;
+    public int PendingRecoveryPointCount => pendingRecoveryLabels != null ? pendingRecoveryLabels.Length : 0;
+    public string PendingRecoverySavedAtLocalText => pendingRecoverySavedAtLocalText;
+    public string PendingRecoverySourceName => string.IsNullOrEmpty(recoverySourcePath)
+        ? string.Empty
+        : Path.GetFileName(recoverySourcePath);
+    public string RecoveryDecisionStatus => recoveryDecisionStatus;
 
     public bool CanAnnotationUndo => annotationUndoStack.Count > 0;
     public bool CanAnnotationRedo => annotationRedoStack.Count > 0;
 
-    // Asynchronous background task execution flags
-    private volatile bool finishedConnectionFlag = false;
-    private volatile bool finishedRansacFlag = false;
-    private BackgroundSelectionResult connectionResult;
-    private BackgroundSelectionResult ransacResult;
+    private readonly ConcurrentQueue<BackgroundSelectionResult> backgroundSelectionResults = new ConcurrentQueue<BackgroundSelectionResult>();
+    private PointCloudOperation activeSelectionOperation;
 
     private sealed class BackgroundSelectionResult
     {
@@ -131,6 +174,8 @@ public class PointCloudEditor : MonoBehaviour
         public bool Cancelled;
         public Exception Error;
         public string OperationTitle;
+        public PointCloudOperation Operation;
+        public long SourceGeneration;
     }
 
     // UI Component Reference
@@ -196,7 +241,7 @@ public class PointCloudEditor : MonoBehaviour
         for (int i = 0; i < data.Length; i++)
         {
             int label = data[i].label;
-            if ((label & 0x10000) != 0 && (label & 0x20000) == 0) count++;
+            if ((label & 0x10000) != 0 && (label & (0x20000 | NoiseFilterManager.NOISE_HIDDEN_BIT)) == 0) count++;
         }
         return count;
     }
@@ -344,50 +389,28 @@ public class PointCloudEditor : MonoBehaviour
             for (int p = 0; p < record.points.Count; p++) record.points[p] *= correctionFactor;
         }
 
-        if (!PointCloudScaleService.ApplyPointCoordinateCorrection(targetRenderer, correctionFactor))
+        cancellationToken.ThrowIfCancellationRequested();
+        await Task.Run(() => PointCloudScaleService.WriteCalibratedPlyAtomic(
+            points, outputPath, cancellationToken, correctionFactor), cancellationToken);
+        cancellationToken.ThrowIfCancellationRequested();
+        if (calibratedMeasurements.measurements.Count > 0)
         {
-            throw new System.InvalidOperationException("補正後の点座標を適用できませんでした。");
+            try
+            {
+                MeasurementDocument derived = MeasurementDocumentStore.CreateDerivedDocument(calibratedMeasurements, outputPath);
+                derived.sourceSha256 = await Task.Run(() => MeasurementDocumentStore.ComputeSha256(outputPath));
+                string json = MeasurementDocumentStore.Serialize(derived);
+                await Task.Run(() => MeasurementDocumentStore.WriteSerializedAtomic(
+                    MeasurementDocumentStore.GetSidecarPath(outputPath), json));
+            }
+            catch (Exception ex)
+            {
+                LastCalibrationSidecarWarning = ex.ToString();
+            }
         }
 
-        bool outputWritten = false;
-        try
-        {
-            measurementVisualsDirty = true;
-            UpdateMeasureVisuals();
-            cancellationToken.ThrowIfCancellationRequested();
-            await Task.Run(() => PointCloudScaleService.WriteCalibratedPlyAtomic(points, outputPath, cancellationToken), cancellationToken);
-            outputWritten = true;
-            if (calibratedMeasurements.measurements.Count > 0)
-            {
-                try
-                {
-                    MeasurementDocument derived = MeasurementDocumentStore.CreateDerivedDocument(calibratedMeasurements, outputPath);
-                    derived.sourceSha256 = await Task.Run(() => MeasurementDocumentStore.ComputeSha256(outputPath));
-                    string json = MeasurementDocumentStore.Serialize(derived);
-                    await Task.Run(() => MeasurementDocumentStore.WriteSerializedAtomic(
-                        MeasurementDocumentStore.GetSidecarPath(outputPath), json));
-                }
-                catch (Exception ex)
-                {
-                    LastCalibrationSidecarWarning = ex.ToString();
-                }
-            }
-            measurementStatus = $"補正済み点群を保存しました: {Path.GetFileName(outputPath)}";
-            return outputPath;
-        }
-        catch
-        {
-            PointCloudScaleService.ApplyPointCoordinateCorrection(targetRenderer, 1f / correctionFactor);
-            measurementVisualsDirty = true;
-            UpdateMeasureVisuals();
-            if (outputWritten)
-            {
-                if (File.Exists(outputPath)) File.Delete(outputPath);
-                string sidecarPath = MeasurementDocumentStore.GetSidecarPath(outputPath);
-                if (File.Exists(sidecarPath)) File.Delete(sidecarPath);
-            }
-            throw;
-        }
+        measurementStatus = $"補正済み点群を保存しました: {Path.GetFileName(outputPath)}";
+        return outputPath;
     }
 
     private string GetLoadedPointCloudPath()
@@ -400,6 +423,7 @@ public class PointCloudEditor : MonoBehaviour
 
     void OnEnable()
     {
+        recoveryWasUnclean = PointCloudSessionRecoveryStore.PreviousSessionWasUnclean;
         if (targetRenderer == null) targetRenderer = GetComponent<PointCloudRenderer>();
         pointCloudLoader = GetComponent<PointCloudLoader>();
         if (pointCloudLoader != null)
@@ -426,6 +450,7 @@ public class PointCloudEditor : MonoBehaviour
 
     void Start()
     {
+        recoveryWasUnclean = PointCloudSessionRecoveryStore.PreviousSessionWasUnclean;
         if (targetRenderer == null)
         {
             targetRenderer = GetComponent<PointCloudRenderer>();
@@ -473,17 +498,20 @@ public class PointCloudEditor : MonoBehaviour
 
     private void ApplyBackgroundSelectionResult(BackgroundSelectionResult result)
     {
-        PointCloudProgressManager pm = PointCloudProgressManager.Instance;
         if (result == null) return;
+        PointCloudOperation operation = result.Operation;
+        if (operation == null || !operation.IsCurrent) return;
         if (result.Error != null)
         {
-            pm.Fail(result.OperationTitle, "選択処理に失敗しました。点群の選択状態は変更していません。", result.Error.ToString());
+            operation.Fail(result.OperationTitle, "選択処理に失敗しました。点群の選択状態は変更していません。", result.Error.ToString());
+            ClearActiveSelectionOperation(operation);
             Debug.LogWarning($"[RecoverableOperationError] {result.OperationTitle}: {result.Error}");
             return;
         }
         if (result.Cancelled)
         {
-            pm.CompleteCancelled("キャンセルしました。選択状態は変更していません。");
+            operation.CompleteCancelled("キャンセルしました。選択状態は変更していません。");
+            ClearActiveSelectionOperation(operation);
             return;
         }
 
@@ -491,13 +519,16 @@ public class PointCloudEditor : MonoBehaviour
         if (points == null)
         {
             var error = new InvalidOperationException("結果を反映する点群がありません。");
-            pm.Fail(result.OperationTitle, "選択結果を反映できませんでした。", error.ToString());
+            operation.Fail(result.OperationTitle, "選択結果を反映できませんでした。", error.ToString());
+            ClearActiveSelectionOperation(operation);
             Debug.LogWarning($"[RecoverableOperationError] {result.OperationTitle}: {error}");
             return;
         }
-        if (result.SourcePoints != null && !ReferenceEquals(result.SourcePoints, points))
+        if ((result.SourcePoints != null && !ReferenceEquals(result.SourcePoints, points)) ||
+            (targetRenderer != null && result.SourceGeneration != targetRenderer.DatasetGeneration))
         {
-            pm.CompleteCancelled("処理中に点群が切り替わったため、古い選択結果は適用しませんでした。");
+            operation.CompleteCancelled("処理中に点群が切り替わったため、古い選択結果は適用しませんでした。");
+            ClearActiveSelectionOperation(operation);
             return;
         }
 
@@ -541,7 +572,8 @@ public class PointCloudEditor : MonoBehaviour
 
             targetRenderer.UpdatePointBuffer();
             statsDirty = true;
-            pm.Complete();
+            operation.Complete();
+            if (ReferenceEquals(activeSelectionOperation, operation)) activeSelectionOperation = null;
             Debug.Log($"[{result.OperationTitle}] 選択結果を反映しました ({changedIndices.Count:N0} 点)。");
         }
         catch (Exception ex)
@@ -557,30 +589,33 @@ public class PointCloudEditor : MonoBehaviour
             {
                 ex = new AggregateException("選択結果の反映と表示復元に失敗しました。", ex, rollbackException);
             }
-            pm.Fail(result.OperationTitle, "選択結果を反映できませんでした。元の選択状態へ戻しました。", ex.ToString());
+            operation.Fail(result.OperationTitle, "選択結果を反映できませんでした。元の選択状態へ戻しました。", ex.ToString());
+            if (ReferenceEquals(activeSelectionOperation, operation)) activeSelectionOperation = null;
             Debug.LogWarning($"[RecoverableOperationError] {result.OperationTitle}: {ex}");
         }
+    }
+
+    private void ClearActiveSelectionOperation(PointCloudOperation operation)
+    {
+        if (ReferenceEquals(activeSelectionOperation, operation)) activeSelectionOperation = null;
     }
 
     void Update()
     {
         if (targetRenderer == null) return;
         PollMeasurementFingerprint();
+        UpdateSessionRecovery();
 
-        if (finishedConnectionFlag)
-        {
-            finishedConnectionFlag = false;
-            ApplyBackgroundSelectionResult(connectionResult);
-            connectionResult = null;
-        }
-        if (finishedRansacFlag)
-        {
-            finishedRansacFlag = false;
-            ApplyBackgroundSelectionResult(ransacResult);
-            ransacResult = null;
-        }
+        while (backgroundSelectionResults.TryDequeue(out BackgroundSelectionResult result))
+            ApplyBackgroundSelectionResult(result);
 
         // Lock interactions if a background task is running (modal progress dialog)
+        if (HasPendingRecovery)
+        {
+            if (brushVisual != null && brushVisual.activeSelf) brushVisual.SetActive(false);
+            return;
+        }
+
         if (PointCloudProgressManager.Instance.IsRunning)
         {
             if (brushVisual != null && brushVisual.activeSelf)
@@ -1345,41 +1380,73 @@ public class PointCloudEditor : MonoBehaviour
     {
         PointData[] points = targetRenderer.GetPointData();
         if (points == null) return;
-
-        if (annotationUndoStack.Count >= MAX_ANNOTATION_HISTORY)
-        {
-            // Drop oldest history
-            var list = new List<int[]>(annotationUndoStack);
-            list.RemoveAt(0);
-            annotationUndoStack = new Stack<int[]>(list);
-        }
-
-        int[] labels = new int[points.Length];
-        for (int i = 0; i < points.Length; i++)
-        {
-            labels[i] = points[i].label;
-        }
-        annotationUndoStack.Push(labels);
+        if (!TryCaptureAnnotationLabels(points, "注釈Undo", out int[] labels)) return;
+        if (!annotationUndoStack.Push(labels))
+            PointCloudProgressManager.Instance.ShowError("注釈Undo", "点群が履歴メモリ上限を超えるため、Undo履歴を保存できません。");
     }
 
     public void PushAnnotationRedo()
     {
         PointData[] points = targetRenderer.GetPointData();
         if (points == null) return;
+        if (!TryCaptureAnnotationLabels(points, "注釈Redo", out int[] labels)) return;
+        if (!annotationRedoStack.Push(labels))
+            PointCloudProgressManager.Instance.ShowError("注釈Redo", "点群が履歴メモリ上限を超えるため、Redo履歴を保存できません。");
+    }
 
-        if (annotationRedoStack.Count >= MAX_ANNOTATION_HISTORY)
+    private bool TryCaptureAnnotationLabels(PointData[] points, string operationTitle, out int[] labels)
+    {
+        labels = null;
+        long snapshotBytes = (long)points.Length * sizeof(int);
+        if (snapshotBytes > MAX_ANNOTATION_HISTORY_BYTES_PER_STACK)
         {
-            var list = new List<int[]>(annotationRedoStack);
-            list.RemoveAt(0);
-            annotationRedoStack = new Stack<int[]>(list);
+            string message = $"点数が多く、安全なUndo用スナップショットの上限（{MAX_ANNOTATION_HISTORY_BYTES_PER_STACK / (1024 * 1024)} MiB）を超えています。点群は変更していません。";
+            PointCloudProgressManager.Instance.ShowError(operationTitle, message);
+            return false;
         }
 
-        int[] labels = new int[points.Length];
-        for (int i = 0; i < points.Length; i++)
+        labels = new int[points.Length];
+        for (int i = 0; i < points.Length; i++) labels[i] = points[i].label;
+        return true;
+    }
+
+    private bool TryApplyAnnotationLabels(PointData[] points, int[] nextLabels, int[] previousLabels,
+        string operationTitle)
+    {
+        return TryCommitAnnotationMutation(points, previousLabels, operationTitle, () =>
         {
-            labels[i] = points[i].label;
+            for (int i = 0; i < points.Length; i++) points[i].label = nextLabels[i];
+        });
+    }
+
+    private bool TryCommitAnnotationMutation(PointData[] points, int[] previousLabels,
+        string operationTitle, Action mutate)
+    {
+        try
+        {
+            mutate();
+            if (!targetRenderer.TryUpdatePointBuffer())
+                throw new InvalidOperationException("GPU点群バッファを更新できません。");
+            statsDirty = true;
+            return true;
         }
-        annotationRedoStack.Push(labels);
+        catch (Exception applyException)
+        {
+            for (int i = 0; i < points.Length; i++) points[i].label = previousLabels[i];
+            bool rendererRestored = false;
+            try { rendererRestored = targetRenderer.TryUpdatePointBuffer(); }
+            catch (Exception rollbackException)
+            {
+                Debug.LogError($"[RecoverableOperationError] {operationTitle}: CPUラベルを戻しましたがGPU再同期にも失敗しました。\n{applyException}\n{rollbackException}");
+            }
+
+            string message = rendererRestored
+                ? "点群を変更前に戻しました。操作を再試行できます。"
+                : "CPUラベルを戻しましたが描画バッファの再同期に失敗しました。点群を再読み込みしてください。";
+            PointCloudProgressManager.Instance.ShowError(operationTitle, message);
+            Debug.LogWarning($"[RecoverableOperationError] {operationTitle}: {applyException}");
+            return false;
+        }
     }
 
     public void ClearAnnotationRedo()
@@ -1393,16 +1460,19 @@ public class PointCloudEditor : MonoBehaviour
         PointData[] points = targetRenderer.GetPointData();
         if (points == null) return false;
 
-        PushAnnotationRedo();
-
-        int[] prevLabels = annotationUndoStack.Pop();
-        for (int i = 0; i < points.Length; i++)
+        int[] prevLabels = annotationUndoStack.Peek();
+        if (prevLabels.Length != points.Length)
         {
-            points[i].label = prevLabels[i];
+            annotationUndoStack.Clear();
+            annotationRedoStack.Clear();
+            PointCloudProgressManager.Instance.ShowError("注釈を元に戻す", "点群が切り替わったため、古いUndo履歴を破棄しました。");
+            return false;
         }
-
-        targetRenderer.UpdatePointBuffer();
-        statsDirty = true;
+        if (!TryCaptureAnnotationLabels(points, "注釈を元に戻す", out int[] currentLabels)) return false;
+        if (!TryApplyAnnotationLabels(points, prevLabels, currentLabels, "注釈を元に戻す")) return false;
+        annotationUndoStack.Pop();
+        if (!annotationRedoStack.Push(currentLabels))
+            Debug.LogWarning("[RecoverableOperationError] 注釈Undo後のRedo履歴をメモリ上限内に保存できませんでした。");
         return true;
     }
 
@@ -1412,16 +1482,19 @@ public class PointCloudEditor : MonoBehaviour
         PointData[] points = targetRenderer.GetPointData();
         if (points == null) return false;
 
-        PushAnnotationUndo();
-
-        int[] nextLabels = annotationRedoStack.Pop();
-        for (int i = 0; i < points.Length; i++)
+        int[] nextLabels = annotationRedoStack.Peek();
+        if (nextLabels.Length != points.Length)
         {
-            points[i].label = nextLabels[i];
+            annotationUndoStack.Clear();
+            annotationRedoStack.Clear();
+            PointCloudProgressManager.Instance.ShowError("注釈をやり直す", "点群が切り替わったため、古いRedo履歴を破棄しました。");
+            return false;
         }
-
-        targetRenderer.UpdatePointBuffer();
-        statsDirty = true;
+        if (!TryCaptureAnnotationLabels(points, "注釈をやり直す", out int[] currentLabels)) return false;
+        if (!TryApplyAnnotationLabels(points, nextLabels, currentLabels, "注釈をやり直す")) return false;
+        annotationRedoStack.Pop();
+        if (!annotationUndoStack.Push(currentLabels))
+            Debug.LogWarning("[RecoverableOperationError] 注釈Redo後のUndo履歴をメモリ上限内に保存できませんでした。");
         return true;
     }
 
@@ -1430,13 +1503,12 @@ public class PointCloudEditor : MonoBehaviour
         PointData[] points = targetRenderer.GetPointData();
         if (points == null) return;
 
-        // Save state for undo before applying label
-        PushAnnotationUndo();
-        ClearAnnotationRedo();
+        // Prepare a bounded rollback/undo snapshot before mutating the cloud.
+        if (!TryCaptureAnnotationLabels(points, "選択点の分類", out int[] previousLabels)) return;
 
         int classVal = activeLabelClass & 0xFF;
 
-        Parallel.For(0, points.Length, i =>
+        if (!TryCommitAnnotationMutation(points, previousLabels, "選択点の分類", () => Parallel.For(0, points.Length, i =>
         {
             bool isSelected = (points[i].label & 0x10000) != 0;
             if (isSelected)
@@ -1447,9 +1519,9 @@ public class PointCloudEditor : MonoBehaviour
                 label &= ~0x10000;       // Clear selected
                 points[i].label = label;
             }
-        });
-        targetRenderer.UpdatePointBuffer();
-        statsDirty = true;
+        }))) return;
+        annotationUndoStack.Push(previousLabels);
+        annotationRedoStack.Clear();
     }
 
     // Recalculate statistics for labels
@@ -1518,13 +1590,14 @@ public class PointCloudEditor : MonoBehaviour
     }
 
     // Exporter in background thread to prevent freezing
-    public async Task ExportLabeledPointsAsync(string exportPath, bool asBinary = false, CancellationToken token = default)
+    public async Task ExportLabeledPointsAsync(string exportPath, bool asBinary = false, CancellationToken token = default,
+        PointCloudOperation operation = null)
     {
         PointData[] points = targetRenderer.GetPointData();
         bool calibrated = !string.IsNullOrEmpty(GetCalibrationPlyMetadata());
         var request = new PlyExportRequest(points, exportPath, asBinary, calibrated, ExportPointMode.AllVisible);
         await Task.Run(() => PlyExportService.Write(request, token,
-            (progress, message) => PointCloudProgressManager.Instance.Update(progress, message)), token);
+            (progress, message) => operation?.Update(progress, message)), token);
     }
 
     public void ExportLabeledPoints(bool asBinary = false)
@@ -1535,18 +1608,28 @@ public class PointCloudEditor : MonoBehaviour
 
     public void ExportCleanedPoints()
     {
-        string reportSource = Path.GetFullPath(Path.Combine(Application.dataPath, "../python_backend/output/removal_report.json"));
+        string outputRoot = Path.GetFullPath(Path.Combine(Application.dataPath, "../python_backend/output"));
+        string reportSource = string.Empty;
+        try
+        {
+            reportSource = Path.Combine(OutputGenerationStore.ResolveCurrentGeneration(outputRoot), "removal_report.json");
+        }
+        catch (Exception ex)
+        {
+            Debug.LogWarning($"[RecoverableOperationError] 前回のノイズ解析レポートを解決できません: {ex.Message}");
+        }
         _ = RunPointCloudExportAsync("_cleaned", ExportPointMode.CleanedVisible, false,
             "クリーンアップ済PLYエクスポート", reportSource);
     }
 
-    public async Task ExportSelectedPointsAsync(string exportPath, bool asBinary = false, CancellationToken token = default)
+    public async Task ExportSelectedPointsAsync(string exportPath, bool asBinary = false, CancellationToken token = default,
+        PointCloudOperation operation = null)
     {
         PointData[] points = targetRenderer.GetPointData();
         bool calibrated = !string.IsNullOrEmpty(GetCalibrationPlyMetadata());
         var request = new PlyExportRequest(points, exportPath, asBinary, calibrated, ExportPointMode.SelectedVisible);
         await Task.Run(() => PlyExportService.Write(request, token,
-            (progress, message) => PointCloudProgressManager.Instance.Update(progress, message)), token);
+            (progress, message) => operation?.Update(progress, message)), token);
     }
 
     public void ExportSelectedPoints(bool asBinary = false)
@@ -1558,8 +1641,8 @@ public class PointCloudEditor : MonoBehaviour
     private async Task RunPointCloudExportAsync(string suffix, ExportPointMode mode, bool asBinary,
         string operationTitle, string removalReportSource)
     {
-        PointCloudProgressManager pm = PointCloudProgressManager.Instance;
-        if (!pm.Start(operationTitle, "書き出しデータ準備中...")) return;
+        PointCloudOperation operation = PointCloudProgressManager.Instance.TryStart(operationTitle, "書き出しデータ準備中...");
+        if (operation == null) return;
 
         try
         {
@@ -1571,10 +1654,10 @@ public class PointCloudEditor : MonoBehaviour
             bool calibrated = !string.IsNullOrEmpty(GetCalibrationPlyMetadata());
             MeasurementDocument measurementSnapshot = CreateMeasurementSnapshotForExport();
             var request = new PlyExportRequest(points, outputPath, asBinary, calibrated, mode);
-            CancellationToken token = pm.CancellationToken;
+            CancellationToken token = operation.CancellationToken;
 
             PlyExportResult result = await Task.Run(
-                () => PlyExportService.Write(request, token, (progress, message) => pm.Update(progress, message)), token);
+                () => PlyExportService.Write(request, token, (progress, message) => operation.Update(progress, message)), token);
 
             var warnings = new StringBuilder();
             var warningDetails = new StringBuilder();
@@ -1612,22 +1695,22 @@ public class PointCloudEditor : MonoBehaviour
             {
                 string message = "PLY本体は保存済みです。" + Environment.NewLine + warnings.ToString().Trim();
                 string detail = warningDetails.ToString();
-                pm.CompleteWithWarning(message, detail);
+                operation.CompleteWithWarning(message, detail);
                 Debug.LogWarning($"[RecoverableOperationError] {operationTitle}: {message}{Environment.NewLine}{detail}");
                 return;
             }
 
-            pm.Complete();
+            operation.Complete();
             Debug.Log($"[{operationTitle}] {result.VertexCount:N0} 点を保存しました: {result.OutputPath}");
         }
         catch (OperationCanceledException)
         {
-            pm.CompleteCancelled();
+            operation.CompleteCancelled();
             Debug.LogWarning($"[{operationTitle}] キャンセルされました。");
         }
         catch (Exception ex)
         {
-            pm.Fail(operationTitle, "PLYを書き出せませんでした。詳細を確認してください。", ex.ToString());
+            operation.Fail(operationTitle, "PLYを書き出せませんでした。詳細を確認してください。", ex.ToString());
             Debug.LogWarning($"[RecoverableOperationError] {operationTitle}: {ex}");
         }
     }
@@ -1997,9 +2080,11 @@ public class PointCloudEditor : MonoBehaviour
         bool selecting = brushSelectMode;
         bool onlyUnclassified = selectOnlyUnclassified;
         int maxLimit = maxConnectionPoints;
-        PointCloudProgressManager pm = PointCloudProgressManager.Instance;
-        if (!pm.Start("空間近接接続探索", "探索開始...")) return;
-        CancellationToken token = pm.CancellationToken;
+        PointCloudOperation operation = PointCloudProgressManager.Instance.TryStart("空間近接接続探索", "探索開始...");
+        if (operation == null) return;
+        activeSelectionOperation = operation;
+        CancellationToken token = operation.CancellationToken;
+        long datasetGeneration = targetRenderer.DatasetGeneration;
 
         Task.Run(() =>
         {
@@ -2010,7 +2095,7 @@ public class PointCloudEditor : MonoBehaviour
                 int numPoints = points.Length;
                 int numBuckets = numPoints;
                 var sw = System.Diagnostics.Stopwatch.StartNew();
-                pm.Update(0f, "セル接続グリッド構築中...");
+                operation.Update(0f, "セル接続グリッド構築中...");
 
                 float invCellSize = 1f / localRadius;
                 float radiusSquared = localRadius * localRadius;
@@ -2068,7 +2153,7 @@ public class PointCloudEditor : MonoBehaviour
                 token.ThrowIfCancellationRequested();
                 if (startCell >= 0)
                 {
-                    pm.Update(0.1f, "セル接続探索中...");
+                    operation.Update(0.1f, "セル接続探索中...");
                     int queueHead = 0;
                     int qTail = 0;
                     long lastProgressUpdate = 0;
@@ -2108,7 +2193,7 @@ public class PointCloudEditor : MonoBehaviour
                         if (elapsed - lastProgressUpdate > 100)
                         {
                             lastProgressUpdate = elapsed;
-                            pm.Update(0.1f + 0.8f * ((float)qTail / maxLimit),
+                            operation.Update(0.1f + 0.8f * ((float)qTail / maxLimit),
                                 $"実距離による接続探索中... 対象点: {qTail:N0} / {maxLimit:N0} 点");
                         }
                     }
@@ -2121,7 +2206,7 @@ public class PointCloudEditor : MonoBehaviour
             catch (Exception ex) { error = ex; }
             finally
             {
-                connectionResult = new BackgroundSelectionResult
+                backgroundSelectionResults.Enqueue(new BackgroundSelectionResult
                 {
                     Indices = resultIndices,
                     SourcePoints = points,
@@ -2129,9 +2214,10 @@ public class PointCloudEditor : MonoBehaviour
                     SelectOnlyUnclassified = onlyUnclassified,
                     Cancelled = token.IsCancellationRequested,
                     Error = error,
-                    OperationTitle = "空間近接接続探索"
-                };
-                finishedConnectionFlag = true;
+                    OperationTitle = "空間近接接続探索",
+                    Operation = operation,
+                    SourceGeneration = datasetGeneration
+                });
             }
         });
     }
@@ -2168,9 +2254,11 @@ public class PointCloudEditor : MonoBehaviour
         Vector3 localRight = trans.InverseTransformDirection(camRightWorld).normalized;
         Vector3 localForward = trans.InverseTransformDirection(camForwardWorld).normalized;
 
-        var pm = PointCloudProgressManager.Instance;
-        if (!pm.Start($"RANSAC検出 ({type})", "点群データを解析中...")) return;
-        CancellationToken token = pm.CancellationToken;
+        PointCloudOperation operation = PointCloudProgressManager.Instance.TryStart($"RANSAC検出 ({type})", "点群データを解析中...");
+        if (operation == null) return;
+        activeSelectionOperation = operation;
+        CancellationToken token = operation.CancellationToken;
+        long datasetGeneration = targetRenderer.DatasetGeneration;
         bool[] resultMask = null;
         Exception operationError = null;
 
@@ -2316,7 +2404,7 @@ public class PointCloudEditor : MonoBehaviour
                                 if (sw.ElapsedMilliseconds - lastProgressUpdate > 50)
                                 {
                                     lastProgressUpdate = sw.ElapsedMilliseconds;
-                                    pm.Update((float)iter / iterations, $"平面フィッティング中... (イテレーション {iter}/{iterations})");
+                                    operation.Update((float)iter / iterations, $"平面フィッティング中... (イテレーション {iter}/{iterations})");
                                 }
                             }
                         }
@@ -2386,7 +2474,7 @@ public class PointCloudEditor : MonoBehaviour
                                 {
                                     lastProgressUpdate = sw.ElapsedMilliseconds;
                                     string msg = isSelectedPointFit ? "選択点から支柱フィッティング中..." : "鉛直円柱フィッティング中...";
-                                    pm.Update((float)iter / iterations, $"{msg} (イテレーション {iter}/{iterations})");
+                                    operation.Update((float)iter / iterations, $"{msg} (イテレーション {iter}/{iterations})");
                                 }
                             }
                         }
@@ -2489,7 +2577,7 @@ public class PointCloudEditor : MonoBehaviour
 
                 if (!token.IsCancellationRequested && bestInlierCount > 0)
                 {
-                    pm.Update(0.95f, "適合データを点群に適用中...");
+                    operation.Update(0.95f, "適合データを点群に適用中...");
                     
                     // 円柱時の許容誤差を rEst * 0.5f に自動的に引き締め
                     float toleranceWithSlack = (type == RansacType.Plane) ? localTolerance * 1.5f : Math.Min(localTolerance * 1.5f, rEst * 0.5f);
@@ -2541,16 +2629,17 @@ public class PointCloudEditor : MonoBehaviour
             }
             finally
             {
-                ransacResult = new BackgroundSelectionResult
+                backgroundSelectionResults.Enqueue(new BackgroundSelectionResult
                 {
                     Mask = resultMask,
                     SourcePoints = points,
                     Selecting = selecting,
                     Cancelled = token.IsCancellationRequested,
                     Error = operationError,
-                    OperationTitle = $"RANSAC検出 ({type})"
-                };
-                finishedRansacFlag = true;
+                    OperationTitle = $"RANSAC検出 ({type})",
+                    Operation = operation,
+                    SourceGeneration = datasetGeneration
+                });
             }
         });
     }
@@ -2576,7 +2665,7 @@ public class PointCloudEditor : MonoBehaviour
         if (string.IsNullOrEmpty(inputPath) || !File.Exists(inputPath))
         {
             var error = new FileNotFoundException("現在ロード中のPLYファイルが見つかりません。", inputPath);
-            PointCloudProgressManager.Instance.Fail("支柱抽出", error.Message, error.ToString());
+            PointCloudProgressManager.Instance.ShowError("支柱抽出", error.Message);
             Debug.LogWarning($"[RecoverableOperationError] 支柱抽出: {error}");
             return;
         }
@@ -2595,20 +2684,22 @@ public class PointCloudEditor : MonoBehaviour
         string pythonPath = Path.Combine(backendDir, ".venv/Scripts/python.exe");
         if (!File.Exists(pythonPath)) pythonPath = "python";
 
-        PointCloudProgressManager pm = PointCloudProgressManager.Instance;
-        if (!pm.Start("支柱抽出 Python", "Pythonバックエンドを起動中...")) return;
-        CancellationToken token = pm.CancellationToken;
+        PointCloudOperation operation = PointCloudProgressManager.Instance.TryStart("支柱抽出 Python", "Pythonバックエンドを起動中...");
+        if (operation == null) return;
+        activeSelectionOperation = operation;
+        CancellationToken token = operation.CancellationToken;
+        long datasetGeneration = targetRenderer.DatasetGeneration;
         _ = RunSupportCylinderAsync(points, selectedIndices.ToArray(), inputPath, seedPath, maskPath,
             outputDir, scriptPath, pythonPath, coordinateScaleToMm, tubeMultiplier, colorTolerance,
-            heightBinMultiplier, maxEmptyBins, selecting, token);
+            heightBinMultiplier, maxEmptyBins, selecting, operation, datasetGeneration);
     }
 
     private async Task RunSupportCylinderAsync(PointData[] points, int[] seedIndices, string inputPath,
         string seedPath, string maskPath, string outputDir, string scriptPath, string pythonPath,
         float coordinateScaleToMm, float tubeMultiplier, float colorTolerance, float heightBinMultiplier,
-        int maxEmptyBins, bool selecting, CancellationToken token)
+        int maxEmptyBins, bool selecting, PointCloudOperation operation, long datasetGeneration)
     {
-        PointCloudProgressManager pm = PointCloudProgressManager.Instance;
+        CancellationToken token = operation.CancellationToken;
         try
         {
             byte[] mask = await Task.Run(() =>
@@ -2652,7 +2743,7 @@ public class PointCloudEditor : MonoBehaviour
                             int split = rest.IndexOf(' ');
                             if (split > 0 && float.TryParse(rest.Substring(0, split), NumberStyles.Any,
                                 CultureInfo.InvariantCulture, out float percent))
-                                pm.Update(0.05f + 0.85f * (percent / 100f), rest.Substring(split + 1));
+                                operation.Update(0.05f + 0.85f * (percent / 100f), rest.Substring(split + 1));
                         }
                     };
                     process.ErrorDataReceived += (_, e) =>
@@ -2697,16 +2788,20 @@ public class PointCloudEditor : MonoBehaviour
                 Mask = Array.ConvertAll(mask, value => value != 0),
                 SourcePoints = points,
                 Selecting = selecting,
-                OperationTitle = "支柱抽出"
+                OperationTitle = "支柱抽出",
+                Operation = operation,
+                SourceGeneration = datasetGeneration
             });
         }
         catch (OperationCanceledException)
         {
-            pm.CompleteCancelled("支柱抽出をキャンセルしました。選択状態は変更していません。");
+            operation.CompleteCancelled("支柱抽出をキャンセルしました。選択状態は変更していません。");
+            ClearActiveSelectionOperation(operation);
         }
         catch (Exception ex)
         {
-            pm.Fail("支柱抽出", "Pythonによる支柱抽出に失敗しました。選択状態は変更していません。", ex.ToString());
+            operation.Fail("支柱抽出", "Pythonによる支柱抽出に失敗しました。選択状態は変更していません。", ex.ToString());
+            ClearActiveSelectionOperation(operation);
             Debug.LogWarning($"[RecoverableOperationError] 支柱抽出: {ex}");
         }
     }
@@ -2769,6 +2864,12 @@ public class PointCloudEditor : MonoBehaviour
 
     void OnDestroy()
     {
+        if (activeSelectionOperation != null)
+        {
+            activeSelectionOperation.Cancel();
+            activeSelectionOperation.CompleteCancelled("選択処理の所有者が破棄されたため中止しました。");
+            activeSelectionOperation = null;
+        }
         if (brushVisual != null) Destroy(brushVisual);
         if (brushMaterial != null) Destroy(brushMaterial);
         foreach (MeasurementVisual visual in measurementVisuals.Values) DestroyMeasurementVisual(visual);
@@ -2789,6 +2890,30 @@ public class PointCloudEditor : MonoBehaviour
     private void HandlePointCloudLoaded(string path)
     {
         if (pointCloudLoader != null) handledPointCloudRevision = pointCloudLoader.SuccessfulLoadRevision;
+        if (targetRenderer != null) NoiseFilterManager.Instance.ResetForPointCloud(targetRenderer);
+        string fullPath = Path.GetFullPath(path);
+        PlayerPrefs.SetString("PointCloudVR.LastOpenedPath", fullPath);
+        PlayerPrefs.Save();
+        recoverySourcePath = fullPath;
+        recoveryCheckpointPath = PointCloudSessionRecoveryStore.GetCheckpointPath(Application.persistentDataPath, fullPath);
+        recoveryDatasetGeneration = targetRenderer != null ? targetRenderer.DatasetGeneration : -1;
+        recoverySourceHash = string.Empty;
+        recoveryHashTask = null;
+        recoveryLoadTask = null;
+        recoveryRestoreAttempted = false;
+        pendingRecoveryLabels = null;
+        pendingRecoverySavedAtLocalText = string.Empty;
+        pendingRecoveryGeneration = -1;
+        pendingRecoveryRevision = -1;
+        recoveryDecisionStatus = string.Empty;
+        recoveryObservedRevision = targetRenderer != null ? targetRenderer.ContentRevision : -1;
+        recoveryLastSavedRevision = -1;
+        recoverySnapshotRevision = -1;
+        recoveryLastEditUtc = DateTime.UtcNow;
+        recoveryLabelSnapshot = null;
+        recoverySnapshotCursor = 0;
+        annotationUndoStack.Clear();
+        annotationRedoStack.Clear();
         ClearMeasurementVisuals();
         measurementCloudPath = Path.GetFullPath(path);
         measurementDocumentPath = MeasurementDocumentStore.GetSidecarPath(measurementCloudPath);
@@ -2814,12 +2939,14 @@ public class PointCloudEditor : MonoBehaviour
             measurementStatus = "点群ファイルを照合中...";
             string pathSnapshot = measurementCloudPath;
             measurementFingerprintTask = Task.Run(() => MeasurementDocumentStore.ComputeSha256(pathSnapshot));
+            recoveryHashTask = Task.Run(() => PointCloudSessionRecoveryStore.ComputeFileSha256(pathSnapshot));
         }
         catch (System.Exception ex)
         {
             measurementDocument = null;
             measurementFingerprintPending = false;
             measurementFingerprintTask = null;
+            recoveryHashTask = Task.Run(() => PointCloudSessionRecoveryStore.ComputeFileSha256(measurementCloudPath));
             measurementStatus = $"計測JSONを読み込めません: {ex.Message}";
             PointCloudProgressManager.Instance.ShowError("計測JSON", measurementStatus);
             Debug.LogWarning($"[RecoverableOperationError] {measurementStatus}\n{ex}");
@@ -2866,6 +2993,225 @@ public class PointCloudEditor : MonoBehaviour
             SaveMeasurementDocument();
         }
         UpdateMeasureVisuals();
+    }
+
+    private void UpdateSessionRecovery()
+    {
+        PointData[] points = targetRenderer != null ? targetRenderer.GetPointData() : null;
+        if (points == null || recoveryDatasetGeneration != targetRenderer.DatasetGeneration) return;
+
+        if (recoveryHashTask != null && recoveryHashTask.IsCompleted)
+        {
+            Task<string> completedHash = recoveryHashTask;
+            recoveryHashTask = null;
+            if (completedHash.IsFaulted)
+            {
+                Debug.LogWarning($"[Recovery] 元PLYのfingerprintを計算できません。編集復旧は利用できません。\n{completedHash.Exception}");
+            }
+            else if (completedHash.IsCanceled)
+            {
+                Debug.LogWarning("[Recovery] 元PLYのfingerprint計算がキャンセルされました。");
+            }
+            else
+            {
+                recoverySourceHash = completedHash.Result;
+            }
+        }
+
+        if (recoveryWasUnclean && !recoveryRestoreAttempted && recoveryWriteTask == null &&
+            !string.IsNullOrEmpty(recoverySourceHash))
+        {
+            recoveryRestoreAttempted = true;
+            string checkpoint = recoveryCheckpointPath;
+            string fingerprint = recoverySourceHash;
+            int pointCount = points.Length;
+            recoveryLoadTask = Task.Run(() =>
+            {
+                var loaded = new RecoveryLoadResult();
+                loaded.Success = PointCloudSessionRecoveryStore.TryRead(checkpoint, fingerprint,
+                    pointCount, out loaded.Labels, out loaded.Revision, out loaded.FailureReason);
+                return loaded;
+            });
+        }
+
+        if (recoveryLoadTask != null && recoveryLoadTask.IsCompleted)
+        {
+            Task<RecoveryLoadResult> completedLoad = recoveryLoadTask;
+            recoveryLoadTask = null;
+            try
+            {
+                RecoveryLoadResult recovered = completedLoad.Result;
+                if (recovered.Success && recoveryWasUnclean && targetRenderer.DatasetGeneration == recoveryDatasetGeneration &&
+                    ReferenceEquals(points, targetRenderer.GetPointData()) && recovered.Labels.Length == points.Length)
+                {
+                    pendingRecoveryLabels = recovered.Labels;
+                    try
+                    {
+                        pendingRecoverySavedAtLocalText = File.GetLastWriteTime(recoveryCheckpointPath)
+                            .ToString("yyyy/MM/dd HH:mm:ss", CultureInfo.CurrentCulture);
+                    }
+                    catch (Exception timestampException)
+                    {
+                        pendingRecoverySavedAtLocalText = "取得できません";
+                        Debug.LogWarning("[Recovery] 復旧データの保存日時を取得できませんでした。\n" + timestampException);
+                    }
+                    pendingRecoveryGeneration = recoveryDatasetGeneration;
+                    pendingRecoveryRevision = recovered.Revision;
+                    recoveryDecisionStatus = string.Empty;
+                    Debug.Log($"[Recovery] 復元候補を検証しました。ユーザーの選択を待っています。 points={points.Length:N0}, checkpoint_revision={recovered.Revision}");
+                }
+                else if (!recovered.Success)
+                {
+                    Debug.LogWarning($"[Recovery] 復旧データは適用しませんでした: {recovered.FailureReason}");
+                }
+            }
+            catch (Exception ex)
+            {
+                Debug.LogWarning($"[Recovery] 復旧スナップショットの読み込みに失敗しました。現在の点群は保持しました。\n{ex}");
+            }
+        }
+
+        // Keep a validated recovery candidate stable until the user decides to apply or discard it.
+        if (HasPendingRecovery) return;
+
+        if (recoveryWriteTask != null && recoveryWriteTask.IsCompleted)
+        {
+            Task<bool> completedWrite = recoveryWriteTask;
+            recoveryWriteTask = null;
+            try
+            {
+                if (completedWrite.Result && recoveryWriteCheckpointPath == recoveryCheckpointPath)
+                    recoveryLastSavedRevision = recoveryWriteRevision;
+            }
+            catch (Exception ex)
+            {
+                recoveryRetryAfterUtc = DateTime.UtcNow.AddSeconds(30);
+                Debug.LogWarning($"[Recovery] 自動保存に失敗しました。後で再試行します。\n{ex}");
+            }
+        }
+
+        long currentRevision = targetRenderer.ContentRevision;
+        if (currentRevision != recoveryObservedRevision)
+        {
+            recoveryObservedRevision = currentRevision;
+            recoveryLastEditUtc = DateTime.UtcNow;
+            recoveryLabelSnapshot = null;
+            recoverySnapshotCursor = 0;
+        }
+
+        if (PointCloudProgressManager.Instance.IsRunning || recoveryLoadTask != null ||
+            (recoveryWasUnclean && !recoveryRestoreAttempted) || string.IsNullOrEmpty(recoverySourceHash) ||
+            string.IsNullOrEmpty(recoveryCheckpointPath) || DateTime.UtcNow < recoveryRetryAfterUtc ||
+            recoveryWriteTask != null || recoveryLastSavedRevision == currentRevision ||
+            DateTime.UtcNow.Subtract(recoveryLastEditUtc).TotalSeconds < RecoveryQuietSeconds)
+            return;
+
+        if (recoveryLabelSnapshot == null)
+        {
+            recoveryLabelSnapshot = new int[points.Length];
+            recoverySnapshotCursor = 0;
+            recoverySnapshotRevision = currentRevision;
+        }
+        if (recoverySnapshotRevision != currentRevision || points.Length != recoveryLabelSnapshot.Length)
+        {
+            recoveryLabelSnapshot = null;
+            recoverySnapshotCursor = 0;
+            return;
+        }
+
+        int copyEnd = Math.Min(points.Length, recoverySnapshotCursor + RecoveryPointsPerFrame);
+        for (; recoverySnapshotCursor < copyEnd; recoverySnapshotCursor++)
+            recoveryLabelSnapshot[recoverySnapshotCursor] = points[recoverySnapshotCursor].label;
+        if (recoverySnapshotCursor != points.Length) return;
+
+        int[] snapshot = recoveryLabelSnapshot;
+        long snapshotRevision = recoverySnapshotRevision;
+        string checkpointPath = recoveryCheckpointPath;
+        string sourceHash = recoverySourceHash;
+        recoveryLabelSnapshot = null;
+        recoverySnapshotCursor = 0;
+        recoveryWriteCheckpointPath = checkpointPath;
+        recoveryWriteRevision = snapshotRevision;
+        recoveryWriteTask = Task.Run(() =>
+        {
+            PointCloudSessionRecoveryStore.WriteAtomic(checkpointPath, sourceHash, snapshot, snapshotRevision);
+            return true;
+        });
+    }
+
+    public bool ApplyPendingRecovery()
+    {
+        PointData[] points = targetRenderer != null ? targetRenderer.GetPointData() : null;
+        if (!HasPendingRecovery || points == null || targetRenderer.DatasetGeneration != pendingRecoveryGeneration ||
+            points.Length != pendingRecoveryLabels.Length || PointCloudProgressManager.Instance.IsRunning)
+        {
+            recoveryDecisionStatus = "復旧対象の点群が変わったか、処理中のため復元できません。現在の点群は変更していません。";
+            return false;
+        }
+
+        int[] previousLabels = new int[points.Length];
+        for (int i = 0; i < points.Length; i++) previousLabels[i] = points[i].label;
+        try
+        {
+            for (int i = 0; i < points.Length; i++) points[i].label = pendingRecoveryLabels[i];
+            if (!targetRenderer.TryUpdatePointBuffer())
+                throw new InvalidOperationException("GPU点群バッファを更新できません。");
+
+            pendingRecoveryLabels = null;
+            pendingRecoverySavedAtLocalText = string.Empty;
+            pendingRecoveryGeneration = -1;
+            recoveryDecisionStatus = string.Empty;
+            statsDirty = true;
+            recoveryObservedRevision = targetRenderer.ContentRevision;
+            recoveryLastSavedRevision = recoveryObservedRevision;
+            recoveryLastEditUtc = DateTime.UtcNow;
+            Debug.Log($"[Recovery] ユーザー確認後に編集ラベルを復元しました。points={points.Length:N0}, checkpoint_revision={pendingRecoveryRevision}");
+            pendingRecoveryRevision = -1;
+            return true;
+        }
+        catch (Exception applyException)
+        {
+            for (int i = 0; i < points.Length; i++) points[i].label = previousLabels[i];
+            bool rendererRestored = false;
+            try { rendererRestored = targetRenderer.TryUpdatePointBuffer(); }
+            catch (Exception rollbackException)
+            {
+                recoveryDecisionStatus = "復元を適用できませんでした。CPU上の点ラベルは戻しましたが、描画同期にも失敗しました。再読み込みしてください。";
+                Debug.LogError($"[Recovery] {recoveryDecisionStatus}\n{applyException}\n{rollbackException}");
+            }
+            if (!rendererRestored && string.IsNullOrEmpty(recoveryDecisionStatus))
+                recoveryDecisionStatus = "復元を適用できませんでした。CPU上の点ラベルは戻しましたが、描画同期を確認できません。再読み込みしてください。";
+            else if (rendererRestored)
+                recoveryDecisionStatus = $"復元を適用できませんでした。点群を変更前に戻しました。\n{applyException.Message}";
+            recoveryObservedRevision = targetRenderer.ContentRevision;
+            Debug.LogWarning($"[Recovery] {recoveryDecisionStatus}\n{applyException}");
+            return false;
+        }
+    }
+
+    public bool DiscardPendingRecovery()
+    {
+        if (!HasPendingRecovery || PointCloudProgressManager.Instance.IsRunning) return false;
+        try
+        {
+            if (File.Exists(recoveryCheckpointPath)) File.Delete(recoveryCheckpointPath);
+            pendingRecoveryLabels = null;
+            pendingRecoverySavedAtLocalText = string.Empty;
+            pendingRecoveryGeneration = -1;
+            pendingRecoveryRevision = -1;
+            recoveryDecisionStatus = string.Empty;
+            recoveryLastSavedRevision = targetRenderer != null ? targetRenderer.ContentRevision : -1;
+            recoveryObservedRevision = recoveryLastSavedRevision;
+            recoveryLastEditUtc = DateTime.UtcNow;
+            Debug.LogWarning("[Recovery] ユーザー選択により編集復旧スナップショットを破棄しました。元PLYは変更していません。");
+            return true;
+        }
+        catch (Exception ex)
+        {
+            recoveryDecisionStatus = $"復旧スナップショットを削除できませんでした。削除されるまで通常操作へ進めません。\n{ex.Message}";
+            Debug.LogWarning($"[Recovery] {recoveryDecisionStatus}\n{ex}");
+            return false;
+        }
     }
 
     public bool AcceptMeasurementFingerprintMismatch()

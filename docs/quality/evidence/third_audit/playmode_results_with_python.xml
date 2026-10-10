@@ -1,0 +1,51 @@
+<?xml version="1.0" encoding="utf-8"?>
+<test-run id="2" testcasecount="3" result="Passed" total="3" passed="3" failed="0" inconclusive="0" skipped="0" asserts="0" engine-version="3.5.0.0" clr-version="4.0.30319.42000" start-time="2026-10-09 11:48:51Z" end-time="2026-10-09 11:48:53Z" duration="1.8244103">
+  <test-suite type="TestSuite" id="1008" name="PointCloudVR" fullname="PointCloudVR" runstate="Runnable" testcasecount="3" result="Passed" start-time="2026-10-09 11:48:51Z" end-time="2026-10-09 11:48:53Z" duration="1.824410" total="3" passed="3" failed="0" inconclusive="0" skipped="0" asserts="0">
+    <properties>
+      <property name="platform" value="PlayMode" />
+    </properties>
+    <test-suite type="Assembly" id="1005" name="PCWB.PlayModeTests.dll" fullname="E:/pcwb-qa-20261009/PointCloudVR/Library/ScriptAssemblies/PCWB.PlayModeTests.dll" runstate="Runnable" testcasecount="3" result="Passed" start-time="2026-10-09 11:48:51Z" end-time="2026-10-09 11:48:53Z" duration="1.816739" total="3" passed="3" failed="0" inconclusive="0" skipped="0" asserts="0">
+      <properties>
+        <property name="_PID" value="5744" />
+        <property name="_APPDOMAIN" value="Unity Child Domain" />
+        <property name="platform" value="PlayMode" />
+        <property name="EditorOnly" value="False" />
+      </properties>
+      <test-suite type="TestFixture" id="1001" name="RuntimeRecoveryAndSceneTests" fullname="RuntimeRecoveryAndSceneTests" classname="RuntimeRecoveryAndSceneTests" runstate="Runnable" testcasecount="3" result="Passed" start-time="2026-10-09 11:48:51Z" end-time="2026-10-09 11:48:53Z" duration="1.815533" total="3" passed="3" failed="0" inconclusive="0" skipped="0" asserts="0">
+        <properties />
+        <test-case id="1004" name="PythonBridgeValidatesEnvironmentAndRequiredImports" fullname="RuntimeRecoveryAndSceneTests.PythonBridgeValidatesEnvironmentAndRequiredImports" methodname="PythonBridgeValidatesEnvironmentAndRequiredImports" classname="RuntimeRecoveryAndSceneTests" runstate="Runnable" seed="575308182" result="Passed" start-time="2026-10-09 11:48:51Z" end-time="2026-10-09 11:48:52Z" duration="1.641451" asserts="0">
+          <properties>
+            <property name="_JOINTYPE" value="UnityCombinatorial" />
+            <property name="retryIteration" value="0" />
+            <property name="repeatIteration" value="0" />
+          </properties>
+        </test-case>
+        <test-case id="1003" name="RecoverySnapshotRoundTripsInPlayerRuntime" fullname="RuntimeRecoveryAndSceneTests.RecoverySnapshotRoundTripsInPlayerRuntime" methodname="RecoverySnapshotRoundTripsInPlayerRuntime" classname="RuntimeRecoveryAndSceneTests" runstate="Runnable" seed="992551612" result="Passed" start-time="2026-10-09 11:48:52Z" end-time="2026-10-09 11:48:52Z" duration="0.031667" asserts="0">
+          <properties>
+            <property name="_JOINTYPE" value="UnityCombinatorial" />
+            <property name="retryIteration" value="0" />
+            <property name="repeatIteration" value="0" />
+          </properties>
+        </test-case>
+        <test-case id="1002" name="StartupSceneLoadsWithCameraAndNoMissingScripts" fullname="RuntimeRecoveryAndSceneTests.StartupSceneLoadsWithCameraAndNoMissingScripts" methodname="StartupSceneLoadsWithCameraAndNoMissingScripts" classname="RuntimeRecoveryAndSceneTests" runstate="Runnable" seed="672199452" result="Passed" start-time="2026-10-09 11:48:52Z" end-time="2026-10-09 11:48:53Z" duration="0.131485" asserts="0">
+          <properties>
+            <property name="_JOINTYPE" value="UnityCombinatorial" />
+            <property name="retryIteration" value="0" />
+            <property name="repeatIteration" value="0" />
+          </properties>
+          <output><![CDATA[[PointCloudLoader] Detected legacy/low maxPointsToLoad (20000000). Upgraded it dynamically to 20,000,000.
+[PointCloudLoader] Path is empty. Auto-resolved external path to relative: E:\pcwb-qa-20261009\PointCloudData
+[PointCloudRenderer] Removed obsolete ParticleSystem component to stop stray particles.
+[PointCloudRenderer] Removed obsolete ParticleSystemRenderer component.
+[PointCloudLoader] Loading file: E:\pcwb-qa-20261009\PointCloudData\sample.ply
+[PointCloudRenderer] Initialized with shader: PointCloudWorkbench/PointCloudShader
+[PointCloudRenderer] ComputeBuffer initialized with 50000 points.
+[CC_Camera] Auto-centered on point cloud.
+[PointCloudRenderer] Octree ready for LOD rendering. Node Count: 297
+Saving results to: E:\VR\docs\quality\evidence\third_audit\playmode_results_with_python.xml
+]]></output>
+        </test-case>
+      </test-suite>
+    </test-suite>
+  </test-suite>
+</test-run>

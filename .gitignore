@@ -7,6 +7,8 @@ external_repos/
 __pycache__/
 *.pyc
 *.md
+!/THIRD_PARTY_NOTICES.md
+!/licenses/third_party/**
 
 # Unity project temporary and cache files (PointCloudVR)
 PointCloudVR/[Ll]ibrary/
@@ -23,6 +25,12 @@ PointCloudVR/[Uu]serSettings/
 /CloudCompare-master_sankou/
 /scratch/
 /docs/
+!/docs/
+/docs/*
+!/docs/legal/
+!/docs/legal/**
+!/docs/quality/
+!/docs/quality/**
 /UnityEditor/
 /OculusSetup.exe
 /MetaQuestLink_Install.lnk

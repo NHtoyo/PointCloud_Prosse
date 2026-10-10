@@ -2,6 +2,7 @@ using UnityEngine;
 using PointCloudWorkbench;
 using System.Runtime.InteropServices;
 using System.Collections.Generic;
+using System.Threading;
 
 public class PointCloudRenderer : MonoBehaviour
 {
@@ -32,6 +33,8 @@ public class PointCloudRenderer : MonoBehaviour
 
     // Point cloud data
     private PointData[] pointData;
+    private long datasetGeneration;
+    private long contentRevision;
     private ComputeBuffer pointBuffer;
     private Material pointMaterial;
     private Bounds localBounds;
@@ -75,6 +78,8 @@ public class PointCloudRenderer : MonoBehaviour
     }
 
     public float DisplayScale => Mathf.Max(0.001f, pointCloudDisplayScale);
+    public long DatasetGeneration => Interlocked.Read(ref datasetGeneration);
+    public long ContentRevision => Interlocked.Read(ref contentRevision);
 
     // Measurement results interpret one data-space unit as DisplayScale millimeters.
     public float DataLengthToMillimeters(float dataLength)
@@ -300,44 +305,60 @@ public class PointCloudRenderer : MonoBehaviour
     public void SetPointCloudData(Vector3[] positions, Color[] colors)
     {
         Initialize();
+        if (positions == null || positions.Length == 0)
+            throw new System.ArgumentException("点群データが空です。", nameof(positions));
+
         int count = positions.Length;
-        pointData = new PointData[count];
-        cachedPositions = positions;
-        
+        if (colors != null && colors.Length != count)
+            throw new System.ArgumentException("座標と色の点数が一致しません。", nameof(colors));
+
+        PointData[] nextPointData = new PointData[count];
+        Color[] nextCachedColors = colors ?? new Color[count];
         if (colors != null)
         {
-            cachedColors = colors;
+            nextCachedColors = colors;
         }
         else
         {
-            cachedColors = new Color[count];
-            for (int i = 0; i < count; i++) cachedColors[i] = Color.white;
+            for (int i = 0; i < count; i++) nextCachedColors[i] = Color.white;
         }
 
-        // Compute local bounds
         Vector3 min = count > 0 ? positions[0] : Vector3.zero;
         Vector3 max = count > 0 ? positions[0] : Vector3.zero;
 
         for (int i = 0; i < count; i++)
         {
-            Color32 c32 = cachedColors[i];
-            pointData[i] = new PointData(positions[i], c32, 0, 0f);
+            Color32 c32 = nextCachedColors[i];
+            nextPointData[i] = new PointData(positions[i], c32, 0, 0f);
 
             min = Vector3.Min(min, positions[i]);
             max = Vector3.Max(max, positions[i]);
         }
 
-        // Bounds size should cover the points + extra room for size
-        localBounds = new Bounds((min + max) * 0.5f, max - min + Vector3.one * 0.5f);
+        Bounds nextBounds = new Bounds((min + max) * 0.5f, max - min + Vector3.one * 0.5f);
+        Dictionary<string, byte[]> nextAnnotationLayers = CreateAnnotationLayers(nextPointData);
+        ComputeBuffer nextPointBuffer = CreatePointBuffer(nextPointData);
+        ComputeBuffer nextFullIndexBuffer;
+        try { nextFullIndexBuffer = CreateFullIndexBuffer(count); }
+        catch { ReleaseBufferSafely(nextPointBuffer); throw; }
 
-        // Recreate Compute Buffer
-        RecreateComputeBuffer(count);
-        pointBuffer.SetData(pointData);
+        ComputeBuffer previousPointBuffer = pointBuffer;
+        ComputeBuffer previousFullIndexBuffer = fullIndexBuffer;
+        pointData = nextPointData;
+        cachedPositions = positions;
+        cachedColors = nextCachedColors;
+        localBounds = nextBounds;
+        pointBuffer = nextPointBuffer;
+        fullIndexBuffer = nextFullIndexBuffer;
+        annotationLayers = nextAnnotationLayers;
+        activeAnnotationLayer = "Default";
+        Interlocked.Increment(ref datasetGeneration);
+        Interlocked.Increment(ref contentRevision);
+        ReleaseBufferSafely(previousPointBuffer);
+        ReleaseBufferSafely(previousFullIndexBuffer);
 
-        // Start background octree construction
-        StartOctreeBuild(positions);
-
-        InitializeAnnotationLayers(count);
+        try { StartOctreeBuild(positions, fallbackIndexBufferAlreadyStaged: true); }
+        catch (System.Exception ex) { UseFullPointListFallback(ex); }
 
         Debug.Log($"[PointCloudRenderer] ComputeBuffer initialized with {count} points.");
     }
@@ -346,33 +367,96 @@ public class PointCloudRenderer : MonoBehaviour
     public void SetPointCloudData(PointData[] data)
     {
         Initialize();
-        pointData = data;
+        if (data == null || data.Length == 0)
+            throw new System.ArgumentException("点群データが空です。", nameof(data));
+
         int count = data.Length;
 
-        cachedPositions = new Vector3[count];
-        cachedColors = new Color[count];
+        Vector3[] nextCachedPositions = new Vector3[count];
+        Color[] nextCachedColors = new Color[count];
 
         Vector3 min = count > 0 ? data[0].position : Vector3.zero;
         Vector3 max = count > 0 ? data[0].position : Vector3.zero;
 
         for (int i = 0; i < count; i++)
         {
-            cachedPositions[i] = data[i].position;
-            cachedColors[i] = PointData.UnpackColor(data[i].originalColor);
+            nextCachedPositions[i] = data[i].position;
+            nextCachedColors[i] = PointData.UnpackColor(data[i].originalColor);
 
             min = Vector3.Min(min, data[i].position);
             max = Vector3.Max(max, data[i].position);
         }
 
-        localBounds = new Bounds((min + max) * 0.5f, max - min + Vector3.one * 0.5f);
+        Bounds nextBounds = new Bounds((min + max) * 0.5f, max - min + Vector3.one * 0.5f);
+        Dictionary<string, byte[]> nextAnnotationLayers = CreateAnnotationLayers(data);
+        ComputeBuffer nextPointBuffer = CreatePointBuffer(data);
+        ComputeBuffer nextFullIndexBuffer;
+        try { nextFullIndexBuffer = CreateFullIndexBuffer(count); }
+        catch { ReleaseBufferSafely(nextPointBuffer); throw; }
 
-        RecreateComputeBuffer(count);
-        pointBuffer.SetData(pointData);
+        ComputeBuffer previousPointBuffer = pointBuffer;
+        ComputeBuffer previousFullIndexBuffer = fullIndexBuffer;
+        pointData = data;
+        cachedPositions = nextCachedPositions;
+        cachedColors = nextCachedColors;
+        localBounds = nextBounds;
+        pointBuffer = nextPointBuffer;
+        fullIndexBuffer = nextFullIndexBuffer;
+        annotationLayers = nextAnnotationLayers;
+        activeAnnotationLayer = "Default";
+        Interlocked.Increment(ref datasetGeneration);
+        Interlocked.Increment(ref contentRevision);
+        ReleaseBufferSafely(previousPointBuffer);
+        ReleaseBufferSafely(previousFullIndexBuffer);
 
-        // Start background octree construction
-        StartOctreeBuild(cachedPositions);
+        try { StartOctreeBuild(nextCachedPositions, fallbackIndexBufferAlreadyStaged: true); }
+        catch (System.Exception ex) { UseFullPointListFallback(ex); }
+    }
 
-        InitializeAnnotationLayers(count);
+    private static Dictionary<string, byte[]> CreateAnnotationLayers(PointData[] data)
+    {
+        byte[] defaultLabels = new byte[data.Length];
+        for (int i = 0; i < data.Length; i++) defaultLabels[i] = (byte)(data[i].label & 0xFF);
+        return new Dictionary<string, byte[]> { ["Default"] = defaultLabels };
+    }
+
+    private static ComputeBuffer CreatePointBuffer(PointData[] data)
+    {
+        return AtomicResourceFactory.CreateInitialized(data,
+            () => new ComputeBuffer(data.Length, Marshal.SizeOf(typeof(PointData))),
+            (buffer, points) => buffer.SetData(points),
+            buffer => buffer.Release());
+    }
+
+    private static ComputeBuffer CreateFullIndexBuffer(int count)
+    {
+        int[] indices = new int[count];
+        for (int i = 0; i < count; i++) indices[i] = i;
+        return AtomicResourceFactory.CreateInitialized(indices,
+            () => new ComputeBuffer(count, sizeof(int)),
+            (buffer, values) => buffer.SetData(values),
+            buffer => buffer.Release());
+    }
+
+    private static void ReleaseBufferSafely(ComputeBuffer buffer)
+    {
+        if (buffer == null) return;
+        try { buffer.Release(); }
+        catch (System.Exception ex) { Debug.LogWarning($"[RecoverableOperationError] GPUバッファの解放に失敗しました。\n{ex}"); }
+    }
+
+    private void UseFullPointListFallback(System.Exception exception)
+    {
+        lock (octreeLock)
+        {
+            octree = null;
+            isOctreeReady = false;
+            isOctreeBuilding = false;
+            pendingOctree = null;
+            hasPendingOctree = false;
+            pendingOctreeError = exception;
+        }
+        Debug.LogWarning($"[RecoverableOperationError] オクトリー構築を開始できません。全点表示で続行します。\n{exception}");
     }
 
     public bool ApplyPointCoordinateCorrection(float correctionFactor)
@@ -381,119 +465,158 @@ public class PointCloudRenderer : MonoBehaviour
         {
             return false;
         }
-
-        Vector3 min = pointData.Length > 0 ? pointData[0].position * correctionFactor : Vector3.zero;
-        Vector3 max = min;
-
-        if (cachedPositions == null || cachedPositions.Length != pointData.Length)
+        Vector3[] previousPositions = cachedPositions;
+        bool createdPreviousPositions = previousPositions == null || previousPositions.Length != pointData.Length;
+        if (createdPreviousPositions)
         {
-            cachedPositions = new Vector3[pointData.Length];
+            previousPositions = new Vector3[pointData.Length];
+            for (int i = 0; i < pointData.Length; i++) previousPositions[i] = pointData[i].position;
         }
 
+        Vector3[] correctedPositions = new Vector3[pointData.Length];
+        Vector3 min = Vector3.zero;
+        Vector3 max = Vector3.zero;
         for (int i = 0; i < pointData.Length; i++)
         {
-            Vector3 position = pointData[i].position * correctionFactor;
+            Vector3 position = previousPositions[i] * correctionFactor;
             if (float.IsNaN(position.x) || float.IsInfinity(position.x) ||
                 float.IsNaN(position.y) || float.IsInfinity(position.y) ||
                 float.IsNaN(position.z) || float.IsInfinity(position.z)) return false;
+            correctedPositions[i] = position;
+            if (i == 0) min = max = position;
+            else
+            {
+                min = Vector3.Min(min, position);
+                max = Vector3.Max(max, position);
+            }
         }
 
+        Bounds previousBounds = localBounds;
         for (int i = 0; i < pointData.Length; i++)
         {
-            Vector3 position = pointData[i].position * correctionFactor;
-            pointData[i].position = position;
-            cachedPositions[i] = position;
-            min = Vector3.Min(min, position);
-            max = Vector3.Max(max, position);
+            PointData point = pointData[i];
+            point.position = correctedPositions[i];
+            pointData[i] = point;
         }
-
+        cachedPositions = correctedPositions;
         localBounds = new Bounds((min + max) * 0.5f, max - min + Vector3.one * 0.5f);
-        if (pointBuffer != null) pointBuffer.SetData(pointData);
-        StartOctreeBuild(cachedPositions);
-        return true;
-    }
-
-    private void RecreateComputeBuffer(int count)
-    {
-        if (pointBuffer != null)
+        try
         {
-            pointBuffer.Release();
-            pointBuffer = null;
+            if (pointBuffer != null) pointBuffer.SetData(pointData);
+            StartOctreeBuild(correctedPositions);
+            Interlocked.Increment(ref datasetGeneration);
+            Interlocked.Increment(ref contentRevision);
+            return true;
         }
-
-        if (count > 0)
+        catch (System.Exception applyException)
         {
-            // PointData size: float3(12) + uint(4) + int(4) + float(4) = 24 bytes
-            pointBuffer = new ComputeBuffer(count, Marshal.SizeOf(typeof(PointData)));
+            for (int i = 0; i < pointData.Length; i++)
+            {
+                PointData point = pointData[i];
+                point.position = previousPositions[i];
+                pointData[i] = point;
+            }
+            cachedPositions = previousPositions;
+            localBounds = previousBounds;
+            try
+            {
+                if (pointBuffer != null) pointBuffer.SetData(pointData);
+            }
+            catch (System.Exception rollbackException)
+            {
+                throw new System.AggregateException("座標補正とGPUバッファ復元に失敗しました。CPU側の元座標は復元済みです。",
+                    applyException, rollbackException);
+            }
+            if (createdPreviousPositions) cachedPositions = previousPositions;
+            throw;
         }
     }
 
     private int octreeBuildVersion = 0;
+    private CancellationTokenSource octreeBuildCancellation;
 
-    private void StartOctreeBuild(Vector3[] positions)
+    private void StartOctreeBuild(Vector3[] positions, ComputeBuffer preparedFullIndexBuffer = null,
+        bool fallbackIndexBufferAlreadyStaged = false)
     {
+        ComputeBuffer nextFullIndexBuffer = fallbackIndexBufferAlreadyStaged
+            ? fullIndexBuffer
+            : preparedFullIndexBuffer ?? CreateFullIndexBuffer(positions.Length);
+        bool publishedFallbackBuffer = fallbackIndexBufferAlreadyStaged;
         int currentVersion;
-        lock (octreeLock)
+        CancellationToken buildToken;
+        try
         {
-            isOctreeReady = false;
-            isOctreeBuilding = true;
-            hasPendingOctree = false;
-            pendingOctree = null;
-            pendingOctreeError = null;
-            octreeBuildVersion++;
-            currentVersion = octreeBuildVersion;
-        }
-
-        // Recreate flat index buffer for fallback rendering during build
-        RecreateFullIndexBuffer(positions.Length);
-
-        int maxPoints = maxPointsPerNode;
-        int maxDepth = maxOctreeDepth;
-
-        System.Threading.Tasks.Task.Run(() =>
-        {
-            try
+            lock (octreeLock)
             {
-                var newOctree = new PointCloudOctree();
-                newOctree.Build(positions, maxPoints, maxDepth);
+                octreeBuildCancellation?.Cancel();
+                octreeBuildCancellation?.Dispose();
+                octreeBuildCancellation = new CancellationTokenSource();
+                buildToken = octreeBuildCancellation.Token;
+                isOctreeReady = false;
+                isOctreeBuilding = true;
+                hasPendingOctree = false;
+                pendingOctree = null;
+                pendingOctreeError = null;
+                octreeBuildVersion++;
+                currentVersion = octreeBuildVersion;
 
-                lock (octreeLock)
+                if (!fallbackIndexBufferAlreadyStaged)
                 {
-                    if (currentVersion == octreeBuildVersion)
-                    {
-                        pendingOctree = newOctree;
-                        hasPendingOctree = true;
-                    }
+                    ComputeBuffer previousFallbackBuffer = fullIndexBuffer;
+                    fullIndexBuffer = nextFullIndexBuffer;
+                    publishedFallbackBuffer = true;
+                    ReleaseBufferSafely(previousFallbackBuffer);
                 }
             }
-            catch (System.Exception ex)
+
+            int maxPoints = maxPointsPerNode;
+            int maxDepth = maxOctreeDepth;
+
+            System.Threading.Tasks.Task.Run(() =>
             {
-                lock (octreeLock)
+                try
                 {
-                    if (currentVersion == octreeBuildVersion)
+                    buildToken.ThrowIfCancellationRequested();
+                    var newOctree = new PointCloudOctree();
+                    newOctree.Build(positions, maxPoints, maxDepth, buildToken);
+
+                    lock (octreeLock)
                     {
-                        pendingOctreeError = ex;
-                        isOctreeBuilding = false;
+                        if (currentVersion == octreeBuildVersion && !buildToken.IsCancellationRequested)
+                        {
+                            pendingOctree = newOctree;
+                            hasPendingOctree = true;
+                        }
                     }
                 }
-            }
-        });
-    }
-
-    private void RecreateFullIndexBuffer(int count)
-    {
-        if (fullIndexBuffer != null)
-        {
-            fullIndexBuffer.Release();
-            fullIndexBuffer = null;
+                catch (System.OperationCanceledException)
+                {
+                    lock (octreeLock)
+                    {
+                        if (currentVersion == octreeBuildVersion) isOctreeBuilding = false;
+                    }
+                }
+                catch (System.Exception ex)
+                {
+                    lock (octreeLock)
+                    {
+                        if (currentVersion == octreeBuildVersion)
+                        {
+                            pendingOctreeError = ex;
+                            isOctreeBuilding = false;
+                        }
+                    }
+                }
+            });
         }
-
-        if (count > 0)
+        catch
         {
-            int[] indices = new int[count];
-            for (int i = 0; i < count; i++) indices[i] = i;
-            fullIndexBuffer = new ComputeBuffer(count, sizeof(int));
-            fullIndexBuffer.SetData(indices);
+            if (!publishedFallbackBuffer) ReleaseBufferSafely(nextFullIndexBuffer);
+            else
+            {
+                lock (octreeLock) isOctreeBuilding = false;
+            }
+            throw;
         }
     }
 
@@ -553,47 +676,18 @@ public class PointCloudRenderer : MonoBehaviour
 
     public void UpdatePointBuffer()
     {
-        if (pointBuffer != null && pointData != null)
-        {
-            pointBuffer.SetData(pointData);
-
-            // DEBUG CHECK
-            int nonZeroCount = 0;
-            int candidateCount = 0;
-            int hiddenCount = 0;
-            for (int i = 0; i < pointData.Length; i++)
-            {
-                if (pointData[i].label != 0)
-                {
-                    nonZeroCount++;
-                    if ((pointData[i].label & NoiseFilterManager.NOISE_CANDIDATE_BIT) != 0) candidateCount++;
-                    if ((pointData[i].label & NoiseFilterManager.NOISE_HIDDEN_BIT) != 0) hiddenCount++;
-                }
-            }
-            Debug.Log($"[PointCloudRenderer] UpdatePointBuffer executed. Total points: {pointData.Length}, Non-zero label points: {nonZeroCount}, Candidates: {candidateCount}, Hidden: {hiddenCount}");
-
-            // Verify GPU buffer by reading back first few points
-            try
-            {
-                int testLength = Mathf.Min(100, pointData.Length);
-                PointData[] readBack = new PointData[testLength];
-                pointBuffer.GetData(readBack, 0, 0, testLength);
-                int gpuNonZeroCount = 0;
-                for (int i = 0; i < testLength; i++)
-                {
-                    if (readBack[i].label != 0) gpuNonZeroCount++;
-                }
-                Debug.Log($"[PointCloudRenderer] GPU Buffer Readback Test: First {testLength} points have {gpuNonZeroCount} non-zero labels. (C# original non-zero in same range: {gpuNonZeroCount})");
-            }
-            catch (System.Exception ex)
-            {
-                Debug.LogWarning($"[RecoverableOperationError] GPUバッファの読み戻し検査に失敗しました。\n{ex}");
-            }
-        }
-        else
+        if (!TryUpdatePointBuffer())
         {
             Debug.LogWarning($"[PointCloudRenderer] UpdatePointBuffer skipped: pointBuffer is null = {pointBuffer == null}, pointData is null = {pointData == null}");
         }
+    }
+
+    public bool TryUpdatePointBuffer()
+    {
+        if (pointBuffer == null || pointData == null) return false;
+        pointBuffer.SetData(pointData);
+        Interlocked.Increment(ref contentRevision);
+        return true;
     }
 
     public PointData[] GetPointData()
@@ -746,7 +840,7 @@ public class PointCloudRenderer : MonoBehaviour
         {
             if (fullIndexBuffer == null)
             {
-                RecreateFullIndexBuffer(pointData.Length);
+                fullIndexBuffer = CreateFullIndexBuffer(pointData.Length);
             }
             pointMaterial.SetBuffer("_Indices", fullIndexBuffer);
             drawCount = pointData.Length;
@@ -828,16 +922,36 @@ public class PointCloudRenderer : MonoBehaviour
 
     void OnDisable()
     {
+        CancelOctreeBuild();
         ReleaseBuffers();
     }
 
     void OnDestroy()
     {
+        CancelOctreeBuild();
         ReleaseBuffers();
 
         if (pointMaterial != null)
         {
             Destroy(pointMaterial);
+        }
+    }
+
+    private void CancelOctreeBuild()
+    {
+        lock (octreeLock)
+        {
+            octreeBuildVersion++;
+            if (octreeBuildCancellation != null)
+            {
+                try { octreeBuildCancellation.Cancel(); }
+                catch (System.ObjectDisposedException) { }
+                octreeBuildCancellation.Dispose();
+                octreeBuildCancellation = null;
+            }
+            hasPendingOctree = false;
+            pendingOctree = null;
+            isOctreeBuilding = false;
         }
     }
 

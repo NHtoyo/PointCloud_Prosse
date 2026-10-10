@@ -1,0 +1,332 @@
+Mono path[0] = 'E:/pcwb-qa-20261009/PlayerBuild/PointCloudVR_QA_Data/Managed'
+Mono config path = 'E:/pcwb-qa-20261009/PlayerBuild/MonoBleedingEdge/etc'
+CodeReloadManager initialized
+Input System module state changed to: Initialized.
+[Physics::Module] Initialized fallback backend.
+[Physics::Module] Id: 0xdecafbad
+Initialize engine version: 6000.4.7f1 (f3c3c4248748)
+[Subsystems] Discovering subsystems at path E:/pcwb-qa-20261009/PlayerBuild/PointCloudVR_QA_Data/UnitySubsystems
+[Subsystems] No descriptors matched for  examples in UnitySubsystems/UnityOpenXR/UnitySubsystemsManifest.json.
+[Subsystems] 1 'inputs' descriptors matched in UnitySubsystems/UnityOpenXR/UnitySubsystemsManifest.json
+[Subsystems] 1 'displays' descriptors matched in UnitySubsystems/UnityOpenXR/UnitySubsystemsManifest.json
+[Subsystems] No descriptors matched for  meshings in UnitySubsystems/UnityOpenXR/UnitySubsystemsManifest.json.
+Forcing GfxDevice: Null
+GfxDevice: creating device client; kGfxThreadingModeNonThreaded
+NullGfxDevice:
+    Version:  NULL 1.0 [1.0]
+    Renderer: Null Device
+    Vendor:   Unity Technologies
+Begin MonoManager ReloadAssembly
+- Finished resetting the current domain, in  0.003 seconds
+[Physics::Module] Selected backend.
+[Physics::Module] Name: PhysX
+[Physics::Module] Id: 0xf2b8ea05
+[Physics::Module] SDK Version: 4.1.2
+[Physics::Module] Integration Version: 1.0.0
+[Physics::Module] Threading Mode: Multi-Threaded
+XRGeneral Settings awakening...
+Microsoft Media Foundation video decoding to texture disabled: graphics device is Null, only Direct3D 11 and Direct3D 12 (only on desktop) are supported for hardware-accelerated video decoding.
+[Subsystems] OpenXR XR Plugin successfully registered Provider for OpenXR Display
+[Subsystems] OpenXR XR Plugin successfully registered Provider for OpenXR Input
+[Subsystems] OpenXR XR Plugin successfully registered Provider for OpenXR Display
+[Subsystems] Loading plugin UnityOpenXR for subsystem OpenXR Display...
+[XR] [28620] [20:55:36.454][Info   ] Available Layers: (0)
+[XR] [28620] [20:55:36.459][Error  ] xrGetSystem: XR_ERROR_FORM_FACTOR_UNAVAILABLE
+[XR] [28620] [20:55:36.459][Info   ] 
+
+==== Start Unity OpenXR Diagnostic Report ====
+
+
+[XR] [28620] [20:55:36.459][Info   ] ==== Report Reason: Uncaught Exception ====
+
+
+[XR] [28620] [20:55:36.459][Info   ] ==== OpenXR Init Info ====
+[XR] [28620] [20:55:36.459][Info   ] 
+[XR] [28620] [20:55:36.459][Info   ] Stage 1 Missing Entry Points: (1)
+[XR] [28620] [20:55:36.459][Info   ]   xrInitializeLoaderKHR
+[XR] [28620] [20:55:36.459][Info   ] 
+[XR] [28620] [20:55:36.459][Info   ] ==== OpenXR Provider Info ====
+[XR] [28620] [20:55:36.459][Info   ] 
+[XR] [28620] [20:55:36.459][Info   ] Spec Version: 1.0.29
+[XR] [28620] [20:55:36.459][Info   ] Provider Version: 1.10.0
+[XR] [28620] [20:55:36.459][Info   ] App: PCWB_ThirdAudit_20261009 #3118937138
+[XR] [28620] [20:55:36.459][Info   ] Engine: 6000.4.7f1 #2369811457
+[XR] [28620] [20:55:36.459][Info   ] 
+[XR] [28620] [20:55:36.459][Info   ] ==== OpenXR Runtime Info ====
+[XR] [28620] [20:55:36.459][Info   ] 
+[XR] [28620] [20:55:36.459][Info   ] Features requested to be enabled: (1)
+[XR] [28620] [20:55:36.459][Info   ]   Oculus Touch Controller Profile: Version=0.0.1, Company="Unity"
+[XR] [28620] [20:55:36.459][Info   ] 
+[XR] [28620] [20:55:36.459][Info   ] Requested feature extensions not supported by runtime: (0)
+[XR] [28620] [20:55:36.459][Info   ] 
+[XR] [28620] [20:55:36.459][Info   ] Available Runtime Extensions: (81)
+[XR] [28620] [20:55:36.459][Info   ]   XR_KHR_D3D11_enable: Version=11
+[XR] [28620] [20:55:36.459][Info   ]   XR_KHR_D3D12_enable: Version=11
+[XR] [28620] [20:55:36.459][Info   ]   XR_KHR_opengl_enable: Version=12
+[XR] [28620] [20:55:36.459][Info   ]   XR_KHR_vulkan_enable: Version=10
+[XR] [28620] [20:55:36.459][Info   ]   XR_KHR_vulkan_enable2: Version=4
+[XR] [28620] [20:55:36.459][Info   ]   XR_KHR_composition_layer_depth: Version=6
+[XR] [28620] [20:55:36.459][Info   ]   XR_KHR_win32_convert_performance_counter_time: Version=1
+[XR] [28620] [20:55:36.459][Info   ]   XR_KHR_convert_timespec_time: Version=1
+[XR] [28620] [20:55:36.459][Info   ]   XR_KHR_composition_layer_cube: Version=8
+[XR] [28620] [20:55:36.459][Info   ]   XR_KHR_composition_layer_cylinder: Version=4
+[XR] [28620] [20:55:36.459][Info   ]   XR_KHR_composition_layer_equirect: Version=3
+[XR] [28620] [20:55:36.459][Info   ]   XR_KHR_visibility_mask: Version=2
+[XR] [28620] [20:55:36.459][Info   ]   XR_KHR_composition_layer_color_scale_bias: Version=5
+[XR] [28620] [20:55:36.459][Info   ]   XR_KHR_maintenance1: Version=1
+[XR] [28620] [20:55:36.459][Info   ]   XR_EXT_win32_appcontainer_compatible: Version=1
+[XR] [28620] [20:55:36.459][Info   ]   XR_EXT_debug_utils: Version=5
+[XR] [28620] [20:55:36.460][Info   ]   XR_OCULUS_recenter_event: Version=1
+[XR] [28620] [20:55:36.460][Info   ]   XR_OCULUS_audio_device_guid: Version=1
+[XR] [28620] [20:55:36.460][Info   ]   XR_FB_color_space: Version=3
+[XR] [28620] [20:55:36.460][Info   ]   XR_FB_display_refresh_rate: Version=1
+[XR] [28620] [20:55:36.460][Info   ]   XR_META_performance_metrics: Version=2
+[XR] [28620] [20:55:36.460][Info   ]   XR_META_headset_id: Version=2
+[XR] [28620] [20:55:36.460][Info   ]   XR_OCULUS_ovrsession_handle: Version=1
+[XR] [28620] [20:55:36.460][Info   ]   XR_EXT_hand_interaction: Version=2
+[XR] [28620] [20:55:36.460][Info   ]   XR_EXT_hand_tracking: Version=4
+[XR] [28620] [20:55:36.460][Info   ]   XR_FB_hand_tracking_mesh: Version=3
+[XR] [28620] [20:55:36.460][Info   ]   XR_META_simultaneous_hands_and_controllers: Version=1
+[XR] [28620] [20:55:36.460][Info   ]   XR_FB_hand_tracking_aim: Version=2
+[XR] [28620] [20:55:36.460][Info   ]   XR_FB_hand_tracking_capsules: Version=3
+[XR] [28620] [20:55:36.460][Info   ]   XR_EXT_hand_tracking_data_source: Version=1
+[XR] [28620] [20:55:36.460][Info   ]   XR_META_hand_tracking_microgestures: Version=1
+[XR] [28620] [20:55:36.460][Info   ]   XR_EXTX2_stationary_reference_space: Version=1
+[XR] [28620] [20:55:36.460][Info   ]   XR_FB_body_tracking: Version=1
+[XR] [28620] [20:55:36.460][Info   ]   XR_META_body_tracking_full_body: Version=1
+[XR] [28620] [20:55:36.460][Info   ]   XR_META_body_tracking_fidelity: Version=1
+[XR] [28620] [20:55:36.460][Info   ]   XR_META_body_tracking_calibration: Version=1
+[XR] [28620] [20:55:36.460][Info   ]   XR_FB_render_model: Version=4
+[XR] [28620] [20:55:36.460][Info   ]   XR_FB_spatial_entity_container: Version=2
+[XR] [28620] [20:55:36.460][Info   ]   XR_FB_scene: Version=4
+[XR] [28620] [20:55:36.460][Info   ]   XR_FB_spatial_entity: Version=3
+[XR] [28620] [20:55:36.460][Info   ]   XR_FB_spatial_entity_storage: Version=1
+[XR] [28620] [20:55:36.460][Info   ]   XR_FB_spatial_entity_query: Version=1
+[XR] [28620] [20:55:36.460][Info   ]   XR_FB_spatial_entity_user: Version=1
+[XR] [28620] [20:55:36.460][Info   ]   XR_FB_spatial_entity_storage_batch: Version=1
+[XR] [28620] [20:55:36.460][Info   ]   XR_FB_spatial_entity_sharing: Version=1
+[XR] [28620] [20:55:36.460][Info   ]   XR_META_spatial_entity_persistence: Version=1
+[XR] [28620] [20:55:36.460][Info   ]   XR_META_spatial_entity_discovery: Version=1
+[XR] [28620] [20:55:36.460][Info   ]   XR_META_spatial_entity_group_sharing: Version=1
+[XR] [28620] [20:55:36.460][Info   ]   XR_META_spatial_entity_mesh: Version=1
+[XR] [28620] [20:55:36.460][Info   ]   XR_META_spatial_entity_room_mesh: Version=1
+[XR] [28620] [20:55:36.460][Info   ]   XR_META_spatial_entity_sharing: Version=1
+[XR] [28620] [20:55:36.460][Info   ]   XR_EXT_spatial_entity: Version=1
+[XR] [28620] [20:55:36.460][Info   ]   XR_EXT_spatial_anchor: Version=1
+[XR] [28620] [20:55:36.460][Info   ]   XR_EXT_spatial_persistence: Version=1
+[XR] [28620] [20:55:36.460][Info   ]   XR_EXT_spatial_persistence_operations: Version=1
+[XR] [28620] [20:55:36.460][Info   ]   XR_EXT_spatial_plane_tracking: Version=1
+[XR] [28620] [20:55:36.460][Info   ]   XR_EXT_spatial_marker_tracking: Version=1
+[XR] [28620] [20:55:36.460][Info   ]   XR_META_boundary_visibility: Version=1
+[XR] [28620] [20:55:36.460][Info   ]   XR_META_colocation_discovery: Version=1
+[XR] [28620] [20:55:36.460][Info   ]   XR_METAX1_dynamic_object_tracker: Version=1
+[XR] [28620] [20:55:36.460][Info   ]   XR_META_dynamic_object_tracker: Version=1
+[XR] [28620] [20:55:36.460][Info   ]   XR_META_dynamic_object_keyboard: Version=1
+[XR] [28620] [20:55:36.460][Info   ]   XR_METAX1_passthrough_camera_data: Version=1
+[XR] [28620] [20:55:36.460][Info   ]   XR_META_virtual_keyboard: Version=1
+[XR] [28620] [20:55:36.460][Info   ]   XR_EXT_local_floor: Version=1
+[XR] [28620] [20:55:36.460][Info   ]   XR_EXT_active_action_set_priority: Version=1
+[XR] [28620] [20:55:36.460][Info   ]   XR_EXT_future: Version=2
+[XR] [28620] [20:55:36.460][Info   ]   XR_EXT_palm_pose: Version=3
+[XR] [28620] [20:55:36.460][Info   ]   XR_EXT_haptic_parametric: Version=1
+[XR] [28620] [20:55:36.460][Info   ]   XR_FB_haptic_amplitude_envelope: Version=1
+[XR] [28620] [20:55:36.460][Info   ]   XR_FB_haptic_pcm: Version=1
+[XR] [28620] [20:55:36.460][Info   ]   XR_FB_touch_controller_pro: Version=1
+[XR] [28620] [20:55:36.460][Info   ]   XR_META_touch_controller_plus: Version=1
+[XR] [28620] [20:55:36.460][Info   ]   XR_FB_touch_controller_proximity: Version=1
+[XR] [28620] [20:55:36.460][Info   ]   XR_OCULUS_external_camera: Version=1
+[XR] [28620] [20:55:36.460][Info   ]   XR_META_detached_controllers: Version=1
+[XR] [28620] [20:55:36.460][Info   ]   XR_LOGITECH_mx_ink_stylus_interaction: Version=1
+[XR] [28620] [20:55:36.460][Info   ]   XR_FBX1_touch_controller_extras: Version=1
+[XR] [28620] [20:55:36.460][Info   ]   XR_METAX2_debug_utils_region_profiling: Version=1
+[XR] [28620] [20:55:36.460][Info   ]   XR_METAX3_debug_utils_region_profiling: Version=1
+[XR] [28620] [20:55:36.460][Info   ]   XR_METAX1_space_instant_acceleration: Version=2
+[XR] [28620] [20:55:36.460][Info   ] 
+[XR] [28620] [20:55:36.460][Info   ] Available Layers: (0)
+[XR] [28620] [20:55:36.460][Info   ] 
+[XR] [28620] [20:55:36.460][Info   ] Runtime Name: Oculus
+[XR] [28620] [20:55:36.460][Info   ] Runtime Version: 1.208.0
+[XR] [28620] [20:55:36.460][Info   ] 
+[XR] [28620] [20:55:36.460][Info   ] ==== OpenXR Exception Thrown ====
+[XR] [28620] [20:55:36.460][Info   ] 
+[XR] [28620] [20:55:36.460][Info   ] Error: XrResult failure [XR_ERROR_FORM_FACTOR_UNAVAILABLE]
+[XR] [28620] [20:55:36.460][Info   ]     Origin: result
+[XR] [28620] [20:55:36.460][Info   ]     Source: C:\build\output\unity\xr.sdk.openxr\NativePlugin\Source\unity_session.cpp:266
+[XR] [28620] [20:55:36.460][Info   ] 
+[XR] [28620] [20:55:36.460][Info   ] 
+[XR] [28620] [20:55:36.460][Info   ] ==== Std Exception Thrown ====
+[XR] [28620] [20:55:36.460][Info   ] 
+[XR] [28620] [20:55:36.460][Info   ] Function: Display_Initialize
+[XR] [28620] [20:55:36.460][Info   ] Message: XrResult failure [XR_ERROR_FORM_FACTOR_UNAVAILABLE]
+[XR] [28620] [20:55:36.460][Info   ]     Origin: result
+[XR] [28620] [20:55:36.460][Info   ]     Source: C:\build\output\unity\xr.sdk.openxr\NativePlugin\Source\unity_session.cpp:266
+[XR] [28620] [20:55:36.460][Info   ] 
+[XR] [28620] [20:55:36.460][Info   ] ==== Last 20 non-XR_SUCCESS returns ====
+[XR] [28620] [20:55:36.460][Info   ] [FAILURE] xrGetSystem: XR_ERROR_FORM_FACTOR_UNAVAILABLE (1x)
+[XR] [28620] [20:55:36.460][Info   ] 
+[XR] [28620] [20:55:36.460][Info   ] ==== Last 20 Events ====
+[XR] [28620] [20:55:36.460][Info   ] 
+
+==== End Unity OpenXR Diagnostic Report ====
+
+
+[Subsystems] Failed to initialize subsystem OpenXR Display [error: 1]
+[XR] [28620] [20:55:36.464][Info   ] 
+
+==== Start Unity OpenXR Diagnostic Report ====
+
+
+[XR] [28620] [20:55:36.464][Info   ] ==== Report Reason: System Shutdown ====
+
+
+[XR] [28620] [20:55:36.464][Info   ] ==== OpenXR Init Info ====
+[XR] [28620] [20:55:36.464][Info   ] 
+[XR] [28620] [20:55:36.464][Info   ] Stage 1 Missing Entry Points: (1)
+[XR] [28620] [20:55:36.464][Info   ]   xrInitializeLoaderKHR
+[XR] [28620] [20:55:36.464][Info   ] 
+[XR] [28620] [20:55:36.464][Info   ] ==== OpenXR Provider Info ====
+[XR] [28620] [20:55:36.464][Info   ] 
+[XR] [28620] [20:55:36.464][Info   ] Spec Version: 1.0.29
+[XR] [28620] [20:55:36.464][Info   ] Provider Version: 1.10.0
+[XR] [28620] [20:55:36.464][Info   ] App: PCWB_ThirdAudit_20261009 #3118937138
+[XR] [28620] [20:55:36.464][Info   ] Engine: 6000.4.7f1 #2369811457
+[XR] [28620] [20:55:36.464][Info   ] 
+[XR] [28620] [20:55:36.464][Info   ] ==== OpenXR Runtime Info ====
+[XR] [28620] [20:55:36.464][Info   ] 
+[XR] [28620] [20:55:36.464][Info   ] Features requested to be enabled: (1)
+[XR] [28620] [20:55:36.464][Info   ]   Oculus Touch Controller Profile: Version=0.0.1, Company="Unity"
+[XR] [28620] [20:55:36.464][Info   ] 
+[XR] [28620] [20:55:36.464][Info   ] Requested feature extensions not supported by runtime: (0)
+[XR] [28620] [20:55:36.464][Info   ] 
+[XR] [28620] [20:55:36.464][Info   ] Available Runtime Extensions: (81)
+[XR] [28620] [20:55:36.464][Info   ]   XR_KHR_D3D11_enable: Version=11
+[XR] [28620] [20:55:36.464][Info   ]   XR_KHR_D3D12_enable: Version=11
+[XR] [28620] [20:55:36.464][Info   ]   XR_KHR_opengl_enable: Version=12
+[XR] [28620] [20:55:36.464][Info   ]   XR_KHR_vulkan_enable: Version=10
+[XR] [28620] [20:55:36.464][Info   ]   XR_KHR_vulkan_enable2: Version=4
+[XR] [28620] [20:55:36.464][Info   ]   XR_KHR_composition_layer_depth: Version=6
+[XR] [28620] [20:55:36.464][Info   ]   XR_KHR_win32_convert_performance_counter_time: Version=1
+[XR] [28620] [20:55:36.464][Info   ]   XR_KHR_convert_timespec_time: Version=1
+[XR] [28620] [20:55:36.464][Info   ]   XR_KHR_composition_layer_cube: Version=8
+[XR] [28620] [20:55:36.464][Info   ]   XR_KHR_composition_layer_cylinder: Version=4
+[XR] [28620] [20:55:36.464][Info   ]   XR_KHR_composition_layer_equirect: Version=3
+[XR] [28620] [20:55:36.464][Info   ]   XR_KHR_visibility_mask: Version=2
+[XR] [28620] [20:55:36.464][Info   ]   XR_KHR_composition_layer_color_scale_bias: Version=5
+[XR] [28620] [20:55:36.464][Info   ]   XR_KHR_maintenance1: Version=1
+[XR] [28620] [20:55:36.465][Info   ]   XR_EXT_win32_appcontainer_compatible: Version=1
+[XR] [28620] [20:55:36.465][Info   ]   XR_EXT_debug_utils: Version=5
+[XR] [28620] [20:55:36.465][Info   ]   XR_OCULUS_recenter_event: Version=1
+[XR] [28620] [20:55:36.465][Info   ]   XR_OCULUS_audio_device_guid: Version=1
+[XR] [28620] [20:55:36.465][Info   ]   XR_FB_color_space: Version=3
+[XR] [28620] [20:55:36.465][Info   ]   XR_FB_display_refresh_rate: Version=1
+[XR] [28620] [20:55:36.465][Info   ]   XR_META_performance_metrics: Version=2
+[XR] [28620] [20:55:36.465][Info   ]   XR_META_headset_id: Version=2
+[XR] [28620] [20:55:36.465][Info   ]   XR_OCULUS_ovrsession_handle: Version=1
+[XR] [28620] [20:55:36.465][Info   ]   XR_EXT_hand_interaction: Version=2
+[XR] [28620] [20:55:36.465][Info   ]   XR_EXT_hand_tracking: Version=4
+[XR] [28620] [20:55:36.465][Info   ]   XR_FB_hand_tracking_mesh: Version=3
+[XR] [28620] [20:55:36.465][Info   ]   XR_META_simultaneous_hands_and_controllers: Version=1
+[XR] [28620] [20:55:36.465][Info   ]   XR_FB_hand_tracking_aim: Version=2
+[XR] [28620] [20:55:36.465][Info   ]   XR_FB_hand_tracking_capsules: Version=3
+[XR] [28620] [20:55:36.465][Info   ]   XR_EXT_hand_tracking_data_source: Version=1
+[XR] [28620] [20:55:36.465][Info   ]   XR_META_hand_tracking_microgestures: Version=1
+[XR] [28620] [20:55:36.465][Info   ]   XR_EXTX2_stationary_reference_space: Version=1
+[XR] [28620] [20:55:36.465][Info   ]   XR_FB_body_tracking: Version=1
+[XR] [28620] [20:55:36.465][Info   ]   XR_META_body_tracking_full_body: Version=1
+[XR] [28620] [20:55:36.465][Info   ]   XR_META_body_tracking_fidelity: Version=1
+[XR] [28620] [20:55:36.465][Info   ]   XR_META_body_tracking_calibration: Version=1
+[XR] [28620] [20:55:36.465][Info   ]   XR_FB_render_model: Version=4
+[XR] [28620] [20:55:36.465][Info   ]   XR_FB_spatial_entity_container: Version=2
+[XR] [28620] [20:55:36.465][Info   ]   XR_FB_scene: Version=4
+[XR] [28620] [20:55:36.465][Info   ]   XR_FB_spatial_entity: Version=3
+[XR] [28620] [20:55:36.465][Info   ]   XR_FB_spatial_entity_storage: Version=1
+[XR] [28620] [20:55:36.465][Info   ]   XR_FB_spatial_entity_query: Version=1
+[XR] [28620] [20:55:36.465][Info   ]   XR_FB_spatial_entity_user: Version=1
+[XR] [28620] [20:55:36.465][Info   ]   XR_FB_spatial_entity_storage_batch: Version=1
+[XR] [28620] [20:55:36.465][Info   ]   XR_FB_spatial_entity_sharing: Version=1
+[XR] [28620] [20:55:36.465][Info   ]   XR_META_spatial_entity_persistence: Version=1
+[XR] [28620] [20:55:36.465][Info   ]   XR_META_spatial_entity_discovery: Version=1
+[XR] [28620] [20:55:36.465][Info   ]   XR_META_spatial_entity_group_sharing: Version=1
+[XR] [28620] [20:55:36.465][Info   ]   XR_META_spatial_entity_mesh: Version=1
+[XR] [28620] [20:55:36.465][Info   ]   XR_META_spatial_entity_room_mesh: Version=1
+[XR] [28620] [20:55:36.465][Info   ]   XR_META_spatial_entity_sharing: Version=1
+[XR] [28620] [20:55:36.465][Info   ]   XR_EXT_spatial_entity: Version=1
+[XR] [28620] [20:55:36.465][Info   ]   XR_EXT_spatial_anchor: Version=1
+[XR] [28620] [20:55:36.465][Info   ]   XR_EXT_spatial_persistence: Version=1
+[XR] [28620] [20:55:36.465][Info   ]   XR_EXT_spatial_persistence_operations: Version=1
+[XR] [28620] [20:55:36.465][Info   ]   XR_EXT_spatial_plane_tracking: Version=1
+[XR] [28620] [20:55:36.465][Info   ]   XR_EXT_spatial_marker_tracking: Version=1
+[XR] [28620] [20:55:36.465][Info   ]   XR_META_boundary_visibility: Version=1
+[XR] [28620] [20:55:36.465][Info   ]   XR_META_colocation_discovery: Version=1
+[XR] [28620] [20:55:36.465][Info   ]   XR_METAX1_dynamic_object_tracker: Version=1
+[XR] [28620] [20:55:36.465][Info   ]   XR_META_dynamic_object_tracker: Version=1
+[XR] [28620] [20:55:36.465][Info   ]   XR_META_dynamic_object_keyboard: Version=1
+[XR] [28620] [20:55:36.465][Info   ]   XR_METAX1_passthrough_camera_data: Version=1
+[XR] [28620] [20:55:36.465][Info   ]   XR_META_virtual_keyboard: Version=1
+[XR] [28620] [20:55:36.465][Info   ]   XR_EXT_local_floor: Version=1
+[XR] [28620] [20:55:36.465][Info   ]   XR_EXT_active_action_set_priority: Version=1
+[XR] [28620] [20:55:36.465][Info   ]   XR_EXT_future: Version=2
+[XR] [28620] [20:55:36.465][Info   ]   XR_EXT_palm_pose: Version=3
+[XR] [28620] [20:55:36.465][Info   ]   XR_EXT_haptic_parametric: Version=1
+[XR] [28620] [20:55:36.465][Info   ]   XR_FB_haptic_amplitude_envelope: Version=1
+[XR] [28620] [20:55:36.465][Info   ]   XR_FB_haptic_pcm: Version=1
+[XR] [28620] [20:55:36.465][Info   ]   XR_FB_touch_controller_pro: Version=1
+[XR] [28620] [20:55:36.465][Info   ]   XR_META_touch_controller_plus: Version=1
+[XR] [28620] [20:55:36.465][Info   ]   XR_FB_touch_controller_proximity: Version=1
+[XR] [28620] [20:55:36.465][Info   ]   XR_OCULUS_external_camera: Version=1
+[XR] [28620] [20:55:36.465][Info   ]   XR_META_detached_controllers: Version=1
+[XR] [28620] [20:55:36.465][Info   ]   XR_LOGITECH_mx_ink_stylus_interaction: Version=1
+[XR] [28620] [20:55:36.465][Info   ]   XR_FBX1_touch_controller_extras: Version=1
+[XR] [28620] [20:55:36.465][Info   ]   XR_METAX2_debug_utils_region_profiling: Version=1
+[XR] [28620] [20:55:36.465][Info   ]   XR_METAX3_debug_utils_region_profiling: Version=1
+[XR] [28620] [20:55:36.465][Info   ]   XR_METAX1_space_instant_acceleration: Version=2
+[XR] [28620] [20:55:36.465][Info   ] 
+[XR] [28620] [20:55:36.465][Info   ] Available Layers: (0)
+[XR] [28620] [20:55:36.465][Info   ] 
+[XR] [28620] [20:55:36.465][Info   ] Runtime Name: Oculus
+[XR] [28620] [20:55:36.465][Info   ] Runtime Version: 1.208.0
+[XR] [28620] [20:55:36.465][Info   ] 
+[XR] [28620] [20:55:36.465][Info   ] ==== OpenXR Exception Thrown ====
+[XR] [28620] [20:55:36.465][Info   ] 
+[XR] [28620] [20:55:36.465][Info   ] Error: XrResult failure [XR_ERROR_FORM_FACTOR_UNAVAILABLE]
+[XR] [28620] [20:55:36.465][Info   ]     Origin: result
+[XR] [28620] [20:55:36.465][Info   ]     Source: C:\build\output\unity\xr.sdk.openxr\NativePlugin\Source\unity_session.cpp:266
+[XR] [28620] [20:55:36.465][Info   ] 
+[XR] [28620] [20:55:36.465][Info   ] 
+[XR] [28620] [20:55:36.465][Info   ] ==== Std Exception Thrown ====
+[XR] [28620] [20:55:36.465][Info   ] 
+[XR] [28620] [20:55:36.465][Info   ] Function: Display_Initialize
+[XR] [28620] [20:55:36.465][Info   ] Message: XrResult failure [XR_ERROR_FORM_FACTOR_UNAVAILABLE]
+[XR] [28620] [20:55:36.465][Info   ]     Origin: result
+[XR] [28620] [20:55:36.465][Info   ]     Source: C:\build\output\unity\xr.sdk.openxr\NativePlugin\Source\unity_session.cpp:266
+[XR] [28620] [20:55:36.465][Info   ] 
+[XR] [28620] [20:55:36.465][Info   ] ==== Last 20 non-XR_SUCCESS returns ====
+[XR] [28620] [20:55:36.465][Info   ] [FAILURE] xrGetSystem: XR_ERROR_FORM_FACTOR_UNAVAILABLE (1x)
+[XR] [28620] [20:55:36.465][Info   ] 
+[XR] [28620] [20:55:36.465][Info   ] ==== Last 20 Events ====
+[XR] [28620] [20:55:36.465][Info   ] 
+
+==== End Unity OpenXR Diagnostic Report ====
+
+
+[XR] XR_META_performance_metrics: Attempted to stop before session ready
+UnloadTime: 0.438900 ms
+[Recovery] 前回は正常終了を確認できませんでした。元PLYと点数が一致する編集スナップショットだけを復元対象にします。
+[PointCloudLoader] Detected legacy/low maxPointsToLoad (20000000). Upgraded it dynamically to 20,000,000.
+[PointCloudLoader] Path is empty. Auto-resolved external path to relative: E:\pcwb-qa-20261009\PointCloudData
+[PointCloudRenderer] Removed obsolete ParticleSystem component to stop stray particles.
+[PointCloudRenderer] Removed obsolete ParticleSystemRenderer component.
+[Recovery] 異常終了前の点群を再読み込みします: E:\pcwb-qa-20261009\PointCloudData\sample.ply
+[PointCloudLoader] Loading file: E:\pcwb-qa-20261009\PointCloudData\sample.ply
+[PointCloudRenderer] Initialized with shader: PointCloudWorkbench/PointCloudShader
+[PointCloudRenderer] ComputeBuffer initialized with 50000 points.
+[CC_Camera] Auto-centered on point cloud.
+[PointCloudRenderer] Octree ready for LOD rendering. Node Count: 289
+[PointCloudLoader] Loaded 100000 points in 328 ms.
+[StemDiameterUI][CACHE]
+source=sample.ply
+result_path=
+found=false
+[StemDiameterUI][CACHE]
+no existing result
+[ThirdAuditPlayer] Test-only crash injection: terminating only this disposable Player.

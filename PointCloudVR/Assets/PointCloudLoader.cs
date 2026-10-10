@@ -2,6 +2,8 @@ using UnityEngine;
 using System.IO;
 using System.Globalization;
 using System.Collections.Generic;
+using System.Threading;
+using System.Threading.Tasks;
 using PointCloudWorkbench;
 
 public class PointCloudLoader : MonoBehaviour
@@ -28,15 +30,16 @@ public class PointCloudLoader : MonoBehaviour
     [Tooltip("Maximum points to load to prevent memory issues")]
     public int maxPointsToLoad = 20000000; // Updated default to 20 million
 
-    private struct PLYProperty
-    {
-        public string name;
-        public string type;
-        public int size;
-        public int offset;
-    }
-
     private bool parsedCoordinatesAreScaleCalibrated;
+    private bool isLoading;
+    private bool isDestroyed;
+    private PointCloudOperation activeLoadOperation;
+
+    private void OnDestroy()
+    {
+        isDestroyed = true;
+        activeLoadOperation?.Cancel();
+    }
 
     void Awake()
     {
@@ -76,15 +79,27 @@ public class PointCloudLoader : MonoBehaviour
             targetRenderer = GetComponent<PointCloudRenderer>();
         }
 
+        string recoveryPath = PlayerPrefs.GetString("PointCloudVR.LastOpenedPath", "");
+        bool useRecoveryPath = PointCloudSessionRecoveryStore.PreviousSessionWasUnclean &&
+            !string.IsNullOrWhiteSpace(recoveryPath) && File.Exists(recoveryPath);
+        if (useRecoveryPath)
+        {
+            string fullRecoveryPath = Path.GetFullPath(recoveryPath);
+            useExternalPath = true;
+            externalFolderPath = Path.GetDirectoryName(fullRecoveryPath);
+            fileName = Path.GetFileName(fullRecoveryPath);
+            Debug.Log($"[Recovery] 異常終了前の点群を再読み込みします: {fullRecoveryPath}");
+        }
+
         string calibratedPath = PlayerPrefs.GetString(CalibratedPointCloudPreferenceKey, "");
-        if (!string.IsNullOrWhiteSpace(calibratedPath) && File.Exists(calibratedPath))
+        if (!useRecoveryPath && !string.IsNullOrWhiteSpace(calibratedPath) && File.Exists(calibratedPath))
         {
             string fullCalibratedPath = Path.GetFullPath(calibratedPath);
             useExternalPath = true;
             externalFolderPath = Path.GetDirectoryName(fullCalibratedPath);
             fileName = Path.GetFileName(fullCalibratedPath);
         }
-        else if (!string.IsNullOrWhiteSpace(calibratedPath))
+        else if (!useRecoveryPath && !string.IsNullOrWhiteSpace(calibratedPath))
         {
             PlayerPrefs.DeleteKey(CalibratedPointCloudPreferenceKey);
             PlayerPrefs.Save();
@@ -168,31 +183,31 @@ public class PointCloudLoader : MonoBehaviour
 
     public bool AdoptSavedCalibratedPointCloud(string filePath)
     {
-        if (string.IsNullOrWhiteSpace(filePath) || !File.Exists(filePath)) return false;
+        return AdoptSavedCalibratedPointCloud(filePath, 1f);
+    }
+
+    public bool AdoptSavedCalibratedPointCloud(string filePath, float coordinateCorrection)
+    {
+        if (string.IsNullOrWhiteSpace(filePath) || !File.Exists(filePath) ||
+            float.IsNaN(coordinateCorrection) || float.IsInfinity(coordinateCorrection) || coordinateCorrection <= 0f) return false;
         string fullPath = Path.GetFullPath(filePath);
         if (!CanChangePointCloud(fullPath)) return false;
+        if (targetRenderer == null) targetRenderer = GetComponent<PointCloudRenderer>();
+        if (targetRenderer == null || !targetRenderer.ApplyPointCoordinateCorrection(coordinateCorrection)) return false;
 
         CurrentFilePath = fullPath;
         CurrentPointCloudScaleIsCalibrated = true;
-        if (targetRenderer == null) targetRenderer = GetComponent<PointCloudRenderer>();
         fileName = Path.GetFileName(fullPath);
         useExternalPath = true;
         externalFolderPath = Path.GetDirectoryName(fullPath);
         PlayerPrefs.SetString(CalibratedPointCloudPreferenceKey, fullPath);
         PlayerPrefs.Save();
         SuccessfulLoadRevision++;
-        try
-        {
-            PointCloudLoaded?.Invoke(fullPath);
-        }
-        catch (System.Exception ex)
-        {
-            Debug.LogWarning($"[RecoverableOperationError] Point-cloud loaded listener failed: {ex}");
-        }
+        NotifyPointCloudLoaded(fullPath);
         return true;
     }
 
-    public void LoadPointCloud(string filePath)
+    public async void LoadPointCloud(string filePath)
     {
         if (!File.Exists(filePath))
         {
@@ -202,80 +217,127 @@ public class PointCloudLoader : MonoBehaviour
             return;
         }
 
+        if (isLoading)
+        {
+            Debug.LogWarning("[PointCloudLoader] A point-cloud load is already in progress.");
+            return;
+        }
+        PointCloudProgressManager progress = PointCloudProgressManager.Instance;
+        PointCloudOperation operation = progress.TryStart("点群読み込み", "点群ファイルを検証しています...");
+        if (operation == null)
+        {
+            Debug.LogWarning("[PointCloudLoader] Point-cloud loading was not started because another operation is running.");
+            return;
+        }
+        activeLoadOperation = operation;
+        isLoading = true;
+
         System.Diagnostics.Stopwatch stopwatch = new System.Diagnostics.Stopwatch();
         stopwatch.Start();
 
         Debug.Log($"[PointCloudLoader] Loading file: {filePath}");
         string extension = Path.GetExtension(filePath).ToLower();
+        int pointLimit = Mathf.Max(1, maxPointsToLoad);
 
         PointData[] loadedPoints = null;
         parsedCoordinatesAreScaleCalibrated = false;
+        CancellationToken cancellationToken = operation.CancellationToken;
         try
         {
             if (extension == ".ply")
             {
-                loadedPoints = ParsePLY(filePath);
+                loadedPoints = await Task.Run(() => ParsePLY(filePath, pointLimit, cancellationToken), cancellationToken);
             }
             else
             {
-                loadedPoints = ParseTXT(filePath);
+                loadedPoints = await Task.Run(() => ParseTXT(filePath, pointLimit, cancellationToken), cancellationToken);
             }
+            cancellationToken.ThrowIfCancellationRequested();
+        }
+        catch (System.OperationCanceledException)
+        {
+            isLoading = false;
+            operation.CompleteCancelled();
+            activeLoadOperation = null;
+            return;
         }
         catch (System.Exception ex)
         {
+            isLoading = false;
             string message = $"点群ファイルを読み込めませんでした: {Path.GetFileName(filePath)}";
-            PointCloudWorkbench.PointCloudProgressManager.Instance.ShowError("点群読み込み", message);
+            operation.Fail("点群読み込み", message, ex.ToString());
+            activeLoadOperation = null;
             Debug.LogWarning($"[RecoverableOperationError] {message}{System.Environment.NewLine}{ex}");
             return;
         }
 
-        bool sourceScaleIsCalibrated = parsedCoordinatesAreScaleCalibrated || PointCloudScaleService.IsCalibratedPointCloud(filePath);
-
-        stopwatch.Stop();
-
-        if (loadedPoints != null && loadedPoints.Length > 0)
+        isLoading = false;
+        if (isDestroyed || this == null)
         {
-            Debug.Log($"[PointCloudLoader] Loaded {loadedPoints.Length} points in {stopwatch.ElapsedMilliseconds} ms.");
-            if (targetRenderer != null)
+            operation.CompleteCancelled("点群ローダーが破棄されたため読み込みを中止しました。");
+            activeLoadOperation = null;
+            return;
+        }
+        operation.Update(0.7f, "点群データを表示領域へ反映しています...");
+
+        try
+        {
+            bool sourceScaleIsCalibrated = parsedCoordinatesAreScaleCalibrated;
+            stopwatch.Stop();
+
+            if (loadedPoints != null && loadedPoints.Length > 0)
             {
-                if (!CanChangePointCloud(filePath))
+                Debug.Log($"[PointCloudLoader] Loaded {loadedPoints.Length} points in {stopwatch.ElapsedMilliseconds} ms.");
+                if (targetRenderer != null)
                 {
-                    Debug.LogWarning("[PointCloudLoader] Point-cloud change canceled because pending measurement data could not be saved.");
-                    return;
-                }
+                    if (!CanChangePointCloud(filePath))
+                    {
+                        Debug.LogWarning("[PointCloudLoader] Point-cloud change canceled because pending measurement data could not be saved.");
+                        operation.CompleteCancelled("点群の切替を中止しました。計測データを保存できませんでした。");
+                        activeLoadOperation = null;
+                        return;
+                    }
 
-                CurrentFilePath = Path.GetFullPath(filePath);
-                CurrentPointCloudScaleIsCalibrated = sourceScaleIsCalibrated;
-                targetRenderer.SetPointCloudData(loadedPoints);
-                fileName = Path.GetFileName(CurrentFilePath);
-                if (useExternalPath) externalFolderPath = Path.GetDirectoryName(CurrentFilePath);
+                    string loadedFilePath = Path.GetFullPath(filePath);
+                    targetRenderer.SetPointCloudData(loadedPoints);
+                    CurrentFilePath = loadedFilePath;
+                    CurrentPointCloudScaleIsCalibrated = sourceScaleIsCalibrated;
+                    fileName = Path.GetFileName(CurrentFilePath);
+                    if (useExternalPath) externalFolderPath = Path.GetDirectoryName(CurrentFilePath);
 
-                string preferredCalibratedPath = PlayerPrefs.GetString(CalibratedPointCloudPreferenceKey, "");
-                if (!string.IsNullOrEmpty(preferredCalibratedPath) &&
-                    !string.Equals(Path.GetFullPath(preferredCalibratedPath), CurrentFilePath, System.StringComparison.OrdinalIgnoreCase))
-                {
-                    PlayerPrefs.DeleteKey(CalibratedPointCloudPreferenceKey);
-                    PlayerPrefs.Save();
-                }
+                    string preferredCalibratedPath = PlayerPrefs.GetString(CalibratedPointCloudPreferenceKey, "");
+                    if (!string.IsNullOrEmpty(preferredCalibratedPath) &&
+                        !string.Equals(Path.GetFullPath(preferredCalibratedPath), CurrentFilePath, System.StringComparison.OrdinalIgnoreCase))
+                    {
+                        PlayerPrefs.DeleteKey(CalibratedPointCloudPreferenceKey);
+                        PlayerPrefs.Save();
+                    }
 
-                SuccessfulLoadRevision++;
-                try
-                {
-                    PointCloudLoaded?.Invoke(filePath);
+                    SuccessfulLoadRevision++;
+                    NotifyPointCloudLoaded(filePath);
+                    operation.Complete();
                 }
-                catch (System.Exception ex)
+                else
                 {
-                    Debug.LogWarning($"[RecoverableOperationError] Point-cloud loaded listener failed: {ex}");
+                    operation.Fail("点群読み込み", "点群描画先のPointCloudRendererが設定されていません。");
+                    Debug.LogError("[PointCloudLoader] Target PointCloudRenderer is not set!");
                 }
             }
             else
             {
-                Debug.LogError("[PointCloudLoader] Target PointCloudRenderer is not set!");
+                operation.Fail("点群読み込み", "点群ファイルに読み込める点がありません。");
+                Debug.LogWarning("[PointCloudLoader] No points loaded from file.");
             }
         }
-        else
+        catch (System.Exception ex)
         {
-            Debug.LogWarning("[PointCloudLoader] No points loaded from file.");
+            const string message = "読み込んだ点群を画面へ反映できませんでした。元の点群状態を確認してください。";
+            operation.Fail("点群読み込み", message, ex.ToString());
+            Debug.LogWarning($"[RecoverableOperationError] {message}\n{ex}");
+        }
+        finally
+        {
+            if (ReferenceEquals(activeLoadOperation, operation)) activeLoadOperation = null;
         }
     }
 
@@ -299,204 +361,23 @@ public class PointCloudLoader : MonoBehaviour
         return true;
     }
 
-    private PointData[] ParsePLY(string path)
+    private void NotifyPointCloudLoaded(string filePath)
     {
-        List<string> headerLines = new List<string>();
-        long dataOffset = 0;
+        PointCloudWorkbench.SafeEventDispatch.InvokeEach(PointCloudLoaded, filePath,
+            exception => Debug.LogWarning($"[RecoverableOperationError] Point-cloud loaded listener failed: {exception}"));
+    }
 
-        // 1. Read header byte-by-byte to find exact start of binary data
-        using (FileStream fs = new FileStream(path, FileMode.Open, FileAccess.Read))
-        {
-            List<byte> lineBytes = new List<byte>();
-            int b;
-            while ((b = fs.ReadByte()) != -1)
-            {
-                if (b == '\n')
-                {
-                    string line = System.Text.Encoding.ASCII.GetString(lineBytes.ToArray()).Trim();
-                    headerLines.Add(line);
-                    lineBytes.Clear();
-                    if (line == "end_header")
-                    {
-                        dataOffset = fs.Position;
-                        break;
-                    }
-                }
-                else if (b != '\r')
-                {
-                    lineBytes.Add((byte)b);
-                }
-            }
-        }
-
-        // 2. Parse header properties
-        bool isBinary = false;
-        int vertexCount = 0;
-        List<PLYProperty> properties = new List<PLYProperty>();
-        int stride = 0;
-
-        int xOffset = -1, yOffset = -1, zOffset = -1;
-        int rOffset = -1, gOffset = -1, bOffset = -1;
-        int labelOffset = -1;
-
-        string xType = "", yType = "", zType = "";
-        string rType = "", gType = "", bType = "";
-        string labelType = "";
-
-        foreach (var line in headerLines)
-        {
-            string[] tokens = line.Split(new char[] { ' ', '\t' }, System.StringSplitOptions.RemoveEmptyEntries);
-            if (tokens.Length == 0) continue;
-
-            if (tokens[0].Equals("comment", System.StringComparison.OrdinalIgnoreCase) && tokens.Length >= 3 &&
-                tokens[1].Equals("pcwb_scale_calibrated", System.StringComparison.OrdinalIgnoreCase) &&
-                tokens[2].Equals("true", System.StringComparison.OrdinalIgnoreCase))
-            {
-                parsedCoordinatesAreScaleCalibrated = true;
-            }
-            else if (tokens[0] == "format")
-            {
-                if (tokens[1].StartsWith("binary"))
-                {
-                    isBinary = true;
-                }
-            }
-            else if (tokens[0] == "element" && tokens.Length >= 3)
-            {
-                if (tokens[1] == "vertex")
-                {
-                    int.TryParse(tokens[2], out vertexCount);
-                }
-            }
-            else if (tokens[0] == "property" && tokens.Length >= 3)
-            {
-                string typeStr = tokens[1].ToLower();
-                string propName = tokens[2].ToLower();
-                int propSize = GetTypeSize(typeStr);
-
-                PLYProperty prop = new PLYProperty
-                {
-                    name = propName,
-                    type = typeStr,
-                    size = propSize,
-                    offset = stride
-                };
-                properties.Add(prop);
-
-                if (propName == "x") { xOffset = prop.offset; xType = typeStr; }
-                else if (propName == "y") { yOffset = prop.offset; yType = typeStr; }
-                else if (propName == "z") { zOffset = prop.offset; zType = typeStr; }
-                else if (propName == "red" || propName == "r" || propName == "diffuse_red") { rOffset = prop.offset; rType = typeStr; }
-                else if (propName == "green" || propName == "g" || propName == "diffuse_green") { gOffset = prop.offset; gType = typeStr; }
-                else if (propName == "blue" || propName == "b" || propName == "diffuse_blue") { bOffset = prop.offset; bType = typeStr; }
-                else if (propName == "label" || propName == "class" || propName == "scalar_label") { labelOffset = prop.offset; labelType = typeStr; }
-
-                stride += propSize;
-            }
-        }
-
-        if (vertexCount <= 0)
-        {
-            throw new InvalidDataException("PLYヘッダーに頂点数がありません。");
-        }
-
-        int countToLoad = Mathf.Min(vertexCount, maxPointsToLoad);
-        PointData[] points = new PointData[countToLoad];
-
-        if (isBinary)
-        {
-            // --- HIGH PERFORMANCE BINARY PARSING ---
-            using (FileStream fs = new FileStream(path, FileMode.Open, FileAccess.Read))
-            {
-                fs.Seek(dataOffset, SeekOrigin.Begin);
-                byte[] buffer = new byte[countToLoad * stride];
-                int bytesRead = fs.Read(buffer, 0, buffer.Length);
-                int loadedCount = bytesRead / stride;
-                
-                if (loadedCount < countToLoad)
-                {
-                    countToLoad = loadedCount;
-                    System.Array.Resize(ref points, countToLoad);
-                }
-
-                // Parse byte buffer
-                for (int i = 0; i < countToLoad; i++)
-                {
-                    int elementOffset = i * stride;
-
-                    // Read Positions (X, Y, Z)
-                    float x = ReadFloat(buffer, elementOffset + xOffset, xType);
-                    float y = ReadFloat(buffer, elementOffset + yOffset, yType);
-                    float z = ReadFloat(buffer, elementOffset + zOffset, zType);
-
-                    // Read Colors (R, G, B)
-                    byte r = rOffset >= 0 ? ReadByte(buffer, elementOffset + rOffset, rType) : (byte)255;
-                    byte g = gOffset >= 0 ? ReadByte(buffer, elementOffset + gOffset, gType) : (byte)255;
-                    byte b = bOffset >= 0 ? ReadByte(buffer, elementOffset + bOffset, bType) : (byte)255;
-
-                    // Read Label (optional)
-                    int label = labelOffset >= 0 ? ReadInt(buffer, elementOffset + labelOffset, labelType) : 0;
-
-                    points[i] = new PointData(new Vector3(x, y, z), new Color32(r, g, b, 255), label, 0f);
-                }
-            }
-        }
-        else
-        {
-            // --- OPTIMIZED ASCII PARSING ---
-            using (StreamReader reader = new StreamReader(path))
-            {
-                // Skip header again
-                for (int i = 0; i < headerLines.Count; i++) reader.ReadLine();
-
-                string line;
-                for (int i = 0; i < countToLoad; i++)
-                {
-                    if ((line = reader.ReadLine()) == null)
-                    {
-                        System.Array.Resize(ref points, i);
-                        break;
-                    }
-
-                    string[] tokens = line.Split(new char[] { ' ', '\t' }, System.StringSplitOptions.RemoveEmptyEntries);
-                    if (tokens.Length < properties.Count) continue;
-
-                    float x = xOffset >= 0 ? float.Parse(tokens[properties.FindIndex(p => p.name == "x")], CultureInfo.InvariantCulture) : 0;
-                    float y = yOffset >= 0 ? float.Parse(tokens[properties.FindIndex(p => p.name == "y")], CultureInfo.InvariantCulture) : 0;
-                    float z = zOffset >= 0 ? float.Parse(tokens[properties.FindIndex(p => p.name == "z")], CultureInfo.InvariantCulture) : 0;
-
-                    byte r = 255, g = 255, b = 255;
-                    if (rOffset >= 0)
-                    {
-                        float rVal = float.Parse(tokens[properties.FindIndex(p => p.name == "red" || p.name == "r" || p.name == "diffuse_red")], CultureInfo.InvariantCulture);
-                        r = rVal > 1.0f ? (byte)rVal : (byte)(rVal * 255f);
-                    }
-                    if (gOffset >= 0)
-                    {
-                        float gVal = float.Parse(tokens[properties.FindIndex(p => p.name == "green" || p.name == "g" || p.name == "diffuse_green")], CultureInfo.InvariantCulture);
-                        g = gVal > 1.0f ? (byte)gVal : (byte)(gVal * 255f);
-                    }
-                    if (bOffset >= 0)
-                    {
-                        float bVal = float.Parse(tokens[properties.FindIndex(p => p.name == "blue" || p.name == "b" || p.name == "diffuse_blue")], CultureInfo.InvariantCulture);
-                        b = bVal > 1.0f ? (byte)bVal : (byte)(bVal * 255f);
-                    }
-
-                    int label = 0;
-                    if (labelOffset >= 0)
-                    {
-                        label = int.Parse(tokens[properties.FindIndex(p => p.name == "label" || p.name == "class" || p.name == "scalar_label")]);
-                    }
-
-                    points[i] = new PointData(new Vector3(x, y, z), new Color32(r, g, b, 255), label, 0f);
-                }
-            }
-        }
-
+    private PointData[] ParsePLY(string path, int pointLimit, CancellationToken cancellationToken)
+    {
+        PointData[] points = PointCloudPlyReader.ReadConverted(path, pointLimit, vertex =>
+            new PointData(new Vector3(vertex.X, vertex.Y, vertex.Z),
+                new Color32(vertex.Red, vertex.Green, vertex.Blue, 255), vertex.Label, 0f),
+            out bool scaleCalibrated, cancellationToken);
+        parsedCoordinatesAreScaleCalibrated = scaleCalibrated;
         return points;
     }
 
-    private PointData[] ParseTXT(string path)
+    private PointData[] ParseTXT(string path, int pointLimit, CancellationToken cancellationToken)
     {
         List<PointData> list = new List<PointData>();
         using (StreamReader reader = new StreamReader(path))
@@ -504,31 +385,43 @@ public class PointCloudLoader : MonoBehaviour
             string line;
             int loaded = 0;
 
-            while ((line = reader.ReadLine()) != null && loaded < maxPointsToLoad)
+            while ((line = reader.ReadLine()) != null && loaded < pointLimit)
             {
+                if ((loaded & 4095) == 0) cancellationToken.ThrowIfCancellationRequested();
                 line = line.Trim();
                 if (line.StartsWith("#") || string.IsNullOrEmpty(line)) continue;
 
                 string[] tokens = line.Split(new char[] { ',', ' ', '\t', ';' }, System.StringSplitOptions.RemoveEmptyEntries);
-                if (tokens.Length < 3) continue;
+                if (tokens.Length < 3)
+                {
+                    if (tokens.Length > 0 && float.TryParse(tokens[0], NumberStyles.Float, CultureInfo.InvariantCulture, out _))
+                        throw new InvalidDataException($"点群テキストの{loaded + 1}行目にXYZが揃っていません。");
+                    continue;
+                }
 
                 float x = 0, y = 0, z = 0;
                 float r = 255, g = 255, b = 255;
 
-                float.TryParse(tokens[0], NumberStyles.Float, CultureInfo.InvariantCulture, out x);
-                float.TryParse(tokens[1], NumberStyles.Float, CultureInfo.InvariantCulture, out y);
-                float.TryParse(tokens[2], NumberStyles.Float, CultureInfo.InvariantCulture, out z);
+                if (!float.TryParse(tokens[0], NumberStyles.Float, CultureInfo.InvariantCulture, out x) ||
+                    !float.TryParse(tokens[1], NumberStyles.Float, CultureInfo.InvariantCulture, out y) ||
+                    !float.TryParse(tokens[2], NumberStyles.Float, CultureInfo.InvariantCulture, out z) ||
+                    float.IsNaN(x) || float.IsInfinity(x) || float.IsNaN(y) || float.IsInfinity(y) ||
+                    float.IsNaN(z) || float.IsInfinity(z))
+                    throw new InvalidDataException($"点群テキストの{loaded + 1}行目に不正なXYZ値があります。");
 
                 if (tokens.Length >= 6)
                 {
-                    float.TryParse(tokens[3], NumberStyles.Float, CultureInfo.InvariantCulture, out r);
-                    float.TryParse(tokens[4], NumberStyles.Float, CultureInfo.InvariantCulture, out g);
-                    float.TryParse(tokens[5], NumberStyles.Float, CultureInfo.InvariantCulture, out b);
+                    if (!float.TryParse(tokens[3], NumberStyles.Float, CultureInfo.InvariantCulture, out r) ||
+                        !float.TryParse(tokens[4], NumberStyles.Float, CultureInfo.InvariantCulture, out g) ||
+                        !float.TryParse(tokens[5], NumberStyles.Float, CultureInfo.InvariantCulture, out b) ||
+                        float.IsNaN(r) || float.IsInfinity(r) || float.IsNaN(g) || float.IsInfinity(g) ||
+                        float.IsNaN(b) || float.IsInfinity(b))
+                        throw new InvalidDataException($"点群テキストの{loaded + 1}行目に不正なRGB値があります。");
                 }
 
-                byte rNorm = r > 1.0f ? (byte)r : (byte)(r * 255f);
-                byte gNorm = g > 1.0f ? (byte)g : (byte)(g * 255f);
-                byte bNorm = b > 1.0f ? (byte)b : (byte)(b * 255f);
+                byte rNorm = NormalizeTextColor(r);
+                byte gNorm = NormalizeTextColor(g);
+                byte bNorm = NormalizeTextColor(b);
 
                 list.Add(new PointData(new Vector3(x, y, z), new Color32(rNorm, gNorm, bNorm, 255), 0, 0f));
                 loaded++;
@@ -537,49 +430,12 @@ public class PointCloudLoader : MonoBehaviour
         return list.ToArray();
     }
 
-    private int GetTypeSize(string type)
+    private static byte NormalizeTextColor(float value)
     {
-        type = type.ToLower();
-        if (type == "float" || type == "float32" || type == "int" || type == "int32" || type == "uint" || type == "uint32") return 4;
-        if (type == "double" || type == "float64") return 8;
-        if (type == "short" || type == "int16" || type == "ushort" || type == "uint16") return 2;
-        if (type == "char" || type == "uchar" || type == "int8" || type == "uint8") return 1;
-        return 4; // default fallback
-    }
-
-    private float ReadFloat(byte[] data, int offset, string type)
-    {
-        if (type == "float" || type == "float32")
-            return System.BitConverter.ToSingle(data, offset);
-        if (type == "double" || type == "float64")
-            return (float)System.BitConverter.ToDouble(data, offset);
-        return 0f;
-    }
-
-    private byte ReadByte(byte[] data, int offset, string type)
-    {
-        if (type == "uchar" || type == "uint8")
-            return data[offset];
-        if (type == "char" || type == "int8")
-            return (byte)data[offset];
-        if (type == "float" || type == "float32")
-            return (byte)Mathf.Clamp(System.BitConverter.ToSingle(data, offset) * 255.0f, 0, 255);
-        return 255;
-    }
-
-    private int ReadInt(byte[] data, int offset, string type)
-    {
-        if (type == "int" || type == "int32")
-            return System.BitConverter.ToInt32(data, offset);
-        if (type == "uint" || type == "uint32")
-            return (int)System.BitConverter.ToUInt32(data, offset);
-        if (type == "short" || type == "int16")
-            return System.BitConverter.ToInt16(data, offset);
-        if (type == "ushort" || type == "uint16")
-            return System.BitConverter.ToUInt16(data, offset);
-        if (type == "uchar" || type == "uint8" || type == "char" || type == "int8")
-            return data[offset];
-        return 0;
+        float channel = value <= 1f ? value * 255f : value;
+        if (channel < 0f) return 0;
+        if (channel > 255f) return 255;
+        return (byte)channel;
     }
 
     private void GenerateSampleFile(string path)

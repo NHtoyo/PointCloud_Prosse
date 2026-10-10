@@ -1,9 +1,13 @@
 using UnityEngine;
 using System.Collections.Generic;
+using System.Threading;
+using System.Threading.Tasks;
 using PointCloudWorkbench;
 
 public class PointCloudManager : MonoBehaviour
 {
+    public Rect LastPanelRect { get; private set; }
+    private PointCloudWorkbench.PointCloudOperation activeCompareOperation;
     [Header("Point Cloud Targets")]
     public PointCloudRenderer referenceCloud;
     public PointCloudRenderer alignedCloud;
@@ -28,6 +32,14 @@ public class PointCloudManager : MonoBehaviour
     private float maxDistanceThreshold = 1000.0f;
     private float[] calculatedDistances;
     private bool hasCompared = false;
+    private bool compareInProgress;
+
+    private struct C2CResult
+    {
+        public float[] Distances;
+        public float Average;
+        public float Maximum;
+    }
 
     // Stats
     private float avgDistance = 0f;
@@ -115,6 +127,9 @@ public class PointCloudManager : MonoBehaviour
 
     void Update()
     {
+        PointCloudProgressSnapshot progress = PointCloudProgressManager.Instance.GetSnapshot();
+        if (progress.IsRunning || progress.HasError || progress.HasWarning) return;
+
         // Toggle Control Mode with Tab key
         // テキスト入力フィールドにフォーカスがある場合はキー入力を無視する（IMEやBackspaceの競合を回避）
         if (GUIUtility.keyboardControl == 0 && Input.GetKeyDown(KeyCode.Tab))
@@ -242,9 +257,10 @@ public class PointCloudManager : MonoBehaviour
         Debug.Log($"[PointCloudManager] Center alignment complete. Offset applied: {offset}");
     }
 
-    // Fast Grid-Based Cloud-to-Cloud Distance Calculation
-    public void CompareClouds()
+    // Exact Cloud-to-Cloud nearest-neighbor distance calculation in displayed millimeters.
+    public async void CompareClouds()
     {
+        if (compareInProgress) return;
         if (referenceCloud == null || alignedCloud == null) return;
 
         Vector3[] refPos = referenceCloud.GetPositions();
@@ -258,130 +274,94 @@ public class PointCloudManager : MonoBehaviour
             return;
         }
 
-        int nRef = refPos.Length;
-        int nAlign = alignPos.Length;
-        calculatedDistances = new float[nAlign];
-
-        // C2C distances are stored as millimeters; rendered point positions use DisplayScale.
-        Vector3[] refWorld = new Vector3[nRef];
-        for (int i = 0; i < nRef; i++)
+        PointCloudProgressManager progress = PointCloudProgressManager.Instance;
+        PointCloudWorkbench.PointCloudOperation operation = progress.TryStart("C2C距離計算", "表示座標を準備しています...");
+        if (operation == null) return;
+        activeCompareOperation = operation;
+        compareInProgress = true;
+        PointCloudRenderer referenceSnapshot = referenceCloud;
+        PointCloudRenderer alignedSnapshot = alignedCloud;
+        CancellationToken cancellationToken = operation.CancellationToken;
+        try
         {
-            refWorld[i] = referenceCloud.DisplayTransform.TransformPoint(refPos[i]);
-        }
+            PointCloudPoint3[] referencePoints = new PointCloudPoint3[refPos.Length];
+            PointCloudPoint3[] alignedPoints = new PointCloudPoint3[alignPos.Length];
 
-        // 2. Transform Aligned points to World Space
-        Vector3[] alignWorld = new Vector3[nAlign];
-        for (int i = 0; i < nAlign; i++)
-        {
-            alignWorld[i] = alignedCloud.DisplayTransform.TransformPoint(alignPos[i]);
-        }
-
-        // 3. Determine bounding box of Reference Cloud to auto-size grid cells
-        Vector3 min = refWorld[0];
-        Vector3 max = refWorld[0];
-        for (int i = 1; i < nRef; i++)
-        {
-            min = Vector3.Min(min, refWorld[i]);
-            max = Vector3.Max(max, refWorld[i]);
-        }
-        float sizeX = max.x - min.x;
-        float sizeY = max.y - min.y;
-        float sizeZ = max.z - min.z;
-        float maxAxis = Mathf.Max(sizeX, Mathf.Max(sizeY, sizeZ));
-        
-        // Grid cell size is 2% of the largest dimension (typical search range)
-        float cellSize = maxAxis * 0.02f;
-        if (cellSize < 0.01f) cellSize = 0.1f;
-
-        // 4. Populate Grid
-        Dictionary<Vector3Int, List<Vector3>> grid = new Dictionary<Vector3Int, List<Vector3>>();
-        for (int i = 0; i < nRef; i++)
-        {
-            Vector3 p = refWorld[i];
-            Vector3Int key = new Vector3Int(
-                Mathf.FloorToInt(p.x / cellSize),
-                Mathf.FloorToInt(p.y / cellSize),
-                Mathf.FloorToInt(p.z / cellSize)
-            );
-
-            if (!grid.ContainsKey(key))
+            // DisplayTransform includes the existing display scale; distances remain in the UI's mm convention.
+            for (int i = 0; i < refPos.Length; i++)
             {
-                grid[key] = new List<Vector3>();
+                if ((i & 8191) == 0) cancellationToken.ThrowIfCancellationRequested();
+                Vector3 p = referenceSnapshot.DisplayTransform.TransformPoint(refPos[i]);
+                referencePoints[i] = new PointCloudPoint3(p.x, p.y, p.z);
             }
-            grid[key].Add(p);
-        }
-
-        // 5. Query Closest Point for each point in Aligned Cloud
-        float sumDist = 0f;
-        maxDistance = 0f;
-
-        for (int i = 0; i < nAlign; i++)
-        {
-            Vector3 p = alignWorld[i];
-            Vector3Int cellKey = new Vector3Int(
-                Mathf.FloorToInt(p.x / cellSize),
-                Mathf.FloorToInt(p.y / cellSize),
-                Mathf.FloorToInt(p.z / cellSize)
-            );
-
-            float minDistSq = float.MaxValue;
-            bool foundInGrid = false;
-
-            // Search self + 26 surrounding grid cells
-            for (int dx = -1; dx <= 1; dx++)
+            for (int i = 0; i < alignPos.Length; i++)
             {
-                for (int dy = -1; dy <= 1; dy++)
-                {
-                    for (int dz = -1; dz <= 1; dz++)
-                    {
-                        Vector3Int neighborKey = cellKey + new Vector3Int(dx, dy, dz);
-                        if (grid.ContainsKey(neighborKey))
-                        {
-                            foreach (Vector3 refPt in grid[neighborKey])
-                            {
-                                float distSq = (p - refPt).sqrMagnitude;
-                                if (distSq < minDistSq)
-                                {
-                                    minDistSq = distSq;
-                                    foundInGrid = true;
-                                }
-                            }
-                        }
-                    }
-                }
+                if ((i & 8191) == 0) cancellationToken.ThrowIfCancellationRequested();
+                Vector3 p = alignedSnapshot.DisplayTransform.TransformPoint(alignPos[i]);
+                alignedPoints[i] = new PointCloudPoint3(p.x, p.y, p.z);
             }
 
-            // Fallback: if no points in nearby grid, look up via brute force (or assign threshold)
-            if (!foundInGrid)
+            operation.Update(0.2f, "厳密最近傍距離を計算しています...");
+            C2CResult result = await Task.Run(
+                () => CalculateExactDistances(referencePoints, alignedPoints, cancellationToken, operation),
+                cancellationToken);
+            cancellationToken.ThrowIfCancellationRequested();
+            if (referenceCloud != referenceSnapshot || alignedCloud != alignedSnapshot)
             {
-                // Subsampled fallback to avoid complete freeze
-                int step = Mathf.Max(1, nRef / 1000); // sample 1000 points
-                for (int j = 0; j < nRef; j += step)
-                {
-                    float distSq = (p - refWorld[j]).sqrMagnitude;
-                    if (distSq < minDistSq)
-                    {
-                        minDistSq = distSq;
-                    }
-                }
+                operation.CompleteCancelled("計算中に比較対象が切り替わったため、結果を破棄しました。");
+                return;
             }
 
-            float distance = Mathf.Sqrt(minDistSq);
-            calculatedDistances[i] = distance;
+            calculatedDistances = result.Distances;
+            comparedPointCount = result.Distances.Length;
+            avgDistance = result.Average;
+            maxDistance = result.Maximum;
+            hasCompared = true;
 
-            sumDist += distance;
-            if (distance > maxDistance) maxDistance = distance;
+            Debug.Log($"[PointCloudManager] Exact C2C calculation complete. Avg Distance: {avgDistance:F1} mm, Max Distance: {maxDistance:F1} mm");
+            UpdateColors();
+            alignedCloud.ShowDistanceMap(calculatedDistances, maxDistanceThreshold);
+            operation.Complete();
         }
+        catch (System.OperationCanceledException)
+        {
+            operation.CompleteCancelled();
+        }
+        catch (System.Exception ex)
+        {
+            const string message = "C2C距離の計算に失敗しました。点群と表示変換を確認してください。";
+            operation.Fail("C2C比較", message, ex.ToString());
+            Debug.LogWarning($"[RecoverableOperationError] {message}\n{ex}");
+        }
+        finally
+        {
+            compareInProgress = false;
+            if (ReferenceEquals(activeCompareOperation, operation)) activeCompareOperation = null;
+        }
+    }
 
-        comparedPointCount = nAlign;
-        avgDistance = sumDist / nAlign;
-        hasCompared = true;
-
-        Debug.Log($"[PointCloudManager] C2C calculation complete. Avg Distance: {avgDistance:F1} mm, Max Distance: {maxDistance:F1} mm");
-
-        // Force colors update
-        UpdateColors();
-        alignedCloud.ShowDistanceMap(calculatedDistances, maxDistanceThreshold);
+    private static C2CResult CalculateExactDistances(PointCloudPoint3[] referencePoints,
+        PointCloudPoint3[] alignedPoints, CancellationToken cancellationToken, PointCloudWorkbench.PointCloudOperation operation)
+    {
+        ExactNearestNeighbor3D nearestNeighbor = new ExactNearestNeighbor3D(referencePoints, cancellationToken);
+        float[] distances = new float[alignedPoints.Length];
+        float sum = 0f;
+        float maximum = 0f;
+        int reportInterval = System.Math.Max(1, alignedPoints.Length / 100);
+        for (int i = 0; i < alignedPoints.Length; i++)
+        {
+            if ((i & 1023) == 0) cancellationToken.ThrowIfCancellationRequested();
+            nearestNeighbor.FindNearest(alignedPoints[i], out float distanceSquared);
+            float distance = (float)System.Math.Sqrt(distanceSquared);
+            if (float.IsNaN(distance) || float.IsInfinity(distance))
+                throw new System.InvalidOperationException("最近傍距離が有限値ではありません。");
+            distances[i] = distance;
+            sum += distance;
+            if (distance > maximum) maximum = distance;
+            if (i % reportInterval == 0)
+                operation.Update(0.2f + 0.78f * (i + 1f) / alignedPoints.Length, "厳密最近傍距離を計算しています...");
+        }
+        return new C2CResult { Distances = distances, Average = sum / alignedPoints.Length, Maximum = maximum };
     }
 
     public void UpdateColors()
@@ -422,7 +402,7 @@ public class PointCloudManager : MonoBehaviour
 
         // Custom premium dark theme styling for OnGUI
         Texture2D bgTexture = new Texture2D(1, 1);
-        bgTexture.SetPixel(0, 0, new Color(0.12f, 0.12f, 0.16f, 0.85f)); // Glassmorphism dark indigo transparent
+        bgTexture.SetPixel(0, 0, new Color(0.12f, 0.12f, 0.16f, 0.98f));
         bgTexture.Apply();
 
         windowStyle = new GUIStyle(GUI.skin.box);
@@ -454,6 +434,7 @@ public class PointCloudManager : MonoBehaviour
         textStyle = new GUIStyle(GUI.skin.label);
         textStyle.fontSize = 13;
         textStyle.normal.textColor = new Color(0.9f, 0.9f, 0.9f);
+        textStyle.wordWrap = true;
         textStyle.margin = new RectOffset(0, 0, 2, 2);
 
         Texture2D foldoutBg = new Texture2D(1, 1);
@@ -480,16 +461,43 @@ public class PointCloudManager : MonoBehaviour
     void OnGUI()
     {
         InitializeStyles();
+        PointCloudProgressSnapshot activeProgress = PointCloudProgressManager.Instance.GetSnapshot();
+        if (activeProgress.HasError || activeProgress.HasWarning) return;
 
         // 画面幅に応じてパネル幅を動的に決定（最大460、画面幅の25%を超えない）
         float width = Mathf.Min(460f, Screen.width * 0.25f);
         float height = Mathf.Min(930f, Screen.height - 40f);
         float posX = Screen.width - width - 20f;
         float posY = 20f;
+        LastPanelRect = new Rect(posX, posY, width, height);
+        bool compactLayout = width < 340f;
+        headerStyle.fontSize = compactLayout ? 15 : 20;
+        buttonStyle.fontSize = compactLayout ? 12 : 14;
+        activeButtonStyle.fontSize = buttonStyle.fontSize;
+        foldoutHeaderStyle.fontSize = compactLayout ? 12 : 14;
+        textStyle.fontSize = compactLayout ? 11 : 13;
+        toggleStyle.fontSize = compactLayout ? 12 : 14;
+        buttonStyle.wordWrap = compactLayout;
+        activeButtonStyle.wordWrap = compactLayout;
+        foldoutHeaderStyle.wordWrap = compactLayout;
+
+        if (activeProgress.IsRunning)
+        {
+            bool previousGuiEnabled = GUI.enabled;
+            GUI.enabled = false;
+            GUI.Box(LastPanelRect, GUIContent.none, windowStyle);
+            GUILayout.BeginArea(LastPanelRect);
+            GUILayout.Label("処理中", headerStyle);
+            GUILayout.Label(activeProgress.Title, textStyle);
+            GUILayout.Label(activeProgress.StatusMessage, textStyle);
+            GUILayout.EndArea();
+            GUI.enabled = previousGuiEnabled;
+            return;
+        }
  
-        GUILayout.BeginArea(new Rect(posX, posY, width, height), windowStyle);
+        GUILayout.BeginArea(LastPanelRect, windowStyle);
  
-        GUILayout.Label("☁ CloudCompare Unity機能パネル", headerStyle);
+        GUILayout.Label(compactLayout ? "点群比較パネル" : "CloudCompare Unity機能パネル", headerStyle);
         GUILayout.Box("", GUILayout.Height(2)); // Separator line
         GUILayout.Space(5);
 
@@ -511,40 +519,72 @@ public class PointCloudManager : MonoBehaviour
         }
 
         // --- 1. Target Controls Selection ---
-        GUILayout.Label("🎮 操作モード", textStyle);
-        GUILayout.BeginHorizontal();
-        if (GUILayout.Button("カメラ視点操作", currentMode == ControlMode.Camera ? activeButtonStyle : buttonStyle))
+        GUILayout.Label("操作モード", textStyle);
+        if (compactLayout)
         {
-            currentMode = ControlMode.Camera;
-            UpdateControlStates();
+            if (GUILayout.Button("カメラ視点操作", currentMode == ControlMode.Camera ? activeButtonStyle : buttonStyle))
+            {
+                currentMode = ControlMode.Camera;
+                UpdateControlStates();
+            }
+            if (GUILayout.Button("点群位置合わせ", currentMode == ControlMode.AlignedObject ? activeButtonStyle : buttonStyle))
+            {
+                currentMode = ControlMode.AlignedObject;
+                UpdateControlStates();
+            }
         }
-        if (GUILayout.Button("点群位置合わせ", currentMode == ControlMode.AlignedObject ? activeButtonStyle : buttonStyle))
+        else
         {
-            currentMode = ControlMode.AlignedObject;
-            UpdateControlStates();
+            GUILayout.BeginHorizontal();
+            if (GUILayout.Button("カメラ視点操作", currentMode == ControlMode.Camera ? activeButtonStyle : buttonStyle))
+            {
+                currentMode = ControlMode.Camera;
+                UpdateControlStates();
+            }
+            if (GUILayout.Button("点群位置合わせ", currentMode == ControlMode.AlignedObject ? activeButtonStyle : buttonStyle))
+            {
+                currentMode = ControlMode.AlignedObject;
+                UpdateControlStates();
+            }
+            GUILayout.EndHorizontal();
         }
-        GUILayout.EndHorizontal();
         GUILayout.Label("ヒント: [Tab] キーでカメラ操作と点群操作を切り替えられます。", textStyle);
         GUILayout.Space(15);
 
         // --- 2. Color Map / Scalar Fields Mode ---
-        GUILayout.Label("🎨 カラー表示モード", textStyle);
-        GUILayout.BeginHorizontal();
-        if (GUILayout.Button("オリジナルRGB", currentColorMode == ColorMode.Original ? activeButtonStyle : buttonStyle))
+        GUILayout.Label("カラー表示モード", textStyle);
+        if (compactLayout)
         {
-            currentColorMode = ColorMode.Original;
-            UpdateColors();
+            if (GUILayout.Button("オリジナルRGB", currentColorMode == ColorMode.Original ? activeButtonStyle : buttonStyle))
+            {
+                currentColorMode = ColorMode.Original;
+                UpdateColors();
+            }
+            if (GUILayout.Button("アノテーション表示", currentColorMode == ColorMode.Annotation ? activeButtonStyle : buttonStyle))
+            {
+                currentColorMode = ColorMode.Annotation;
+                UpdateColors();
+            }
         }
-        if (GUILayout.Button("アノテーション表示", currentColorMode == ColorMode.Annotation ? activeButtonStyle : buttonStyle))
+        else
         {
-            currentColorMode = ColorMode.Annotation;
-            UpdateColors();
+            GUILayout.BeginHorizontal();
+            if (GUILayout.Button("オリジナルRGB", currentColorMode == ColorMode.Original ? activeButtonStyle : buttonStyle))
+            {
+                currentColorMode = ColorMode.Original;
+                UpdateColors();
+            }
+            if (GUILayout.Button("アノテーション表示", currentColorMode == ColorMode.Annotation ? activeButtonStyle : buttonStyle))
+            {
+                currentColorMode = ColorMode.Annotation;
+                UpdateColors();
+            }
+            GUILayout.EndHorizontal();
         }
-        GUILayout.EndHorizontal();
         GUILayout.Space(15);
 
         // --- 3. Rendering Adjustments ---
-        GUILayout.Label($"⚪ 点のサイズ: {pointSize:F0}", textStyle);
+        GUILayout.Label($"点のサイズ: {pointSize:F0}", textStyle);
         float newSize = GUILayout.HorizontalSlider(pointSize, 1.0f, 20.0f);
         if (Mathf.Abs(newSize - pointSize) > 0.1f)
         {
@@ -555,25 +595,35 @@ public class PointCloudManager : MonoBehaviour
         GUILayout.Space(10);
 
         // --- 4. Alignment Tools ---
-        GUILayout.Label("⚙ 位置合わせ ＆ ICP ツール", textStyle);
-        GUILayout.BeginHorizontal();
-        if (GUILayout.Button("中心位置を合わせる", buttonStyle))
+        GUILayout.Label("位置合わせ ＆ ICP ツール", textStyle);
+        if (compactLayout)
         {
-            AlignCenters();
+            if (GUILayout.Button("中心位置を合わせる", buttonStyle)) AlignCenters();
+            if (GUILayout.Button("位置リセット", buttonStyle)) ResetAlignedPosition();
         }
-        if (GUILayout.Button("位置リセット", buttonStyle))
+        else
         {
-            ResetAlignedPosition();
+            GUILayout.BeginHorizontal();
+            if (GUILayout.Button("中心位置を合わせる", buttonStyle)) AlignCenters();
+            if (GUILayout.Button("位置リセット", buttonStyle)) ResetAlignedPosition();
+            GUILayout.EndHorizontal();
         }
-        GUILayout.EndHorizontal();
         GUILayout.Space(15);
 
         // --- 5. Analysis / Cloud-to-Cloud Distance Comparison ---
-        GUILayout.Label("🔬 変化検出 ＆ C2C 距離計算", textStyle);
-        if (GUILayout.Button("C2C 距離計算を実行", activeButtonStyle))
+        GUILayout.Label("変化検出 ＆ C2C 距離計算", textStyle);
+        bool comparisonTargetsAvailable = referenceCloud != null && alignedCloud != null;
+        bool previousEnabled = GUI.enabled;
+        GUI.enabled = previousEnabled && comparisonTargetsAvailable && !compareInProgress && !PointCloudProgressManager.Instance.IsRunning;
+        if (GUILayout.Button(compareInProgress ? "C2C距離を計算中..." : "C2C 距離計算を実行", activeButtonStyle))
         {
             CompareClouds();
         }
+        GUI.enabled = previousEnabled;
+        if (!comparisonTargetsAvailable)
+            GUILayout.Label("C2Cには比較用の基準点群と比較点群が必要です。", textStyle);
+        else if (PointCloudProgressManager.Instance.IsRunning && !compareInProgress)
+            GUILayout.Label("別の処理が終了すると実行できます。", textStyle);
         GUILayout.Space(10);
 
         GUILayout.Label($"C2C カラーしきい値: {maxDistanceThreshold:F0} mm", textStyle);
@@ -586,7 +636,7 @@ public class PointCloudManager : MonoBehaviour
 
         // --- 6. Analytics Stats Window ---
         GUILayout.Box("", GUILayout.Height(2)); // Separator line
-        GUILayout.Label("📊 C2C 比較統計結果", textStyle);
+        GUILayout.Label("C2C 比較統計結果", textStyle);
         if (hasCompared)
         {
             GUILayout.Label($"比較対象点数: {comparedPointCount:N0}", textStyle);
@@ -604,19 +654,29 @@ public class PointCloudManager : MonoBehaviour
             GUILayout.Box("", GUILayout.Height(1));
             GUILayout.Space(5);
 
-            GUILayout.Label("🔌 ツールパネル表示トグル", textStyle);
-            GUILayout.BeginHorizontal();
+            GUILayout.Label("ツールパネル表示", textStyle);
             bool prevAnn = editorUIInstance.showAnnotationUI;
             bool prevNoise = editorUIInstance.showNoiseFilterUI;
             bool prevMeas = editorUIInstance.showMeasurementUI;
             bool prevStem = editorUIInstance.showStemDiameterUI;
-
-            editorUIInstance.showAnnotationUI = GUILayout.Toggle(editorUIInstance.showAnnotationUI, " アノテーションUI", toggleStyle);
-            editorUIInstance.showNoiseFilterUI = GUILayout.Toggle(editorUIInstance.showNoiseFilterUI, " モヤ処理UI", toggleStyle);
-            GUILayout.EndHorizontal();
-            GUILayout.BeginHorizontal();
-            editorUIInstance.showMeasurementUI = GUILayout.Toggle(editorUIInstance.showMeasurementUI, " 二点間距離計測UI", toggleStyle);
-            editorUIInstance.showStemDiameterUI = GUILayout.Toggle(editorUIInstance.showStemDiameterUI, " 茎径プロファイルUI", toggleStyle);
+            if (compactLayout)
+            {
+                editorUIInstance.showAnnotationUI = GUILayout.Toggle(editorUIInstance.showAnnotationUI, "アノテーションUI", toggleStyle);
+                editorUIInstance.showNoiseFilterUI = GUILayout.Toggle(editorUIInstance.showNoiseFilterUI, "モヤ処理UI", toggleStyle);
+                editorUIInstance.showMeasurementUI = GUILayout.Toggle(editorUIInstance.showMeasurementUI, "距離計測UI", toggleStyle);
+                editorUIInstance.showStemDiameterUI = GUILayout.Toggle(editorUIInstance.showStemDiameterUI, "茎径プロファイルUI", toggleStyle);
+            }
+            else
+            {
+                GUILayout.BeginHorizontal();
+                editorUIInstance.showAnnotationUI = GUILayout.Toggle(editorUIInstance.showAnnotationUI, " アノテーションUI", toggleStyle);
+                editorUIInstance.showNoiseFilterUI = GUILayout.Toggle(editorUIInstance.showNoiseFilterUI, " モヤ処理UI", toggleStyle);
+                GUILayout.EndHorizontal();
+                GUILayout.BeginHorizontal();
+                editorUIInstance.showMeasurementUI = GUILayout.Toggle(editorUIInstance.showMeasurementUI, " 距離計測UI", toggleStyle);
+                editorUIInstance.showStemDiameterUI = GUILayout.Toggle(editorUIInstance.showStemDiameterUI, " 茎径プロファイルUI", toggleStyle);
+                GUILayout.EndHorizontal();
+            }
 
             if (editorUIInstance.showAnnotationUI != prevAnn || 
                 editorUIInstance.showNoiseFilterUI != prevNoise || 
@@ -625,14 +685,12 @@ public class PointCloudManager : MonoBehaviour
             {
                 editorUIInstance.SaveSettings();
             }
-            GUILayout.EndHorizontal();
-            
             GUILayout.Space(15);
             GUILayout.Box("", GUILayout.Height(1));
             GUILayout.Space(10);
 
             // Extension Buttons
-            GUILayout.Label("⚖ スケール同定 & ダウンサンプリング", textStyle);
+            GUILayout.Label("スケール校正とダウンサンプリング", textStyle);
             GUILayout.Space(10);
 
             if (GUILayout.Button("リファレンス球直径を自動推定", activeButtonStyle, GUILayout.Height(45)))
@@ -641,7 +699,7 @@ public class PointCloudManager : MonoBehaviour
             }
             GUILayout.Space(8);
 
-            if (GUILayout.Button("📐 スケール校正を実行 (基準球実寸設定)", activeButtonStyle, GUILayout.Height(45)))
+            if (GUILayout.Button("スケール校正を実行 (基準球実寸設定)", activeButtonStyle, GUILayout.Height(45)))
             {
                 editorUIInstance.showScaleCalibDialog = true;
                 editorUIInstance.showDownsampleDialog = false;
@@ -650,7 +708,7 @@ public class PointCloudManager : MonoBehaviour
 
 
 
-            if (GUILayout.Button("📥 ダウンサンプリング処理実行", activeButtonStyle, GUILayout.Height(45)))
+            if (GUILayout.Button("ダウンサンプリング処理実行", activeButtonStyle, GUILayout.Height(45)))
             {
                 editorUIInstance.showDownsampleDialog = true;
                 editorUIInstance.showScaleCalibDialog = false;
@@ -661,7 +719,7 @@ public class PointCloudManager : MonoBehaviour
         // --- 7. Ported: LOD & Culling settings (Foldout) ---
         if (editorInstance != null && editorInstance.targetRenderer != null)
         {
-            foldoutLOD = GUILayout.Toggle(foldoutLOD, (foldoutLOD ? "▼ " : "▶ ") + "💻 レンダリング最適化", foldoutHeaderStyle);
+            foldoutLOD = GUILayout.Toggle(foldoutLOD, (foldoutLOD ? "▼ " : "▶ ") + "レンダリング最適化", foldoutHeaderStyle);
             if (foldoutLOD)
             {
                 GUILayout.Space(3);
@@ -680,7 +738,7 @@ public class PointCloudManager : MonoBehaviour
                 }
                 else if (rend.IsOctreeReady)
                 {
-                    GUILayout.Label("  ✅ オクトリー構築完了 (LOD有効)", textStyle);
+                    GUILayout.Label("オクトリー構築完了 (LOD有効)", textStyle);
                 }
                 GUILayout.Space(8);
             }
@@ -690,7 +748,7 @@ public class PointCloudManager : MonoBehaviour
         if (editorInstance != null && editorInstance.targetRenderer != null)
         {
             int totalPoints = editorInstance.targetRenderer.GetPointData() != null ? editorInstance.targetRenderer.GetPointData().Length : 0;
-            foldoutStats = GUILayout.Toggle(foldoutStats, (foldoutStats ? "▼ " : "▶ ") + "📊 データセット統計", foldoutHeaderStyle);
+            foldoutStats = GUILayout.Toggle(foldoutStats, (foldoutStats ? "▼ " : "▶ ") + "データセット統計", foldoutHeaderStyle);
             if (foldoutStats)
             {
                 GUILayout.Space(3);
@@ -746,7 +804,7 @@ public class PointCloudManager : MonoBehaviour
         if (legendStylesInitialized) return;
 
         legendBgTexture = new Texture2D(1, 1);
-        legendBgTexture.SetPixel(0, 0, new Color(0.12f, 0.12f, 0.16f, 0.85f)); // Glassmorphism dark indigo transparent
+        legendBgTexture.SetPixel(0, 0, new Color(0.12f, 0.12f, 0.16f, 0.98f));
         legendBgTexture.Apply();
 
         colorTexture = new Texture2D(1, 1);
@@ -793,7 +851,7 @@ public class PointCloudManager : MonoBehaviour
 
         GUILayout.BeginArea(new Rect(posX, posY, width, height), legendStyle);
 
-        GUILayout.Label("🏷 アノテーション分類凡例", legendTitleStyle);
+        GUILayout.Label("アノテーション分類凡例", legendTitleStyle);
         GUILayout.Space(8);
 
         foreach (var cls in classes)
@@ -823,6 +881,7 @@ public class PointCloudManager : MonoBehaviour
 
     void OnDestroy()
     {
+        activeCompareOperation?.Cancel();
         if (legendBgTexture != null) Destroy(legendBgTexture);
         if (colorTexture != null) Destroy(colorTexture);
     }

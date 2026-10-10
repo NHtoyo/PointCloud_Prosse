@@ -1,3 +1,4 @@
+using System;
 using UnityEngine;
 using UnityEngine.Rendering;
 
@@ -138,6 +139,9 @@ namespace PointCloudWorkbench
         {
             Shader shader = Shader.Find("PointCloudWorkbench/OverlayColor");
             if (shader == null) shader = Shader.Find("Unlit/Color");
+            if (shader == null) shader = Shader.Find("Sprites/Default");
+            if (shader == null)
+                throw new InvalidOperationException("茎径オーバーレイ用シェーダーを利用できません。Playerのシェーダー設定を確認してください。");
             Material material = new Material(shader);
             material.color = color;
             return material;
