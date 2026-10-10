@@ -11,6 +11,7 @@ namespace PointCloudWorkbench
     public class FilterPipelineEditorUI : MonoBehaviour
     {
         private PointCloudEditor editor;
+        private PointCloudEditorUI editorUI;
         private NoiseFilterUI noiseFilterUI;
 
         // D&D 状態
@@ -69,6 +70,7 @@ namespace PointCloudWorkbench
         void Start()
         {
             editor        = GetComponent<PointCloudEditor>();
+            editorUI      = GetComponent<PointCloudEditorUI>();
             noiseFilterUI = GetComponent<NoiseFilterUI>();
         }
 
@@ -79,6 +81,7 @@ namespace PointCloudWorkbench
         // =========================================================
         private void HandleKeyboard()
         {
+            if (editorUI == null || !editorUI.showNoiseFilterUI) return;
             if (isPresetPopupOpen) return;
             if (noiseFilterUI?.Params?.customPipeline == null) return;
             var pl = noiseFilterUI.Params.customPipeline;

@@ -9,6 +9,15 @@ using PointCloudWorkbench;
 [RequireComponent(typeof(PointCloudEditor))]
 public class PointCloudEditorUI : MonoBehaviour
 {
+    public enum CenterWorkspace { None, Annotation, Noise, Measurement, StemDiameter }
+
+    private const float CenterWorkspaceTabsHeight = 42f;
+    private static readonly string[] CenterWorkspaceLabels = { "分類", "ノイズ", "距離", "茎径", "閉じる" };
+    private static readonly CenterWorkspace[] CenterWorkspaceTabs =
+    {
+        CenterWorkspace.Annotation, CenterWorkspace.Noise, CenterWorkspace.Measurement,
+        CenterWorkspace.StemDiameter, CenterWorkspace.None
+    };
     private PointCloudEditor editor;
     private PointCloudOperation activeOperation;
 
@@ -33,6 +42,9 @@ public class PointCloudEditorUI : MonoBehaviour
     private Vector2 centerPanelScroll;
     private Rect leftPanelRect;
     private Rect centerPanelViewport;
+    private Rect centerPanelBodyViewport;
+    private Rect centerWorkspaceToolbarRect;
+    private Rect centerPanelScrollBarRect;
     private PointCloudManager pointCloudManager;
 
     // Foldout Statuses
@@ -108,6 +120,15 @@ public class PointCloudEditorUI : MonoBehaviour
         showAnnotationUI = PlayerPrefs.GetInt("Show_AnnotationUI", 1) == 1;
         showMeasurementUI = PlayerPrefs.GetInt("Show_MeasurementUI", 1) == 1;
         showStemDiameterUI = PlayerPrefs.GetInt("Show_StemDiameterUI", 0) == 1;
+
+        CenterWorkspace savedWorkspace = showStemDiameterUI ? CenterWorkspace.StemDiameter
+            : showMeasurementUI ? CenterWorkspace.Measurement
+            : showNoiseFilterUI ? CenterWorkspace.Noise
+            : showAnnotationUI ? CenterWorkspace.Annotation
+            : CenterWorkspace.None;
+        bool settingsWereNormalized = CountVisibleCenterWorkspaces() > (savedWorkspace == CenterWorkspace.None ? 0 : 1);
+        SelectCenterWorkspace(savedWorkspace);
+        if (settingsWereNormalized) SaveSettings();
     }
 
     public void SaveSettings()
@@ -295,20 +316,51 @@ public class PointCloudEditorUI : MonoBehaviour
         if (progress.IsRunning || progress.HasError || progress.HasWarning || showDownsampleDialog || showScaleCalibDialog || showReferenceSphereDialog || showExportDialog) return true;
         Vector2 guiMousePosition = new Vector2(Input.mousePosition.x, Screen.height - Input.mousePosition.y);
         if (GUIUtility.hotControl != 0) return true;
-        if (leftPanelRect.Contains(guiMousePosition) || centerPanelViewport.Contains(guiMousePosition)) return true;
+        if (leftPanelRect.Contains(guiMousePosition) || centerWorkspaceToolbarRect.Contains(guiMousePosition) ||
+            centerPanelScrollBarRect.Contains(guiMousePosition)) return true;
         if (pointCloudManager != null && pointCloudManager.LastPanelRect.Contains(guiMousePosition)) return true;
+        return IsMouseOverActiveCenterPanel();
+    }
+
+    private bool IsMouseOverActiveCenterPanel()
+    {
         if (showNoiseFilterUI && pipelineEditorUI != null && pipelineEditorUI.IsMouseOverUI()) return true;
         if (showAnnotationUI && annotationPipelineEditorUI != null && annotationPipelineEditorUI.IsMouseOverUI()) return true;
         if (showMeasurementUI && distanceMeasurementUI != null && distanceMeasurementUI.IsMouseOverPanel()) return true;
-        if (showStemDiameterUI && stemDiameterUI != null && stemDiameterUI.IsMouseOverPanel()) return true;
-        return false;
+        return showStemDiameterUI && stemDiameterUI != null && stemDiameterUI.IsMouseOverPanel();
     }
 
     public void SetStemDiameterPanelVisible(bool visible)
     {
-        if (showStemDiameterUI == visible) return;
-        showStemDiameterUI = visible;
-        SaveSettings();
+        if (visible)
+        {
+            SelectCenterWorkspace(CenterWorkspace.StemDiameter);
+            SaveSettings();
+        }
+        else if (showStemDiameterUI)
+        {
+            SelectCenterWorkspace(CenterWorkspace.None);
+            SaveSettings();
+        }
+    }
+
+    public void SelectCenterWorkspace(CenterWorkspace workspace)
+    {
+        showNoiseFilterUI = workspace == CenterWorkspace.Noise;
+        showAnnotationUI = workspace == CenterWorkspace.Annotation;
+        showMeasurementUI = workspace == CenterWorkspace.Measurement;
+        showStemDiameterUI = workspace == CenterWorkspace.StemDiameter;
+        centerPanelScroll = Vector2.zero;
+    }
+
+    private int CountVisibleCenterWorkspaces()
+    {
+        int count = 0;
+        if (showNoiseFilterUI) count++;
+        if (showAnnotationUI) count++;
+        if (showMeasurementUI) count++;
+        if (showStemDiameterUI) count++;
+        return count;
     }
 
     private static string GetToolDisplayName(PointCloudEditor.EditTool tool)
@@ -383,6 +435,11 @@ public class PointCloudEditorUI : MonoBehaviour
         float centerX = sideWidth + 30f;
         float centerRight = Screen.width - sideWidth - 30f;
         centerPanelViewport = new Rect(centerX, 15f, Mathf.Max(0f, centerRight - centerX), Mathf.Max(0f, Screen.height - 30f));
+        centerWorkspaceToolbarRect = new Rect(centerPanelViewport.x, centerPanelViewport.y,
+            centerPanelViewport.width, CenterWorkspaceTabsHeight);
+        centerPanelBodyViewport = new Rect(centerPanelViewport.x,
+            centerPanelViewport.y + CenterWorkspaceTabsHeight, centerPanelViewport.width,
+            Mathf.Max(0f, centerPanelViewport.height - CenterWorkspaceTabsHeight));
 
         GUILayout.BeginArea(leftPanelRect, windowStyle);
 
@@ -391,7 +448,7 @@ public class PointCloudEditorUI : MonoBehaviour
         PointCloudLoader statusLoader = editor.targetRenderer.GetComponent<PointCloudLoader>();
         string currentFileName = statusLoader != null ? Path.GetFileName(statusLoader.GetFilePath()) : "不明";
         GUILayout.Label($"対象: {currentFileName}", textStyle);
-        GUILayout.Label($"総点数 {totalPoints:N0}  |  表示可能 {Mathf.Max(0, totalPoints - editor.GetNoiseDeletedCount()):N0}  |  選択 {editor.SelectedPointCount:N0}", textStyle);
+        GUILayout.Label($"総点数 {totalPoints:N0}  |  表示点数 {editor.VisiblePointCount:N0}  |  選択 {editor.SelectedPointCount:N0}", textStyle);
         GUILayout.Label(statusLoader != null && statusLoader.CurrentPointCloudScaleIsCalibrated ? "スケール校正済み" : "スケール未校正", textStyle);
         GUILayout.Box("", GUILayout.Height(2));
         GUILayout.Space(5);
@@ -850,44 +907,54 @@ public class PointCloudEditorUI : MonoBehaviour
         // Draw Lasso lines on screen if active
         DrawLassoLines();
 
-        // --- Draw Chained Pipeline/Annotation/Calibration Windows ---
-        float currentCenterY = -centerPanelScroll.y;
+        // Tabs are drawn first so their mouse-down events cannot reach a panel underneath.
+        DrawCenterWorkspaceTabs(interactive: true);
+
+        // Only one center workspace is active at a time. Keep its content scrollable below the fixed tabs.
+        float currentCenterY = CenterWorkspaceTabsHeight - centerPanelScroll.y;
         GUI.BeginGroup(new Rect(0f, 15f, Screen.width, Mathf.Max(0f, Screen.height - 30f)));
         if (showNoiseFilterUI && pipelineEditorUI != null)
         {
             pipelineEditorUI.DrawGUI(ref currentCenterY);
         }
-        if (showAnnotationUI && annotationPipelineEditorUI != null)
+        else if (showAnnotationUI && annotationPipelineEditorUI != null)
         {
             annotationPipelineEditorUI.DrawGUI(ref currentCenterY);
         }
-        if (showMeasurementUI && distanceMeasurementUI != null)
+        else if (showMeasurementUI && distanceMeasurementUI != null)
         {
             distanceMeasurementUI.DrawGUI(ref currentCenterY);
         }
-        if (showStemDiameterUI && stemDiameterUI != null)
+        else if (showStemDiameterUI && stemDiameterUI != null)
         {
             stemDiameterUI.DrawGUI(ref currentCenterY);
         }
         float centerContentHeight = Mathf.Max(0f, currentCenterY + centerPanelScroll.y);
         GUI.EndGroup();
 
-        if (Event.current.type == EventType.ScrollWheel && centerPanelViewport.Contains(Event.current.mousePosition) && GUIUtility.hotControl == 0)
+        float maxCenterScroll = Mathf.Max(0f, centerContentHeight - centerPanelBodyViewport.height);
+        if (Event.current.type == EventType.ScrollWheel && centerPanelBodyViewport.Contains(Event.current.mousePosition) &&
+            IsMouseOverActiveCenterPanel() &&
+            GUIUtility.hotControl == 0 && maxCenterScroll > 0f)
         {
             centerPanelScroll.y = Mathf.Clamp(centerPanelScroll.y + Event.current.delta.y * 24f,
-                0f, Mathf.Max(0f, centerContentHeight - centerPanelViewport.height));
+                0f, maxCenterScroll);
             Event.current.Use();
         }
-        if (centerContentHeight > centerPanelViewport.height)
+        if (maxCenterScroll > 0f)
         {
-            Rect scrollBarRect = new Rect(centerPanelViewport.xMax - 12f, centerPanelViewport.y, 12f, centerPanelViewport.height);
-            centerPanelScroll.y = GUI.VerticalScrollbar(scrollBarRect, centerPanelScroll.y,
-                centerPanelViewport.height, 0f, centerContentHeight);
+            centerPanelScrollBarRect = new Rect(centerPanelBodyViewport.xMax - 12f,
+                centerPanelBodyViewport.y, 12f, centerPanelBodyViewport.height);
+            centerPanelScroll.y = GUI.VerticalScrollbar(centerPanelScrollBarRect, centerPanelScroll.y,
+                centerPanelBodyViewport.height, 0f, centerContentHeight);
         }
         else
         {
             centerPanelScroll.y = 0f;
+            centerPanelScrollBarRect = Rect.zero;
         }
+
+        DrawCenterWorkspaceTabs(interactive: false);
 
         // Draw Progress Pop-up Window if running (Modal state)
         PointCloudProgressSnapshot progress = PointCloudProgressManager.Instance.GetSnapshot();
@@ -912,6 +979,46 @@ public class PointCloudEditorUI : MonoBehaviour
             GUI.BringWindowToFront(999);
         }
         GUI.enabled = guiEnabledBeforeDraw;
+    }
+
+    private void DrawCenterWorkspaceTabs(bool interactive)
+    {
+        if (interactive)
+        {
+            float gap = 3f;
+            float buttonWidth = Mathf.Max(0f, (centerWorkspaceToolbarRect.width - gap * (CenterWorkspaceLabels.Length - 1)) / CenterWorkspaceLabels.Length);
+            for (int i = 0; i < CenterWorkspaceLabels.Length; i++)
+            {
+                Rect buttonRect = new Rect(centerWorkspaceToolbarRect.x + i * (buttonWidth + gap),
+                    centerWorkspaceToolbarRect.y + 3f, buttonWidth, centerWorkspaceToolbarRect.height - 6f);
+                CenterWorkspace workspace = CenterWorkspaceTabs[i];
+                bool selected = workspace == CenterWorkspace.Annotation ? showAnnotationUI
+                    : workspace == CenterWorkspace.Noise ? showNoiseFilterUI
+                    : workspace == CenterWorkspace.Measurement ? showMeasurementUI
+                    : workspace == CenterWorkspace.StemDiameter ? showStemDiameterUI
+                    : CountVisibleCenterWorkspaces() == 0;
+                if (GUI.Button(buttonRect, CenterWorkspaceLabels[i], selected ? activeButtonStyle : buttonStyle))
+                {
+                    SelectCenterWorkspace(workspace);
+                    SaveSettings();
+                }
+            }
+            return;
+        }
+
+        GUI.Box(centerWorkspaceToolbarRect, GUIContent.none, windowStyle);
+        float overlayGap = 3f;
+        float overlayWidth = Mathf.Max(0f,
+            (centerWorkspaceToolbarRect.width - overlayGap * (CenterWorkspaceLabels.Length - 1)) / CenterWorkspaceLabels.Length);
+        for (int i = 0; i < CenterWorkspaceLabels.Length; i++)
+        {
+            bool selected = i == 0 ? showAnnotationUI : i == 1 ? showNoiseFilterUI
+                : i == 2 ? showMeasurementUI : i == 3 ? showStemDiameterUI
+                : CountVisibleCenterWorkspaces() == 0;
+            Rect buttonRect = new Rect(centerWorkspaceToolbarRect.x + i * (overlayWidth + overlayGap),
+                centerWorkspaceToolbarRect.y + 3f, overlayWidth, centerWorkspaceToolbarRect.height - 6f);
+            GUI.Box(buttonRect, CenterWorkspaceLabels[i], selected ? activeButtonStyle : buttonStyle);
+        }
     }
 
     private void DrawExportDialogWindow(int windowID)

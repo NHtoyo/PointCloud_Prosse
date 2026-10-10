@@ -13,6 +13,43 @@ using UnityEngine.TestTools;
 public sealed class RuntimeRecoveryAndSceneTests
 {
     [UnityTest]
+    public IEnumerator CenterWorkspaceSelectionShowsOnlyTheRequestedPanel()
+    {
+        var host = new GameObject("CenterWorkspaceSelectionTest");
+        try
+        {
+            Type uiType = AppDomain.CurrentDomain.GetAssemblies()
+                .Select(assembly => assembly.GetType("PointCloudEditorUI", false))
+                .FirstOrDefault(candidate => candidate != null);
+            Assert.That(uiType, Is.Not.Null, "PointCloudEditorUI was not loaded.");
+
+            Component ui = host.AddComponent(uiType);
+            Type workspaceType = uiType.GetNestedType("CenterWorkspace");
+            MethodInfo selectWorkspace = uiType.GetMethod("SelectCenterWorkspace");
+            Assert.That(workspaceType, Is.Not.Null);
+            Assert.That(selectWorkspace, Is.Not.Null);
+
+            selectWorkspace.Invoke(ui, new[] { Enum.Parse(workspaceType, "Measurement") });
+            Assert.That((bool)uiType.GetField("showMeasurementUI").GetValue(ui), Is.True);
+            Assert.That((bool)uiType.GetField("showAnnotationUI").GetValue(ui) ||
+                        (bool)uiType.GetField("showNoiseFilterUI").GetValue(ui) ||
+                        (bool)uiType.GetField("showStemDiameterUI").GetValue(ui), Is.False);
+
+            selectWorkspace.Invoke(ui, new[] { Enum.Parse(workspaceType, "None") });
+            Assert.That((bool)uiType.GetField("showMeasurementUI").GetValue(ui) ||
+                        (bool)uiType.GetField("showAnnotationUI").GetValue(ui) ||
+                        (bool)uiType.GetField("showNoiseFilterUI").GetValue(ui) ||
+                        (bool)uiType.GetField("showStemDiameterUI").GetValue(ui), Is.False);
+        }
+        finally
+        {
+            UnityEngine.Object.Destroy(host);
+        }
+
+        yield return null;
+    }
+
+    [UnityTest]
     public IEnumerator StartupSceneLoadsWithCameraAndNoMissingScripts()
     {
         const string scenePath = "Assets/VRTestScene.unity";

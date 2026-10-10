@@ -100,12 +100,14 @@ public class PointCloudEditor : MonoBehaviour
     private int[] labelCounts = new int[7]; // Legacy placeholder
     private Dictionary<int, int> labelCountsMap = new Dictionary<int, int>();
     private int noiseDeletedCount = 0;
+    private int visiblePointCount = 0;
     private int selectedPointCount = 0;
     private bool statsDirty = true;
     private AnnotationPipelineEditorUI annotationUI;
 
     public Dictionary<int, int> GetLabelCountsMap() => labelCountsMap;
     public int GetNoiseDeletedCount() => noiseDeletedCount;
+    public int VisiblePointCount => visiblePointCount;
     public int SelectedPointCount => selectedPointCount;
 
     // Annotation History (Deep copy labels)
@@ -1532,6 +1534,7 @@ public class PointCloudEditor : MonoBehaviour
 
         labelCountsMap.Clear();
         noiseDeletedCount = 0;
+        visiblePointCount = 0;
         selectedPointCount = 0;
 
         // Initialize active classes to ensure 0 counts are shown
@@ -1551,6 +1554,8 @@ public class PointCloudEditor : MonoBehaviour
         {
             int labelVal = points[i].label;
             bool isDeleted = (labelVal & 0x20000) != 0;
+            bool isNoiseHidden = (labelVal & NoiseFilterManager.NOISE_HIDDEN_BIT) != 0;
+            if (!isDeleted && !isNoiseHidden) visiblePointCount++;
             if (isDeleted)
             {
                 noiseDeletedCount++;
@@ -1747,7 +1752,9 @@ public class PointCloudEditor : MonoBehaviour
 
         // Close and apply on Return key or Space key (Right-click removed to avoid camera rotation conflict)
         // テキスト入力フィールドにフォーカスがある場合はキー入力を無視する（IMEやBackspaceの競合を回避）
-        if (GUIUtility.keyboardControl == 0 && (Input.GetKeyDown(KeyCode.Return) || Input.GetKeyDown(KeyCode.Space)))
+        bool pointerOverUi = editorUI != null && editorUI.IsMouseOverUI();
+        if (!pointerOverUi && GUIUtility.keyboardControl == 0 &&
+            (Input.GetKeyDown(KeyCode.Return) || Input.GetKeyDown(KeyCode.Space)))
         {
             if (lassoPoints.Count >= 3)
             {

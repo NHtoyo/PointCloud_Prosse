@@ -82,6 +82,7 @@ namespace PointCloudWorkbench
 
         private void HandleKeyboard()
         {
+            if (editorUI == null || !editorUI.showAnnotationUI) return;
             if (isPresetPopupOpen) return;
             if (activePreset == null || editor == null) return;
 

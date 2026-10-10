@@ -53,7 +53,6 @@ public class PointCloudManager : MonoBehaviour
     private GUIStyle activeButtonStyle;
     private GUIStyle textStyle;
     private GUIStyle foldoutHeaderStyle;
-    private GUIStyle toggleStyle;
     private bool stylesInitialized = false;
 
     // LOD & Stats variables ported from PointCloudEditorUI
@@ -132,7 +131,8 @@ public class PointCloudManager : MonoBehaviour
 
         // Toggle Control Mode with Tab key
         // テキスト入力フィールドにフォーカスがある場合はキー入力を無視する（IMEやBackspaceの競合を回避）
-        if (GUIUtility.keyboardControl == 0 && Input.GetKeyDown(KeyCode.Tab))
+        bool pointerOverUi = editorUIInstance != null && editorUIInstance.IsMouseOverUI();
+        if (!pointerOverUi && GUIUtility.keyboardControl == 0 && Input.GetKeyDown(KeyCode.Tab))
         {
             currentMode = (currentMode == ControlMode.Camera) ? ControlMode.AlignedObject : ControlMode.Camera;
             UpdateControlStates();
@@ -449,12 +449,6 @@ public class PointCloudManager : MonoBehaviour
         foldoutHeaderStyle.padding = new RectOffset(10, 10, 6, 6);
         foldoutHeaderStyle.normal.background = foldoutBg;
 
-        toggleStyle = new GUIStyle(GUI.skin.toggle);
-        toggleStyle.fontSize = 14;
-        toggleStyle.normal.textColor = new Color(0.9f, 0.9f, 0.9f);
-        toggleStyle.hover.textColor = Color.white;
-        toggleStyle.margin = new RectOffset(0, 0, 3, 3);
-
         stylesInitialized = true;
     }
 
@@ -476,7 +470,6 @@ public class PointCloudManager : MonoBehaviour
         activeButtonStyle.fontSize = buttonStyle.fontSize;
         foldoutHeaderStyle.fontSize = compactLayout ? 12 : 14;
         textStyle.fontSize = compactLayout ? 11 : 13;
-        toggleStyle.fontSize = compactLayout ? 12 : 14;
         buttonStyle.wordWrap = compactLayout;
         activeButtonStyle.wordWrap = compactLayout;
         foldoutHeaderStyle.wordWrap = compactLayout;
@@ -654,36 +647,32 @@ public class PointCloudManager : MonoBehaviour
             GUILayout.Box("", GUILayout.Height(1));
             GUILayout.Space(5);
 
-            GUILayout.Label("ツールパネル表示", textStyle);
-            bool prevAnn = editorUIInstance.showAnnotationUI;
-            bool prevNoise = editorUIInstance.showNoiseFilterUI;
-            bool prevMeas = editorUIInstance.showMeasurementUI;
-            bool prevStem = editorUIInstance.showStemDiameterUI;
+            GUILayout.Label("中央パネル", textStyle);
             if (compactLayout)
             {
-                editorUIInstance.showAnnotationUI = GUILayout.Toggle(editorUIInstance.showAnnotationUI, "アノテーションUI", toggleStyle);
-                editorUIInstance.showNoiseFilterUI = GUILayout.Toggle(editorUIInstance.showNoiseFilterUI, "モヤ処理UI", toggleStyle);
-                editorUIInstance.showMeasurementUI = GUILayout.Toggle(editorUIInstance.showMeasurementUI, "距離計測UI", toggleStyle);
-                editorUIInstance.showStemDiameterUI = GUILayout.Toggle(editorUIInstance.showStemDiameterUI, "茎径プロファイルUI", toggleStyle);
+                if (GUILayout.Button("分類", editorUIInstance.showAnnotationUI ? activeButtonStyle : buttonStyle))
+                    SelectCenterWorkspace(PointCloudEditorUI.CenterWorkspace.Annotation);
+                if (GUILayout.Button("ノイズ処理", editorUIInstance.showNoiseFilterUI ? activeButtonStyle : buttonStyle))
+                    SelectCenterWorkspace(PointCloudEditorUI.CenterWorkspace.Noise);
+                if (GUILayout.Button("距離計測", editorUIInstance.showMeasurementUI ? activeButtonStyle : buttonStyle))
+                    SelectCenterWorkspace(PointCloudEditorUI.CenterWorkspace.Measurement);
+                if (GUILayout.Button("茎径プロファイル", editorUIInstance.showStemDiameterUI ? activeButtonStyle : buttonStyle))
+                    SelectCenterWorkspace(PointCloudEditorUI.CenterWorkspace.StemDiameter);
             }
             else
             {
                 GUILayout.BeginHorizontal();
-                editorUIInstance.showAnnotationUI = GUILayout.Toggle(editorUIInstance.showAnnotationUI, " アノテーションUI", toggleStyle);
-                editorUIInstance.showNoiseFilterUI = GUILayout.Toggle(editorUIInstance.showNoiseFilterUI, " モヤ処理UI", toggleStyle);
+                if (GUILayout.Button("分類", editorUIInstance.showAnnotationUI ? activeButtonStyle : buttonStyle))
+                    SelectCenterWorkspace(PointCloudEditorUI.CenterWorkspace.Annotation);
+                if (GUILayout.Button("ノイズ処理", editorUIInstance.showNoiseFilterUI ? activeButtonStyle : buttonStyle))
+                    SelectCenterWorkspace(PointCloudEditorUI.CenterWorkspace.Noise);
                 GUILayout.EndHorizontal();
                 GUILayout.BeginHorizontal();
-                editorUIInstance.showMeasurementUI = GUILayout.Toggle(editorUIInstance.showMeasurementUI, " 距離計測UI", toggleStyle);
-                editorUIInstance.showStemDiameterUI = GUILayout.Toggle(editorUIInstance.showStemDiameterUI, " 茎径プロファイルUI", toggleStyle);
+                if (GUILayout.Button("距離計測", editorUIInstance.showMeasurementUI ? activeButtonStyle : buttonStyle))
+                    SelectCenterWorkspace(PointCloudEditorUI.CenterWorkspace.Measurement);
+                if (GUILayout.Button("茎径プロファイル", editorUIInstance.showStemDiameterUI ? activeButtonStyle : buttonStyle))
+                    SelectCenterWorkspace(PointCloudEditorUI.CenterWorkspace.StemDiameter);
                 GUILayout.EndHorizontal();
-            }
-
-            if (editorUIInstance.showAnnotationUI != prevAnn || 
-                editorUIInstance.showNoiseFilterUI != prevNoise || 
-                editorUIInstance.showMeasurementUI != prevMeas ||
-                editorUIInstance.showStemDiameterUI != prevStem)
-            {
-                editorUIInstance.SaveSettings();
             }
             GUILayout.Space(15);
             GUILayout.Box("", GUILayout.Height(1));
@@ -797,6 +786,12 @@ public class PointCloudManager : MonoBehaviour
         {
             DrawAnnotationLegend();
         }
+    }
+
+    private void SelectCenterWorkspace(PointCloudEditorUI.CenterWorkspace workspace)
+    {
+        editorUIInstance.SelectCenterWorkspace(workspace);
+        editorUIInstance.SaveSettings();
     }
 
     private void InitializeLegendStyles()
