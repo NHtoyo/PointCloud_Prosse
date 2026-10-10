@@ -51,6 +51,20 @@ class ReferenceSphereAlgorithmTests(unittest.TestCase):
         self.assertEqual(len(indices), len(sphere))
         self.assertTrue(np.all(indices < len(sphere)))
 
+    def test_partial_sphere_recovers_known_diameter(self):
+        points = fibonacci_sphere(count=2400, center=(0.4, -0.2, 0.1), radius=0.03)
+        points = points[points[:, 2] >= 0.1]
+        result = estimate_reference_sphere(points)
+        self.assertGreater(len(points), 1000)
+        self.assertAlmostEqual(result.diameter, 0.06, delta=1e-7)
+
+    def test_largest_of_two_separated_spheres_is_selected(self):
+        larger = fibonacci_sphere(count=900, center=(0.0, 0.0, 0.0), radius=0.0258)
+        smaller = fibonacci_sphere(count=500, center=(2.0, 0.0, 0.0), radius=0.04)
+        result = estimate_reference_sphere(np.vstack((larger, smaller)))
+        self.assertEqual(result.component_point_count, len(larger))
+        self.assertAlmostEqual(result.diameter, 0.0516, delta=1e-7)
+
     def test_robust_fit_resists_few_nearby_radial_outliers(self):
         sphere = fibonacci_sphere(count=1600, center=(0.0, 0.0, 0.0), radius=1.0)
         directions = np.array([[1, 1, 1], [-1, 1, -1], [1, -1, -1], [-1, -1, 1]], dtype=np.float64)

@@ -23,14 +23,29 @@ internal sealed class ThirdAuditWorkflowProbe : MonoBehaviour
     private PointCloudLoader loader;
     private PointCloudEditor editor;
     private PointCloudRenderer renderer;
+    private bool enduranceTracking;
+    private long enduranceFrameCount;
+    private double enduranceFrameTotalMs;
+    private float enduranceFrameMaxMs;
 
     [RuntimeInitializeOnLoadMethod(RuntimeInitializeLoadType.AfterSceneLoad)]
     private static void StartProbeIfRequested()
     {
         string[] args = Environment.GetCommandLineArgs();
         if (!args.Contains("--pcwb-fourth-player-workflow") && !args.Contains("--pcwb-e2e-order2") &&
-            !args.Contains("--pcwb-fourth-load-race") && !args.Contains("--pcwb-fourth-load-tiers")) return;
+            !args.Contains("--pcwb-fourth-load-race") && !args.Contains("--pcwb-fourth-load-tiers") &&
+            !args.Contains("--pcwb-endurance") && !args.Contains("--pcwb-c2c-numerical")) return;
+        Application.runInBackground = true;
         new GameObject("FourthAuditWorkflowProbe").AddComponent<ThirdAuditWorkflowProbe>();
+    }
+
+    private void Update()
+    {
+        if (!enduranceTracking) return;
+        float frameMs = Time.unscaledDeltaTime * 1000f;
+        enduranceFrameCount++;
+        enduranceFrameTotalMs += frameMs;
+        enduranceFrameMaxMs = Math.Max(enduranceFrameMaxMs, frameMs);
     }
 
     private IEnumerator Start()
@@ -50,10 +65,335 @@ internal sealed class ThirdAuditWorkflowProbe : MonoBehaviour
 
         bool raceMode = Environment.GetCommandLineArgs().Contains("--pcwb-fourth-load-race");
         bool loadTierMode = Environment.GetCommandLineArgs().Contains("--pcwb-fourth-load-tiers");
+        bool enduranceMode = Environment.GetCommandLineArgs().Contains("--pcwb-endurance");
+        bool c2cNumericalMode = Environment.GetCommandLineArgs().Contains("--pcwb-c2c-numerical");
         bool order2Mode = Environment.GetCommandLineArgs().Contains("--pcwb-e2e-order2");
         yield return Guard(raceMode ? RunLoadRace() : loadTierMode ? RunLoadTiers() :
+            enduranceMode ? RunEndurance() : c2cNumericalMode ? RunC2CNumerical() :
             order2Mode ? RunAlternateWorkflow() : RunWorkflow());
         Application.Quit(Environment.ExitCode);
+    }
+
+    private IEnumerator RunC2CNumerical()
+    {
+        yield return null;
+        PointCloudPoint3[] extremeReference =
+        {
+            new PointCloudPoint3(2e19f, 0f, 0f),
+            new PointCloudPoint3(3e19f, 0f, 0f)
+        };
+        object extreme = InvokeC2CDistanceCalculation(extremeReference,
+            new[] { new PointCloudPoint3(0f, 0f, 0f) });
+        float[] extremeDistances = GetField<float[]>(extreme, "Distances");
+        bool extremeOk = extremeDistances.Length == 1 &&
+            Math.Abs((double)extremeDistances[0] - (double)2e19f) <= (double)2e19f * 1e-6 &&
+            Math.Abs((double)GetField<float>(extreme, "Average") - (double)2e19f) <= (double)2e19f * 1e-6;
+        Record("C2C-EXTREME-COORDINATES", extremeOk ? "PASS" : "FAIL",
+            $"expected={(double)2e19f:R}; actual={extremeDistances[0]:R}; average={GetField<float>(extreme, "Average"):R}");
+        if (!extremeOk) throw new InvalidDataException("C2C failed on finite extreme coordinates.");
+
+        PointCloudPoint3[] densePlane = new PointCloudPoint3[25];
+        int cursor = 0;
+        for (int z = 0; z <= 4; z++)
+            for (int x = 0; x <= 4; x++)
+                densePlane[cursor++] = new PointCloudPoint3(x * 0.5f, 0f, z * 0.5f);
+        PointCloudPoint3[] sparseShiftedPlane = new PointCloudPoint3[9];
+        cursor = 0;
+        for (int z = 0; z <= 4; z += 2)
+            for (int x = 0; x <= 4; x += 2)
+                sparseShiftedPlane[cursor++] = new PointCloudPoint3(x * 0.5f, 12f, z * 0.5f);
+        object planes = InvokeC2CDistanceCalculation(densePlane, sparseShiftedPlane);
+        float[] planeDistances = GetField<float[]>(planes, "Distances");
+        bool planesOk = planeDistances.Length == 9 && planeDistances.All(value => Math.Abs(value - 12f) < 1e-6f) &&
+            Math.Abs(GetField<float>(planes, "Average") - 12f) < 1e-6f &&
+            Math.Abs(GetField<float>(planes, "Maximum") - 12f) < 1e-6f;
+        Record("C2C-PARALLEL-PLANES-DENSITY", planesOk ? "PASS" : "FAIL",
+            $"reference_points=25; query_points=9; expected_mm=12; average_mm={GetField<float>(planes, "Average"):R}; " +
+            $"maximum_mm={GetField<float>(planes, "Maximum"):R}");
+        if (!planesOk) throw new InvalidDataException("C2C parallel-plane or density-mismatch result was incorrect.");
+
+        object tie = InvokeC2CDistanceCalculation(
+            new[] { new PointCloudPoint3(-1f, 0f, 0f), new PointCloudPoint3(1f, 0f, 0f) },
+            new[] { new PointCloudPoint3(0f, 0f, 0f) });
+        bool tieOk = Math.Abs(GetField<float[]>(tie, "Distances")[0] - 1f) < 1e-6f;
+        Record("C2C-EQUIDISTANT-NEAREST", tieOk ? "PASS" : "FAIL",
+            $"expected_mm=1; actual_mm={GetField<float[]>(tie, "Distances")[0]:R}");
+        if (!tieOk) throw new InvalidDataException("C2C equidistant-neighbor result was incorrect.");
+
+        bool emptyRejected = false;
+        try
+        {
+            InvokeC2CDistanceCalculation(Array.Empty<PointCloudPoint3>(),
+                new[] { new PointCloudPoint3(0f, 0f, 0f) });
+        }
+        catch (ArgumentException) { emptyRejected = true; }
+        bool retryOk = emptyRejected && !PointCloudProgressManager.Instance.IsRunning;
+        Record("C2C-EMPTY-INPUT-AND-RETRY", retryOk ? "PASS" : "FAIL",
+            $"empty_reference_rejected={emptyRejected}; operation_released={!PointCloudProgressManager.Instance.IsRunning}");
+        if (!retryOk) throw new InvalidOperationException("C2C did not recover after rejecting empty input.");
+
+        object retry = InvokeC2CDistanceCalculation(densePlane, sparseShiftedPlane);
+        bool recoveryOk = Math.Abs(GetField<float>(retry, "Average") - 12f) < 1e-6f;
+        Record("C2C-RETRY-AFTER-EMPTY", recoveryOk ? "PASS" : "FAIL",
+            $"expected_average_mm=12; actual_average_mm={GetField<float>(retry, "Average"):R}");
+        if (!recoveryOk) throw new InvalidOperationException("C2C retry failed after empty input rejection.");
+    }
+
+    private static object InvokeC2CDistanceCalculation(PointCloudPoint3[] reference, PointCloudPoint3[] aligned)
+    {
+        PointCloudOperation operation = PointCloudProgressManager.Instance.TryStart("C2C 数値回帰", "計算しています...");
+        if (operation == null) throw new InvalidOperationException("Could not start C2C test operation.");
+        try
+        {
+            MethodInfo method = typeof(PointCloudManager).GetMethod("CalculateExactDistances",
+                BindingFlags.Static | BindingFlags.NonPublic);
+            if (method == null) throw new MissingMethodException(typeof(PointCloudManager).FullName, "CalculateExactDistances");
+            object result = method.Invoke(null, new object[] { reference, aligned, CancellationToken.None, operation });
+            if (!operation.Complete()) throw new InvalidOperationException("C2C test operation did not complete.");
+            return result;
+        }
+        catch (TargetInvocationException ex) when (ex.InnerException is ArgumentException)
+        {
+            operation.Fail("C2C 数値回帰", "空入力は拒否されました。", ex.InnerException.ToString());
+            throw ex.InnerException;
+        }
+        catch (Exception ex)
+        {
+            operation.Fail("C2C 数値回帰", "計算に失敗しました。", ex.ToString());
+            throw;
+        }
+    }
+
+    private IEnumerator RunEndurance()
+    {
+        int durationSeconds = ReadEnduranceDurationSeconds();
+        yield return WaitForInitialCloud(90f);
+        if (loader == null || editor == null || renderer == null)
+            throw new InvalidOperationException("Endurance test requires the production loader, editor, and renderer.");
+
+        string[] cloudNames = { "cloud_A_100k.ply", "cloud_B_100k.ply", "cloud_C_100k.ply" };
+        string[] cloudHashes = cloudNames.Select(name => HashFile(Fixture(name))).ToArray();
+        string outputDirectory = Path.Combine(artifactRoot, "endurance-output-" + runId);
+        Directory.CreateDirectory(outputDirectory);
+        string outputPath = Path.Combine(outputDirectory, "roundtrip.ply");
+        float[][] expectedFirstPoints =
+        {
+            new[] { 0.00011180312f, 0.02499975f, 0f },
+            new[] { 0.0011118031f, 0.02499975f, 0f },
+            new[] { 0.00011180312f, 0.02399975f, 0f }
+        };
+        System.Random random = new System.Random(20261010);
+        string stopPath = Path.Combine(artifactRoot, "endurance.stop");
+        int switches = 0, edits = 0, undoCalls = 0, redoCalls = 0, saves = 0, randomSteps = 0;
+        int cancelAttempts = 0, cancelPassed = 0, pythonProcessesStarted = 0;
+        bool allPassed = true;
+
+        bool loaded = false;
+        yield return LoadAndWait(Fixture(cloudNames[0]), 100_000, ok => loaded = ok);
+        if (!loaded) throw new InvalidOperationException("Could not load the endurance source cloud.");
+        switches++;
+
+        StemDiameterUI stemUi = FindAnyObjectByType<StemDiameterUI>();
+        string stemFixture = Fixture("stem12mm_100k.ply");
+        bool stemLoaded = false;
+        yield return LoadAndWait(stemFixture, 100_000, ok => stemLoaded = ok);
+        if (!stemLoaded || stemUi == null)
+            throw new InvalidOperationException("Could not load the synthetic stem for cancellation endurance.");
+
+        for (int i = 0; i < 100; i++)
+        {
+            Task task = InvokeStemAnalysis(stemUi);
+            int processId = 0;
+            bool waitForPython = i % 10 != 0;
+            float startDeadline = Time.realtimeSinceStartup + 30f;
+            while (PointCloudProgressManager.Instance.IsRunning && waitForPython &&
+                   Time.realtimeSinceStartup < startDeadline)
+            {
+                System.Diagnostics.Process active = GetField<System.Diagnostics.Process>(stemUi, "process");
+                if (active != null)
+                {
+                    try
+                    {
+                        processId = active.Id;
+                        pythonProcessesStarted++;
+                        break;
+                    }
+                    catch (InvalidOperationException) { }
+                }
+                yield return null;
+            }
+
+            if (waitForPython && processId == 0 && PointCloudProgressManager.Instance.IsRunning)
+                throw new TimeoutException("Python process did not start during cancellation iteration " + (i + 1));
+
+            bool operationWasRunning = PointCloudProgressManager.Instance.IsRunning;
+            PointCloudProgressManager.Instance.Cancel();
+            cancelAttempts++;
+            float cancelDeadline = Time.realtimeSinceStartup + 60f;
+            while ((PointCloudProgressManager.Instance.IsRunning || !task.IsCompleted) &&
+                   Time.realtimeSinceStartup < cancelDeadline)
+                yield return null;
+
+            if (!task.IsCompleted)
+                throw new TimeoutException("Stem analysis cancellation did not finish within 60 seconds at iteration " + (i + 1));
+            if (task.IsFaulted)
+                throw (Exception)task.Exception ?? new InvalidOperationException("Stem cancellation task faulted.");
+            if (PointCloudProgressManager.Instance.IsRunning ||
+                GetField<System.Diagnostics.Process>(stemUi, "process") != null)
+                throw new InvalidOperationException("Stem cancellation left an active operation or child process at iteration " + (i + 1));
+
+            bool childExited = processId == 0 || ProcessHasExited(processId);
+            bool cancelled = operationWasRunning && childExited &&
+                PointCloudProgressManager.Instance.OperationStatus == PointCloudOperationStatus.Cancelled;
+            if (cancelled) cancelPassed++;
+            else allPassed = false;
+            if ((i + 1) % 10 == 0)
+            {
+                Record("ENDURANCE-CANCEL-PROGRESS", allPassed ? "PASS" : "FAIL",
+                    $"attempts={i + 1}; cancelled={cancelPassed}; python_processes_started={pythonProcessesStarted}; " + RuntimeMemorySummary());
+                yield return null;
+            }
+        }
+        bool stemRestored = false;
+        yield return LoadAndWait(Fixture(cloudNames[0]), 100_000, ok => stemRestored = ok);
+        if (!stemRestored) throw new InvalidOperationException("Could not restore cloud A after cancellation tests.");
+
+        enduranceTracking = true;
+        DateTime startedAt = DateTime.UtcNow;
+        DateTime deadline = startedAt.AddSeconds(durationSeconds);
+        DateTime nextHeartbeat = startedAt.AddMinutes(1);
+        while (DateTime.UtcNow < deadline && !File.Exists(stopPath))
+        {
+            int action = random.Next(3);
+            if (action == 0)
+            {
+                int index = random.Next(cloudNames.Length);
+                bool switched = false;
+                yield return LoadAndWait(Fixture(cloudNames[index]), 100_000, ok => switched = ok);
+                bool expectedState = switched && PathsEqual(loader.CurrentFilePath, Fixture(cloudNames[index])) &&
+                    FirstPointMatches(renderer.GetPointData(), expectedFirstPoints[index][0],
+                        expectedFirstPoints[index][1], expectedFirstPoints[index][2]) &&
+                    HashFile(Fixture(cloudNames[index])) == cloudHashes[index];
+                if (!expectedState)
+                {
+                    Record("ENDURANCE-SWITCH-MISMATCH", "FAIL",
+                        $"step={randomSteps}; expected={string.Join(",", expectedFirstPoints[index].Select(value => value.ToString("R", CultureInfo.InvariantCulture)))}; " +
+                        $"actual={FormatFirstPoint(renderer.GetPointData())}; path={loader.CurrentFilePath}; points={renderer.GetPointData()?.Length}; " +
+                        $"source_sha256={HashFile(Fixture(cloudNames[index]))}; expected_sha256={cloudHashes[index]}");
+                    throw new InvalidDataException("Cloud switch integrity failed at endurance step " + randomSteps);
+                }
+                switches++;
+            }
+            else if (action == 1)
+            {
+                PointData[] points = renderer.GetPointData();
+                if (points == null || points.Length != 100_000)
+                    throw new InvalidDataException("Unexpected point count before randomized edit.");
+                int index = random.Next(points.Length);
+                int originalLabel = points[index].label;
+                PointData point = points[index];
+                point.label |= SelectedBit;
+                points[index] = point;
+                if (!renderer.TryUpdatePointBuffer()) throw new InvalidOperationException("Could not publish endurance selection.");
+                editor.activeLabelClass = random.Next(1, 9);
+                int expectedClass = editor.activeLabelClass;
+                editor.AssignLabelToSelected();
+                bool classified = (points[index].label & 0xff) == expectedClass && (points[index].label & SelectedBit) == 0;
+                bool undone = editor.AnnotationUndo();
+                bool undoRestored = undone && points[index].label == (originalLabel | SelectedBit);
+                bool redone = editor.AnnotationRedo();
+                bool redoRestored = redone && (points[index].label & 0xff) == expectedClass &&
+                    (points[index].label & SelectedBit) == 0;
+                point = points[index];
+                point.label &= ~SelectedBit;
+                points[index] = point;
+                if (!renderer.TryUpdatePointBuffer() || !classified || !undoRestored || !redoRestored)
+                    throw new InvalidOperationException("Endurance classification/undo/redo mismatch at step " + randomSteps);
+                edits++;
+                undoCalls++;
+                redoCalls++;
+            }
+            else
+            {
+                PointData[] points = renderer.GetPointData();
+                string positionsBefore = HashPositions(points);
+                string classesBefore = HashLowLabels(points);
+                Task export = editor.ExportLabeledPointsAsync(outputPath, true, CancellationToken.None);
+                yield return WaitForTask(export, 60f);
+                bool saved = File.Exists(outputPath) && PointCloudPlyReader.Validate(outputPath) == points.Length;
+                bool reloaded = false;
+                if (saved) yield return LoadAndWait(outputPath, points.Length, ok => reloaded = ok);
+                PointData[] restored = renderer.GetPointData();
+                if (!saved || !reloaded || HashPositions(restored) != positionsBefore || HashLowLabels(restored) != classesBefore)
+                    throw new InvalidDataException("Endurance PLY save/reload mismatch at step " + randomSteps);
+                saves++;
+            }
+            randomSteps++;
+            if (randomSteps >= 1000 && DateTime.UtcNow >= deadline) break;
+            if (DateTime.UtcNow >= nextHeartbeat)
+            {
+                double averageFrameMs = enduranceFrameCount == 0 ? 0 : enduranceFrameTotalMs / enduranceFrameCount;
+                Record("ENDURANCE-HEARTBEAT", "PASS",
+                    $"elapsed_s={(DateTime.UtcNow - startedAt).TotalSeconds:F0}; random_seed=20261010; steps={randomSteps}; " +
+                    $"switches={switches}; edits={edits}; undo={undoCalls}; redo={redoCalls}; saves={saves}; " +
+                    $"frame_samples={enduranceFrameCount}; frame_avg_ms={averageFrameMs:F3}; frame_max_ms={enduranceFrameMaxMs:F3}; " +
+                    RuntimeMemorySummary());
+                enduranceFrameCount = 0;
+                enduranceFrameTotalMs = 0;
+                enduranceFrameMaxMs = 0;
+                nextHeartbeat = DateTime.UtcNow.AddMinutes(1);
+            }
+            yield return null;
+        }
+        enduranceTracking = false;
+        bool durationReached = DateTime.UtcNow >= deadline;
+        bool targetReached = randomSteps >= 1000 && cancelPassed == 100 && switches >= 100 && edits >= 1000 &&
+            undoCalls >= 200 && redoCalls >= 200 && saves >= 100 && pythonProcessesStarted >= 90;
+        bool sourceFilesUnchanged = cloudNames.Select((name, index) => HashFile(Fixture(name)) == cloudHashes[index]).All(value => value);
+        bool passed = allPassed && durationReached && targetReached && sourceFilesUnchanged;
+        Record("ENDURANCE-FINAL", passed ? "PASS" : "FAIL",
+            $"duration_target_s={durationSeconds}; elapsed_s={(DateTime.UtcNow - startedAt).TotalSeconds:F0}; " +
+            $"duration_reached={durationReached}; random_seed=20261010; random_steps={randomSteps}; switches={switches}; " +
+            $"edits={edits}; undo={undoCalls}; redo={redoCalls}; saves={saves}; cancel_attempts={cancelAttempts}; " +
+            $"cancelled={cancelPassed}; python_processes_started={pythonProcessesStarted}; source_files_unchanged={sourceFilesUnchanged}; " +
+            RuntimeMemorySummary());
+        if (!passed) Environment.ExitCode = 1;
+    }
+
+    private static int ReadEnduranceDurationSeconds()
+    {
+        string value = Environment.GetCommandLineArgs().FirstOrDefault(argument =>
+            argument.StartsWith("--pcwb-endurance-seconds=", StringComparison.Ordinal));
+        if (value == null) return 7_200;
+        if (!int.TryParse(value.Substring(value.IndexOf('=') + 1), NumberStyles.Integer,
+                CultureInfo.InvariantCulture, out int seconds) || seconds < 60 || seconds > 86_400)
+            throw new ArgumentOutOfRangeException(nameof(value), "Endurance duration must be between 60 and 86400 seconds.");
+        return seconds;
+    }
+
+    private static bool ProcessHasExited(int processId)
+    {
+        try
+        {
+            using (System.Diagnostics.Process process = System.Diagnostics.Process.GetProcessById(processId))
+                return process.HasExited;
+        }
+        catch (ArgumentException) { return true; }
+    }
+
+    private static string HashLowLabels(PointData[] points)
+    {
+        using (SHA256 sha = SHA256.Create())
+        {
+            byte[] bytes = new byte[1];
+            foreach (PointData point in points)
+            {
+                bytes[0] = (byte)(point.label & 0xff);
+                sha.TransformBlock(bytes, 0, 1, bytes, 0);
+            }
+            sha.TransformFinalBlock(Array.Empty<byte>(), 0, 0);
+            return BitConverter.ToString(sha.Hash).Replace("-", string.Empty).ToLowerInvariant();
+        }
     }
 
     private IEnumerator Guard(IEnumerator routine)

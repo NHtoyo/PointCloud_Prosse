@@ -108,6 +108,19 @@ for (int q = 0; q < 50; q++)
     Assert(Math.Abs(actualDistanceSquared - bruteForceDistanceSquared) < 1e-6,
         "exact nearest-neighbor matches brute force for random cloud query " + q);
 }
+PointCloudPoint3[] extremeNearestPoints =
+{
+    new PointCloudPoint3(2e19f, 0f, 0f),
+    new PointCloudPoint3(3e19f, 0f, 0f)
+};
+ExactNearestNeighbor3D extremeNearestTree = new ExactNearestNeighbor3D(extremeNearestPoints);
+int extremeNearestIndex = extremeNearestTree.FindNearest(new PointCloudPoint3(0f, 0f, 0f), out float extremeDistanceSquared);
+Assert(extremeNearestIndex == 0 && float.IsPositiveInfinity(extremeDistanceSquared),
+    "nearest reference remains selectable when squared distance exceeds float range");
+int exactExtremeNearestIndex = extremeNearestTree.FindNearest(new PointCloudPoint3(0f, 0f, 0f), out double exactExtremeDistanceSquared);
+Assert(exactExtremeNearestIndex == 0 && double.IsFinite(exactExtremeDistanceSquared) &&
+    Math.Abs(Math.Sqrt(exactExtremeDistanceSquared) - (double)2e19f) <= (double)2e19f * 1e-12,
+    "double-precision nearest distance remains accurate when squared distance exceeds float range");
 PointCloudPoint3[] benchmarkPoints = new PointCloudPoint3[50000];
 PointCloudPoint3[] benchmarkQueries = new PointCloudPoint3[5000];
 for (int i = 0; i < benchmarkPoints.Length; i++)
@@ -118,7 +131,7 @@ System.Diagnostics.Stopwatch nearestBenchmark = System.Diagnostics.Stopwatch.Sta
 ExactNearestNeighbor3D benchmarkTree = new ExactNearestNeighbor3D(benchmarkPoints);
 long treeBuildMilliseconds = nearestBenchmark.ElapsedMilliseconds;
 for (int i = 0; i < benchmarkQueries.Length; i++)
-    benchmarkTree.FindNearest(benchmarkQueries[i], out _);
+    benchmarkTree.FindNearest(benchmarkQueries[i], out float _);
 nearestBenchmark.Stop();
 Console.WriteLine($"BENCH ExactNearestNeighbor3D references={benchmarkPoints.Length} queries={benchmarkQueries.Length} build_ms={treeBuildMilliseconds} query_ms={nearestBenchmark.ElapsedMilliseconds - treeBuildMilliseconds} total_ms={nearestBenchmark.ElapsedMilliseconds}");
 

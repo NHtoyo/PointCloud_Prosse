@@ -54,6 +54,20 @@ def cylinder_points_mm(diameter_mm=8.0, tilt_deg=0.0, ellipse_ratio=1.0,
     return np.vstack(rings)
 
 
+def tapered_cylinder_points_mm(start_diameter_mm=8.0, end_diameter_mm=12.0,
+                               length_mm=160.0, axial_step_mm=0.75, angular_count=128):
+    axial = np.arange(-length_mm / 2, length_mm / 2 + 0.1, axial_step_mm)
+    angles = np.linspace(0.0, 2.0 * np.pi, angular_count, endpoint=False)
+    rings = []
+    for y in axial:
+        fraction = (y + length_mm / 2) / length_mm
+        radius = (start_diameter_mm + fraction * (end_diameter_mm - start_diameter_mm)) / 2
+        rings.append(np.column_stack((radius * np.cos(angles),
+                                      np.full_like(angles, y),
+                                      radius * np.sin(angles))))
+    return np.vstack(rings)
+
+
 class StemDiameterAlgorithmTests(unittest.TestCase):
     def analyze(self, points_mm, **overrides):
         params = StemDiameterParams(query_workers=1, **overrides)
@@ -139,6 +153,23 @@ class StemDiameterAlgorithmTests(unittest.TestCase):
                   if s.equivalent_diameter_mm is not None]
         self.assertGreater(len(values), 5)
         self.assertAlmostEqual(float(np.median(values)), 8.0, delta=0.6)
+
+    def test_tapered_stem_diameter_is_stable_across_point_densities(self):
+        for axial_step, angular_count in ((0.75, 128), (1.5, 64)):
+            with self.subTest(axial_step=axial_step, angular_count=angular_count):
+                points = tapered_cylinder_points_mm(axial_step_mm=axial_step,
+                                                    angular_count=angular_count)
+                result = self.analyze(points, centerline_axis_mode="y")
+                errors = []
+                for section in result.sections:
+                    diameter = section.equivalent_diameter_mm
+                    if diameter is None or not 20.0 <= section.position_mm <= 140.0:
+                        continue
+                    expected = 12.0 - 4.0 * section.position_mm / 160.0
+                    errors.append(diameter - expected)
+                self.assertGreater(len(errors), 8)
+                self.assertLess(abs(float(np.median(errors))), 0.05)
+                self.assertLess(float(np.max(np.abs(errors))), 0.1)
 
     def test_pca_polyline_tracks_straight_cylinder_arc_length(self):
         result = self.analyze(

@@ -61,11 +61,18 @@ namespace PointCloudWorkbench
 
         public int FindNearest(PointCloudPoint3 query, out float distanceSquared)
         {
+            int index = FindNearest(query, out double exactDistanceSquared);
+            distanceSquared = (float)exactDistanceSquared;
+            return index;
+        }
+
+        public int FindNearest(PointCloudPoint3 query, out double distanceSquared)
+        {
             if (!IsFinite(query.X) || !IsFinite(query.Y) || !IsFinite(query.Z))
                 throw new ArgumentException("Query point must contain finite coordinates.", nameof(query));
 
             int bestIndex = -1;
-            distanceSquared = float.PositiveInfinity;
+            distanceSquared = double.PositiveInfinity;
             Search(root, query, ref bestIndex, ref distanceSquared);
             return bestIndex;
         }
@@ -88,8 +95,11 @@ namespace PointCloudWorkbench
                 if (p.Z > maxZ) maxZ = p.Z;
             }
 
-            int axis = maxX - minX >= maxY - minY && maxX - minX >= maxZ - minZ ? 0 :
-                (maxY - minY >= maxZ - minZ ? 1 : 2);
+            double rangeX = (double)maxX - minX;
+            double rangeY = (double)maxY - minY;
+            double rangeZ = (double)maxZ - minZ;
+            int axis = rangeX >= rangeY && rangeX >= rangeZ ? 0 :
+                (rangeY >= rangeZ ? 1 : 2);
             int middle = start + (end - start) / 2;
             SelectMedian(start, end - 1, middle, axis);
             int nodeIndex = nextNode++;
@@ -164,25 +174,25 @@ namespace PointCloudWorkbench
             node.MaxZ = Math.Max(node.MaxZ, child.MaxZ);
         }
 
-        private void Search(int nodeIndex, PointCloudPoint3 query, ref int bestIndex, ref float bestDistanceSquared)
+        private void Search(int nodeIndex, PointCloudPoint3 query, ref int bestIndex, ref double bestDistanceSquared)
         {
             if (nodeIndex < 0) return;
             Node node = nodes[nodeIndex];
             if (BoundsDistanceSquared(node, query) > bestDistanceSquared) return;
 
             PointCloudPoint3 point = points[node.PointIndex];
-            float dx = query.X - point.X;
-            float dy = query.Y - point.Y;
-            float dz = query.Z - point.Z;
-            float distanceSquared = dx * dx + dy * dy + dz * dz;
+            double dx = (double)query.X - point.X;
+            double dy = (double)query.Y - point.Y;
+            double dz = (double)query.Z - point.Z;
+            double distanceSquared = dx * dx + dy * dy + dz * dz;
             if (distanceSquared < bestDistanceSquared)
             {
                 bestDistanceSquared = distanceSquared;
                 bestIndex = node.PointIndex;
             }
 
-            float leftDistance = node.Left < 0 ? float.PositiveInfinity : BoundsDistanceSquared(nodes[node.Left], query);
-            float rightDistance = node.Right < 0 ? float.PositiveInfinity : BoundsDistanceSquared(nodes[node.Right], query);
+            double leftDistance = node.Left < 0 ? double.PositiveInfinity : BoundsDistanceSquared(nodes[node.Left], query);
+            double rightDistance = node.Right < 0 ? double.PositiveInfinity : BoundsDistanceSquared(nodes[node.Right], query);
             if (leftDistance <= rightDistance)
             {
                 if (leftDistance <= bestDistanceSquared) Search(node.Left, query, ref bestIndex, ref bestDistanceSquared);
@@ -195,11 +205,11 @@ namespace PointCloudWorkbench
             }
         }
 
-        private static float BoundsDistanceSquared(Node node, PointCloudPoint3 p)
+        private static double BoundsDistanceSquared(Node node, PointCloudPoint3 p)
         {
-            float dx = p.X < node.MinX ? node.MinX - p.X : p.X > node.MaxX ? p.X - node.MaxX : 0f;
-            float dy = p.Y < node.MinY ? node.MinY - p.Y : p.Y > node.MaxY ? p.Y - node.MaxY : 0f;
-            float dz = p.Z < node.MinZ ? node.MinZ - p.Z : p.Z > node.MaxZ ? p.Z - node.MaxZ : 0f;
+            double dx = p.X < node.MinX ? (double)node.MinX - p.X : p.X > node.MaxX ? (double)p.X - node.MaxX : 0.0;
+            double dy = p.Y < node.MinY ? (double)node.MinY - p.Y : p.Y > node.MaxY ? (double)p.Y - node.MaxY : 0.0;
+            double dz = p.Z < node.MinZ ? (double)node.MinZ - p.Z : p.Z > node.MaxZ ? (double)p.Z - node.MaxZ : 0.0;
             return dx * dx + dy * dy + dz * dz;
         }
 

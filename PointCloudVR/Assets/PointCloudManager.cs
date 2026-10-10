@@ -351,7 +351,7 @@ public class PointCloudManager : MonoBehaviour
         for (int i = 0; i < alignedPoints.Length; i++)
         {
             if ((i & 1023) == 0) cancellationToken.ThrowIfCancellationRequested();
-            nearestNeighbor.FindNearest(alignedPoints[i], out float distanceSquared);
+            nearestNeighbor.FindNearest(alignedPoints[i], out double distanceSquared);
             float distance = (float)System.Math.Sqrt(distanceSquared);
             if (float.IsNaN(distance) || float.IsInfinity(distance))
                 throw new System.InvalidOperationException("最近傍距離が有限値ではありません。");
