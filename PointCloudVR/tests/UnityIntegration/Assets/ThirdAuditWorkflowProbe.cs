@@ -669,6 +669,10 @@ internal sealed class ThirdAuditWorkflowProbe : MonoBehaviour
 
         bool restored = false;
         yield return LoadAndWait(source, 100_000, ok => restored = ok);
+        float measurementDeadline = Time.realtimeSinceStartup + 60f;
+        while (restored && (!editor.IsMeasurementDocumentReady || editor.IsMeasurementFingerprintPending) &&
+               Time.realtimeSinceStartup < measurementDeadline)
+            yield return null;
         bool hasMeasurement = restored && editor.IsMeasurementDocumentReady &&
             !editor.HasMeasurementFingerprintMismatch && editor.MeasurementRecords.Count == 1;
         Record("F4-E2E-ORDER2-RESTORE", hasMeasurement ? "PASS" : "FAIL",

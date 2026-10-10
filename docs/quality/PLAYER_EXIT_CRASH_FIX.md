@@ -11,6 +11,27 @@ Unity: 6000.4.7f1
 
 ただし、旧ダンプが示すUnityPlayer.dll内のアクセス違反を発生させる先行条件・所有者は依然として特定できていない。原因に結びつく製品コード修正は行っていないため、修正済みとは判定しない。旧障害の原因が解決した証拠はなく、再現しないことも不存在の証明ではない。
 
+## 追加回帰試験 (2026-10-10)
+
+前回の終了試験後、別順序E2Eの初回実行で`F4-E2E-ORDER2-RESTORE`がFAILになった。調査すると、probeの`LoadAndWait()`はPLY読込とOctree準備を待つ一方、計測JSONのSHA-256照合完了を待たずに状態を判定していた。点群の切替自体は成功しており、この失敗は終了クラッシュではなく、probe側の非同期判定タイミング不備だった。
+
+テストprobeに計測文書の準備完了待ち（最大60秒）を加え、同じ新規Player buildで別順序E2Eを3回実行した。
+
+| 確認 | 結果 |
+|---|---|
+| `F4-E2E-ORDER2-RESTORE` | 3/3 PASS。JSON ready、fingerprint mismatchなし、1計測を復元 |
+| 各E2Eの全probe項目 | 3回とも14/14 PASS |
+| Player通常終了 | 3/3 exit code 0、Unity終了ログあり |
+| Windows Application Error / WER (当該試験時間帯・該当Player) | 0件 |
+| 新規Player crash dump | 0件 |
+| QA Player / Python子プロセス残留 | 0件 |
+
+初回のFAILは修正前probeの判定結果として保持し、成功回数に含めない。製品C#コードには変更を加えていない。前段の18回の通常終了試験とは異なるビルド・実行セットとして記録し、合算値だけで単一Playerの反復試験とみなさない。
+
+QAルート: `E:\pcwb-qa-20261010\PlayerExitFixTask2-AsyncWaitFix-20261011-001500`。Unity EditModeは2/2、PlayModeは3/3、Python backendは61 passed、`compileall`はexit 0、Windows x64 Player buildは成功。実行結果は同ルートの`Artifacts\run_summary.json`、`Artifacts\PlayerRuns\fourth-player-*.tsv`、Unity/Pythonログに保存した。
+
+この差分が直したのはE2E試験の待機条件のみであり、旧ネイティブクラッシュの修正ではない。最終判定は引き続き**UNRESOLVED / FAIL**。
+
 ## 原因調査の状況
 
 前段の[PLAYER_EXIT_CRASH_INVESTIGATION.md](PLAYER_EXIT_CRASH_INVESTIGATION.md)で確認した旧障害は次のとおり。
@@ -75,6 +96,18 @@ Unity: 6000.4.7f1
 
 ## 最新Playerの識別情報
 
+今回の追加QA Player (処理順変更E2E、probeの待機修正版):
+
+| 対象 | SHA-256 |
+|---|---|
+| `PointCloudVR_QA.exe` | `16726f6bc281a100105ae80f982a21a9332c870340bcd2e1d89bd82b76dd33c7` |
+| `UnityPlayer.dll` | `4c142dd3d8237cd3537021c75904ff5df7e3c37796fff110bdefa925a636fe6b` |
+| `Assembly-CSharp.dll` | `988c56b8fc7b330840f09836684557bee33c4c69e75c5aa4749d9acdb8f2a2b9` |
+| 修正済みprobe source SHA-256 | `642a931df74c4d7f9ecc72ba342e93d800ed503850b82e3e9cb1b1a4ce64ae08` |
+| source/test manifest SHA-256 | `1d2d8b01f7c5e9deb17b38e8b93480d209777c3527080de536778c89a5d221a9` |
+
+上記はruntime test probeを含むQA Playerであり、probeなしPlayerと同一物ではない。manifestにはprobe待機修正後のtest sourceを含む。
+
 SHA-256:
 
 | 対象 | SHA-256 |
@@ -99,7 +132,8 @@ manifestとPlayerログ・結果JSONはQAルートの`Artifacts\no_probe_source_
 ## 変更範囲・保護
 
 - 製品コード・Unity本番設定の変更: なし。原因を特定できなかったため、推測による修正を加えていない。
-- リポジトリ内で今回作成したファイル: 本報告書のみ。
+- 今回のテスト資材変更: `tests/UnityIntegration/Assets/ThirdAuditWorkflowProbe.cs`。計測fingerprintの非同期照合完了前に復旧状態を判定していたprobeへ、準備完了待ちを追加。
+- 今回更新した報告書: `docs/quality/PLAYER_EXIT_CRASH_FIX.md`。
 - QA用Player、合成PLY、ログ、hash manifestはリポジトリ外の隔離QAルートに保存。
 - 既存未コミット変更、実測PLY、ライセンス資料、`Assets/_Recovery/`は変更していない。
 - Unity Editor PID 30824（import workers 21068 / 15860を含む）は稼働を確認し、終了していない。
