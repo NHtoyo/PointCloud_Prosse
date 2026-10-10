@@ -27,13 +27,29 @@
 
 各終了コードは以下の通り。`0xC0000005`はアクセス違反、`0xC000041D`は別のWindows例外statusであり、同一扱いしない。PID 36324と24308では、Application Error 1000に前者・後者の両方が連続記録され、runnerが返したコードは後者だった。時系列だけから、どちらが先行原因かは決められない。
 
-対応するWER dumpは`PointCloudVR_QA.exe.36324.dmp`、`(1).36324.dmp`、`.34776.dmp`、`.36184.dmp`、`.24308.dmp`、`(1).24308.dmp`、`.39468.dmp`。別に23:56頃のPID 37756 / 38284 / 1464のdumpもあるが、Final7の各PlayerRunsとのPID・パス対応を確定できないため、同じ実行へ帰属させていない。Final7の対応dumpでは例外thread IDとexception recordを確認し、PID 36324・24308は各2 dumpで異なる例外記録を持つ。
+現在確認できるWER dumpは`%LOCALAPPDATA%\CrashDumps\PointCloudVR_QA.exe.36324.dmp`、`.34776.dmp`、`.36184.dmp`、`.24308.dmp`、`.39468.dmp`。別に23:56頃のPID 37756 / 38284 / 1464のdumpもあるが、Final7の各PlayerRunsとのPID・パス対応を確定できないため、同じ実行へ帰属させていない。Application ErrorにはPID 36324・24308の`0xC000041D`も記録されるが、現在の保管場所からはそれぞれに対応する独立dumpを確認できていない。各dumpのexception thread IDと`0xC0000005` exception recordは読み取れた。
 
 ### dump / symbolの読み取り
 
-- PDB `UnityPlayer_Win64_player_mono_x64.pdb`で`UnityPlayer.dll+0x107AE1`を`StaticDestroy<RuntimeStatic<PlatformAccessibilityManager>>+0x51`と解決。ダンプの命令は`mov rcx, qword ptr [rcx+0xe0]`、`RCX=0`で、null readと整合する。周辺stackには`RuntimeCleanup`、`DestroyGfxDevice`、`UnloadMono`、`UnityMainImpl`があり、Unityの終了・解放経路内である。
-- `UnityPlayer.dll+0x11C0538`は`PlayerMainWndProc+0x8b8`。stackにUSER32の`CallWindowProcW`、`GetFocus`、`PeekMessageW`がある。これも発生位置の特定であって、ウィンドウ処理が根本原因である証明ではない。
-- 追加導入済みデバッガーによる完全な解析はできていない。既存PDBとdumpから得た範囲を超えて、staticの所有状態や先行メモリ破壊を推定しない。
+- 現在保管されている5件の`0xC0000005` dumpはAMD64 minidumpで、exception streamから故障時のcontextを取得できた。`0x107AE1`の3件は例外命令アドレスが各dumpの`UnityPlayer.dll` base + RVA `0x107AE1`、`RCX=0`、`ExceptionInformation=(0, 0xE0)`（read access、対象`0xE0`）。命令`mov rcx, qword ptr [rcx+0xe0]`と一致し、null baseからのreadを直接示す。
+- `0x11C0538`の2件は`RCX=0`、`ExceptionInformation=(0, 0xE0)`、RIPが`UnityPlayer.dll` base + RVA `0x11C0538`。両例のほかの主な値は`RDX=0`、`RBX=0xffffffffffffffe7`、`R8=0xffffffffffffffe7`、`R10=0`、`R11=0x246`、`R12=0`、`R13=1`、`R14=0x3d`、`R15=0`。RAX/RSP/RBP/RSI/R9/RDIはプロセスごとに異なるため、dump依存の値として扱う。
+- `0x107AE1`の3件では、共通して`RAX=RCX=RDX=RBP=R8=R9=0`、`RBX=0x7b`、`R12=0xb`、`R15=0x4b`。`RIP`とstack pointerは各dump内の値である。
+- 例外時のGPRスナップショット（RIP/RSP等はASLR後の各プロセス値）。
+
+```text
+PID 34776 / TID 37040 / EFLAGS 0x10246: RAX=0 RCX=0 RDX=0 RBX=0x7b RSP=0x5525ceedb0 RBP=0 RSI=0x1d2b000cac0 RDI=0x7ffe316c3900 R8=0 R9=0 R10=0x1d2a3190000 R11=0x5525ceed10 R12=0xb R13=0 R14=0 R15=0x4b RIP=0x7ffe2f687ae1
+PID 36184 / TID 21208 / EFLAGS 0x10246: RAX=0 RCX=0 RDX=0 RBX=0x7b RSP=0x5daad5f2b0 RBP=0 RSI=0x1ceb000cac0 RDI=0x7ffe316c3900 R8=0 R9=0 R10=0x1cea1890000 R11=0x5daad5f210 R12=0xb R13=0 R14=0 R15=0x4b RIP=0x7ffe2f687ae1
+PID 39468 / TID 23756 / EFLAGS 0x10246: RAX=0 RCX=0 RDX=0 RBX=0x7b RSP=0xe681eef1d0 RBP=0 RSI=0x225d000cac0 RDI=0x7ffe316c3900 R8=0 R9=0 R10=0x225cc500000 R11=0xe681eef130 R12=0xb R13=0 R14=0 R15=0x4b RIP=0x7ffe2f687ae1
+PID 36324 / TID 25192 / EFLAGS 0x10202: RAX=0x1ca6000cac0 RCX=0 RDX=0 RBX=0xffffffffffffffe7 RSP=0x5ccceeed30 RBP=0x5ccceeee30 RSI=0x241d16 RDI=0x7ffe2f580000 R8=0xffffffffffffffe7 R9=0x1ca600091e0 R10=0 R11=0x246 R12=0 R13=1 R14=0x3d R15=0 RIP=0x7ffe30740538
+PID 24308 / TID 34780 / EFLAGS 0x10202: RAX=0x2120000cac0 RCX=0 RDX=0 RBX=0xffffffffffffffe7 RSP=0xfb6c52e760 RBP=0xfb6c52e860 RSI=0x281d16 RDI=0x7ffe2f580000 R8=0xffffffffffffffe7 R9=0x212000091e0 R10=0 R11=0x246 R12=0 R13=1 R14=0x3d R15=0 RIP=0x7ffe30740538
+```
+
+- UnityPlayerのCodeView identityはRSDS GUID `68f084c4-114d-4099-b136-68e7dc59d444`, age `1`。既存PDB `UnityPlayer_Win64_player_mono_x64.pdb`のGUID/ageも完全一致し、DbgHelpでシンボルをロードして次を解決できた。`+0x107AE1` = `RuntimeStatic<PlatformAccessibilityManager,0>::StaticDestroy+0x51`、`+0x11C0538` = `PlayerMainWndProc+0x8b8`。PDB SHA-256は`88F5A13EC77743DD64D630FAE8C80CA2FA55D88CF2BEBE6B2C95D7AC51E3F894`。
+- Unity公式手順に記載されたSymbol Store `https://symbolserver.unity3d.com/` の該当PDB symbol keyへHTTP HEADを行い、`200 OK`、content-length `26,079,232` bytesを確認。これは手元の完全一致PDBのsizeとも同じ。PDB本体は既存ファイルを使用し、symbol serverから新たなPDBをダウンロードしていない。公式Symbol StoreのURLとWinDbg/Visual Studio設定手順は[Unity Windows debugging manual](https://docs.unity3d.com/jp/current/Manual/WindowsDebugging-instructions.html)に記載されている。
+- PID 36324 dumpは96 moduleを列挙する。関連するアプリ側moduleは`PointCloudVR_QA.exe`、`UnityPlayer.dll`、`mono-2.0-bdwgc.dll`、`UnityOpenXR.dll`、`dstorage.dll`、`D3D12Core.dll`、`MonoPosixHelper.dll`。system / graphics側には`d3d11.dll`、`dxgi.dll`、`d3d11on12.dll`、`DXGIDebug.dll`およびNVIDIA user-mode driver moduleがある。moduleのロード確認は関与の証拠ではない。今回はUnityPlayerの対応PDBだけで故障PCをsymbolizeし、他moduleのframeは確定していない。
+- **呼び出し元の全stackは未確定。** DbgHelpの`StackWalk64`を用いた試行は、最初の故障frame以降に不正なアドレスを返し、妥当なnative unwindとして検証できなかった。従って、以前の記述にある`RuntimeCleanup` / `DestroyGfxDevice` / `UnloadMono` / `UnityMainImpl`やUSER32 `CallWindowProcW` / `GetFocus` / `PeekMessageW`のframe列は、今回の検証では独立に再現できておらず、確定stackとして扱わない。確かなのは故障命令のsymbolとexception contextまで。
+- `0xC000041D`はイベントログ上、同じPID/RVAで後続記録された**別の例外コード**。該当する保存済みdumpがないため、そのexception context、register、stackは未取得。`0xC0000005`からの因果や、どちらが最初の異常だったかは断定できない。
+- WinDbg/CDB/ProcDumpは利用可能な状態でなく、WinDbgのuser-scope導入は組織ポリシーにより`0x80073cff`で拒否された。開発者モード、sideload、WER registry、Application Verifier、Page Heapは変更・有効化していない。既存DbgHelpと一致PDBでsymbol解決とcontext読出しはできたが、native debugger相当の全thread unwindは完了していない。
 
 ## A〜Eの切り分け
 
@@ -90,21 +106,31 @@ SHA-256の全一覧は`E:\pcwb-qa-20261010\PlayerExitTask1-20261010-010353\Artif
 |---|---|---|---|
 | 第4次 Final7 異常Player | `16726F6BC281A100105AE80F982A21A9332C870340BCD2E1D89BD82B76DD33C7` | `4C142DD3D8237CD3537021C75904FF5DF7E3C37796FFF110BDEFA925A636FE6B` | `4D93F1F608FC9E47586737024497C7BC274098B9C5E324AE2B9D7BCBF7FAAB26` |
 | 今回 clean no-probe Player | `16726F6BC281A100105AE80F982A21A9332C870340BCD2E1D89BD82B76DD33C7` | `4C142DD3D8237CD3537021C75904FF5DF7E3C37796FFF110BDEFA925A636FE6B` | `86112055A3C9693A7C8007657B97FB392E9873298D501E014C6F6CD774A9D0C8` |
+| UI改善QA Player (別スナップショット) | `16726F6BC281A100105AE80F982A21A9332C870340BCD2E1D89BD82B76DD33C7` | `4C142DD3D8237CD3537021C75904FF5DF7E3C37796FFF110BDEFA925A636FE6B` | `924ADCC40DA6F9194CDBEA43D6988FCEB463C1E917E7D42F593F1C2FC9BE49D7` |
 
 EXEとUnityPlayer.dllは一致し、C#アセンブリは異なる。従って、旧/新の差は「Unity native DLLが違う」ためではないが、C#コード差が結果に影響した可能性は残る。これはUnity単独原因の証明ではない。Unity PDB SHA-256は`88F5A13EC77743DD64D630FAE8C80CA2FA55D88CF2BEBE6B2C95D7AC51E3F894`。Unityログのversion文字列は`6000.4.7.50116`（Editor表記`6000.4.7f1`）。
 
+### クラッシュ版と後続版のソース比較 (2026-10-10)
+
+比較対象は第4次Final7の旧異常Playerと、後続UI改善QAスナップショット。両PlayerのEXEと`UnityPlayer.dll`は同一ハッシュだが`Assembly-CSharp.dll`は異なる。これはManaged側ビルドが変わった事実を示すだけで、差分がクラッシュを直したことを意味しない。
+
+- `PointCloudRenderer.cs`、`PointCloudLoader.cs`、`PythonBridge.cs`、`PointCloudSessionRecoveryStore.cs`、`PointCloudRecoverySession.cs`は両ソーススナップショットでbyte-identical。既知の「Octree taskをcancelするがawaitしない」「async PLY loadをdestroy時にcancelするがawaitしない」「Python停止をfire-and-forgetする」経路は、後続UI改修で変わっていない。
+- `EditorBuildSettings.asset`、`GraphicsSettings.asset`、`Packages/manifest.json`、`packages-lock.json`は一致。`ProjectSettings.asset`の比較で確認された差は`productName`。この比較でOpenXR、graphics API、package設定がクラッシュを説明する変更は見つからない。
+- `ThirdAuditCrashProbe.cs`は一致。`ThirdAuditWorkflowProbe.cs`は拡張され、実行シナリオやrun modeの扱いが変わっている。probeは通常経路で`Application.Quit()`を要求し、checkpoint writerモードでは意図的に自プロセスkillする。旧クラッシュ個々の実行に読み込まれた正確なprobe mode/assemblyと終了経路を一対一に証明できないため、probe起因・製品起因いずれにも帰属しない。
+- 変更されたC#アセンブリにはUI・処理コード差も含まれるが、確認した差からnative解放処理の修正が原因で旧クラッシュが消えたとは言えない。比較対象の後続Playerの終了結果を今回再実行していない。ユーザー指示に従い、正常終了反復、耐久試験、通常統合試験は今回実行していない。
+
 ## 原因の確信度と次の検証
 
-- **高確度:** 旧Final7の複数プロセスが終了時にUnityPlayer.dll内で予期せず落ちたこと、0xC0000005と0xC000041Dが別コードであること、`0x107AE1`がnull readを伴うUnity cleanup関数に解決されること。
-- **中確度:** 障害はアプリの終了・WndProc周辺に顕在化している。ダンプ位置は再現性があるが、直接原因と先行操作は不明。
-- **低/未確定:** Unity native bug、特定の製品C#処理、OpenXR/GPU driver、非同期worker、probeのいずれが根本原因か。現状は帰属できない。
+- **高確度:** 保持されている5件の`0xC0000005` dumpがUnityPlayer.dll内の2つのRVAで発生し、contextがread access to `0xE0`を示すこと。`0x107AE1`のPDB識別情報はdumpと一致し、`RuntimeStatic<PlatformAccessibilityManager,0>::StaticDestroy+0x51`へ解決されること。イベントログ上の`0xC000041D`は別コードであること。
+- **中確度:** 障害がstatic cleanupまたはPlayer window procedureで表面化していること。命令とfault contextは明確だが、根本原因となるnull stateがなぜ生じたか、先行する破壊があるかは不明。
+- **低/未確定:** Unity native bug、特定の製品C#処理、OpenXR/GPU driver、非同期worker、probeのどれが根本原因か。アセンブリ差と終了結果の因果関係は未立証。
 
 次段階で必要なこと:
 
 1. 旧Final7と同じC#アセンブリ・設定・probe操作列を再構成し、同じ終了要求で再現試験する。今回の新ソースでのpassを旧ビルドの修正証明にしない。
 2. 最初にクラッシュする境界を見つけたら、同条件を独立起動10回以上で実行し、timeout/kill/normal exit/access violationを別々に記録する。
 3. Octree Task cancel直後、PLY parse中、GPU buffer更新中、Python子process稼働中、`OnDestroy`後callback、recovery適用直後に遅延イベントを注入する。
-4. 取得済dumpをネイティブデバッガで完全解析できる環境が利用可能になった場合のみ、例外thread全stackとstatic状態を追加確認する。WERレジストリ設定変更や有償ツール導入は行っていない。以前のWinDbg導入試行はpackage deploy error `0x80073cff`で止め、システム設定は変更していない。
+4. WinDbg/CDBが組織承認済み環境で利用できるようになったら、PDB identity一致を確認した上でexception threadの`.ecxr`, `!analyze -v`, `kv`、全threadの`~* k`を取得し、他threadのshutdown状態と照合する。WinDbgが引き続き使用不可なら、DbgHelp stackwalkのMemory64List/stack range callbackを検証した専用解析環境で再試行する。`0xC000041D`自体のdumpを得る場合も隔離Playerだけを対象とする。今の段階でApplication Verifier/Page Heapをシステム全体に有効化しない。
 
 ## 作業範囲・保護
 
