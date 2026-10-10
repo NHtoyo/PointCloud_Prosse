@@ -478,6 +478,10 @@ namespace PointCloudWorkbench
             PointData[] points = editor.targetRenderer.GetPointData();
             if (points == null) return;
 
+            // Class IDs are remapped across every annotation layer; earlier label
+            // deltas no longer describe a safe point-in-time state after this.
+            editor.ResetPointLabelHistory();
+
             // 1. PointCloudRenderer内の全レイヤーラベルを更新
             var renderer = editor.targetRenderer;
             var layers = renderer.GetAnnotationLayers();

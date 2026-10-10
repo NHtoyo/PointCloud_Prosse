@@ -68,6 +68,11 @@ public class PointCloudEditorUI : MonoBehaviour
     public bool showNoiseFilterUI = false;
     public bool showAnnotationUI = true;
     public bool showStemDiameterUI = false;
+    public CenterWorkspace ActiveCenterWorkspace => showAnnotationUI ? CenterWorkspace.Annotation
+        : showNoiseFilterUI ? CenterWorkspace.Noise
+        : showMeasurementUI ? CenterWorkspace.Measurement
+        : showStemDiameterUI ? CenterWorkspace.StemDiameter
+        : CenterWorkspace.None;
     private string newLayerName = "NewLayer";
 
     // Lasso drawing texture
@@ -322,6 +327,8 @@ public class PointCloudEditorUI : MonoBehaviour
         return IsMouseOverActiveCenterPanel();
     }
 
+    public bool HasKeyboardInputFocus => GUIUtility.keyboardControl != 0;
+
     private bool IsMouseOverActiveCenterPanel()
     {
         if (showNoiseFilterUI && pipelineEditorUI != null && pipelineEditorUI.IsMouseOverUI()) return true;
@@ -415,8 +422,9 @@ public class PointCloudEditorUI : MonoBehaviour
         PointData[] points = editor.targetRenderer.GetPointData();
         int totalPoints = points != null ? points.Length : 0;
 
-        // 画面幅に応じてパネル幅を動的に決定（最大460、画面幅の25%を超えない）
-        float width = Mathf.Min(460f, Screen.width * 0.25f);
+        // Keep enough width for readable controls while preserving a usable center view.
+        float minimumWidth = Mathf.Min(280f, Mathf.Max(180f, Screen.width - 40f));
+        float width = Mathf.Min(460f, Mathf.Max(minimumWidth, Screen.width * 0.28f));
         bool compactTools = width < 340f;
         headerStyle.fontSize = compactTools ? 16 : 22;
         buttonStyle.fontSize = compactTools ? 12 : 14;
@@ -432,7 +440,7 @@ public class PointCloudEditorUI : MonoBehaviour
         float posX = 20f;
         float posY = 20f;
         leftPanelRect = new Rect(posX, posY, width, height);
-        float sideWidth = Mathf.Min(460f, Screen.width * 0.25f);
+        float sideWidth = width;
         float centerX = sideWidth + 30f;
         float centerRight = Screen.width - sideWidth - 30f;
         centerPanelViewport = new Rect(centerX, 15f, Mathf.Max(0f, centerRight - centerX), Mathf.Max(0f, Screen.height - 30f));
@@ -462,15 +470,15 @@ public class PointCloudEditorUI : MonoBehaviour
         
         if (compactTools)
         {
-            if (GUILayout.Button("カメラ操作", editor.activeTool == PointCloudEditor.EditTool.None ? activeButtonStyle : buttonStyle))
+            if (GUILayout.Button("カメラ操作", editor.activeTool == PointCloudEditor.EditTool.None ? activeButtonStyle : buttonStyle, GUILayout.Height(32f)))
                 editor.activeTool = PointCloudEditor.EditTool.None;
-            if (GUILayout.Button("3Dブラシ", editor.activeTool == PointCloudEditor.EditTool.Brush ? activeButtonStyle : buttonStyle))
+            if (GUILayout.Button("3Dブラシ", editor.activeTool == PointCloudEditor.EditTool.Brush ? activeButtonStyle : buttonStyle, GUILayout.Height(32f)))
                 editor.activeTool = PointCloudEditor.EditTool.Brush;
-            if (GUILayout.Button("2D矩形選択", editor.activeTool == PointCloudEditor.EditTool.Marquee ? activeButtonStyle : buttonStyle))
+            if (GUILayout.Button("2D矩形選択", editor.activeTool == PointCloudEditor.EditTool.Marquee ? activeButtonStyle : buttonStyle, GUILayout.Height(32f)))
                 editor.activeTool = PointCloudEditor.EditTool.Marquee;
-            if (GUILayout.Button("なげなわ選択", editor.activeTool == PointCloudEditor.EditTool.Lasso ? activeButtonStyle : buttonStyle))
+            if (GUILayout.Button("なげなわ選択", editor.activeTool == PointCloudEditor.EditTool.Lasso ? activeButtonStyle : buttonStyle, GUILayout.Height(32f)))
                 editor.activeTool = PointCloudEditor.EditTool.Lasso;
-            if (GUILayout.Button("接続探索", editor.activeTool == PointCloudEditor.EditTool.Connect ? activeButtonStyle : buttonStyle))
+            if (GUILayout.Button("接続探索", editor.activeTool == PointCloudEditor.EditTool.Connect ? activeButtonStyle : buttonStyle, GUILayout.Height(32f)))
                 editor.activeTool = PointCloudEditor.EditTool.Connect;
         }
         else
@@ -510,7 +518,8 @@ public class PointCloudEditorUI : MonoBehaviour
             GUILayout.Label("なげなわ多角形選択の操作方法:", textStyle);
             GUILayout.Label("  - 中クリック、またはCtrl+左クリックで頂点追加", textStyle);
             GUILayout.Label($"  - 現在の頂点数: {editor.LassoPoints.Count}", textStyle);
-            GUILayout.Label("  - [Enter] または [Space] で多角形を閉じ、選択適用", textStyle);
+            GUILayout.Label("  - [Backspace]で最後の頂点を戻す / [Esc]で作図を取消", textStyle);
+            GUILayout.Label("  - [Enter] または [Space] で確定して選択適用", textStyle);
             GUILayout.Space(5);
         }
         else if (editor.activeTool == PointCloudEditor.EditTool.Connect)
@@ -705,11 +714,21 @@ public class PointCloudEditorUI : MonoBehaviour
                 GUILayout.Label($"現在の選択点数: {editor.SelectedPointCount:N0} 点", textStyle);
             }
             GUILayout.Space(5);
+            bool guiWasEnabled = GUI.enabled;
+            GUILayout.BeginHorizontal();
+            GUI.enabled = guiWasEnabled && editor.CanAnnotationUndo;
+            if (GUILayout.Button("選択/分類を元に戻す  Ctrl+Z", buttonStyle, GUILayout.MinHeight(32f))) editor.AnnotationUndo();
+            GUI.enabled = guiWasEnabled && editor.CanAnnotationRedo;
+            if (GUILayout.Button("選択/分類をやり直す  Ctrl+Y", buttonStyle, GUILayout.MinHeight(32f))) editor.AnnotationRedo();
+            GUI.enabled = guiWasEnabled;
+            GUILayout.EndHorizontal();
+            float historyLimitMiB = editor.AnnotationHistoryStackLimitBytes / (1024f * 1024f);
+            GUILayout.Label($"履歴使用量 {editor.AnnotationHistoryRetainedBytes / (1024f * 1024f):F1} MiB / 最大 {historyLimitMiB * 2f:F0} MiB (Undo/Redo各100件・{historyLimitMiB:F0} MiB)", textStyle);
             if (compactTools)
             {
-                if (GUILayout.Button("選択クリア", buttonStyle)) editor.ClearSelection();
-                if (GUILayout.Button("選択反転", buttonStyle)) editor.InvertSelection();
-                if (GUILayout.Button("選択点を削除", buttonStyle)) editor.DeleteSelected();
+                if (GUILayout.Button("選択クリア", buttonStyle, GUILayout.Height(32f))) editor.ClearSelection();
+                if (GUILayout.Button("選択反転", buttonStyle, GUILayout.Height(32f))) editor.InvertSelection();
+                if (GUILayout.Button("選択点を削除", buttonStyle, GUILayout.Height(32f))) editor.DeleteSelected();
             }
             else
             {
@@ -719,7 +738,7 @@ public class PointCloudEditorUI : MonoBehaviour
                 if (GUILayout.Button("選択点を削除", buttonStyle)) editor.DeleteSelected();
                 GUILayout.EndHorizontal();
             }
-            if (GUILayout.Button("削除した点を復元 (ノイズ除去クリア)", buttonStyle,
+            if (GUILayout.Button("削除した点を復元", buttonStyle,
                 GUILayout.Height(compactTools ? 42f : 30f))) editor.RestoreDeleted();
             GUILayout.Space(10);
 
@@ -744,7 +763,11 @@ public class PointCloudEditorUI : MonoBehaviour
                     bool isActive = layer == activeLayer;
                     if (GUILayout.Button(layer, isActive ? activeButtonStyle : buttonStyle, GUILayout.Width((width - 45) / layersPerRow)))
                     {
-                        rend.SwitchAnnotationLayer(layer);
+                        if (layer != activeLayer)
+                        {
+                            editor.ResetPointLabelHistory();
+                            rend.SwitchAnnotationLayer(layer);
+                        }
                         editor.MarkStatsDirty();
                     }
                     if ((i + 1) % layersPerRow == 0 && i < layers.Count - 1)
@@ -777,6 +800,7 @@ public class PointCloudEditorUI : MonoBehaviour
                 {
                     if (GUILayout.Button("現在のアクティブレイヤーを削除", activeButtonStyle))
                     {
+                        editor.ResetPointLabelHistory();
                         rend.DeleteAnnotationLayer(activeLayer);
                         editor.MarkStatsDirty();
                     }
@@ -1068,6 +1092,7 @@ public class PointCloudEditorUI : MonoBehaviour
     private void AddLayerIfValid(PointCloudRenderer renderer, List<string> layers)
     {
         if (string.IsNullOrEmpty(newLayerName) || layers.Contains(newLayerName)) return;
+        editor.ResetPointLabelHistory();
         renderer.AddAnnotationLayer(newLayerName);
         renderer.SwitchAnnotationLayer(newLayerName);
         editor.MarkStatsDirty();

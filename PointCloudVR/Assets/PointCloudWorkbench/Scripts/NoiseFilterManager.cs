@@ -34,20 +34,15 @@ namespace PointCloudWorkbench
         private long boundRevision = -1;
         public string LastMutationFailure { get; private set; } = string.Empty;
 
-        // 履歴管理スタック（ディープコピー方式、メモリ保護のため最大5段）
-        private const int MAX_HISTORY = 5;
-        private const long MAX_HISTORY_BYTES_PER_STACK = 16L * 1024 * 1024;
-        private readonly BoundedHistory<int[]> undoStack = new BoundedHistory<int[]>(MAX_HISTORY,
-            MAX_HISTORY_BYTES_PER_STACK, labels => (long)labels.Length * sizeof(int));
-        private readonly BoundedHistory<int[]> redoStack = new BoundedHistory<int[]>(MAX_HISTORY,
-            MAX_HISTORY_BYTES_PER_STACK, labels => (long)labels.Length * sizeof(int));
+        // Keep only changed indices and noise-owned bits, not a full label snapshot.
+        private readonly PointLabelEditHistory editHistory = new PointLabelEditHistory();
         private readonly int[] previewReasonCounts = new int[8];
 
         public NoiseFilterResult CurrentResult => currentResult;
         public bool IsPreviewActive => isPreviewActive;
         public int GetPreviewReasonCount(int reason) => reason >= 0 && reason < previewReasonCounts.Length ? previewReasonCounts[reason] : 0;
-        public bool CanUndo => undoStack.Count > 0 && BoundStateIsCurrent();
-        public bool CanRedo => redoStack.Count > 0 && BoundStateIsCurrent();
+        public bool CanUndo => editHistory.CanUndo && BoundStateIsCurrent();
+        public bool CanRedo => editHistory.CanRedo && BoundStateIsCurrent();
 
         /// <summary>
         /// 最新のノイズ除去処理結果を設定します。
@@ -79,31 +74,28 @@ namespace PointCloudWorkbench
                 return false;
             }
 
-            if (!TryCaptureLabels(points, out int[] previousLabels)) return false;
             // プレビュービット（CANDIDATE）と理由コード（REASON）を設定
             int countSor = 0, countRor = 0, countDensity = 0, countCluster = 0, countCc = 0, countWhiteHaze = 0;
-            for (int i = 0; i < points.Length; i++)
+            PointLabelDelta delta = BuildNoiseDelta(points, 0x740000, 18, index =>
             {
-                if (currentResult.previewMask[i] != 0)
-                {
-                    points[i].label |= NOISE_CANDIDATE_BIT;
-                    int reasonVal = currentResult.previewReason[i];
-                    points[i].label = (points[i].label & ~NOISE_REASON_MASK) | ((reasonVal << NOISE_REASON_SHIFT) & NOISE_REASON_MASK);
-                    if (reasonVal == 1) countSor++;
-                    else if (reasonVal == 2) countRor++;
-                    else if (reasonVal == 3) countDensity++;
-                    else if (reasonVal == 4) countCluster++;
-                    else if (reasonVal == 5) countCc++;
-                    else if (reasonVal == 7) countWhiteHaze++;
-                }
-                else
-                {
-                    points[i].label &= ~NOISE_CANDIDATE_BIT;
-                    points[i].label &= ~NOISE_REASON_MASK;
-                }
+                if (currentResult.previewMask[index] == 0)
+                    return (byte)(((points[index].label & 0x740000) >> 18) & ~0x1d);
+                int reason = currentResult.previewReason[index] & 7;
+                return (byte)(1 | (reason << 2));
+            });
+            for (int i = 0; i < currentResult.previewMask.Length; i++)
+            {
+                if (currentResult.previewMask[i] == 0) continue;
+                int reason = currentResult.previewReason[i];
+                if (reason == 1) countSor++;
+                else if (reason == 2) countRor++;
+                else if (reason == 3) countDensity++;
+                else if (reason == 4) countCluster++;
+                else if (reason == 5) countCc++;
+                else if (reason == 7) countWhiteHaze++;
             }
 
-            if (!TryCommitLabelMutation(renderer, points, previousLabels, "プレビューを適用できませんでした。"))
+            if (!TryApplyNoiseDelta(renderer, delta, true, "プレビューを適用できませんでした。"))
                 return false;
             SetPreviewReasonCounts(countSor, countRor, countDensity, countCluster, countCc, countWhiteHaze);
             isPreviewActive = true;
@@ -120,15 +112,9 @@ namespace PointCloudWorkbench
 
             PointData[] points = renderer.GetPointData();
             if (points == null) return false;
-            if (!TryCaptureLabels(points, out int[] previousLabels)) return false;
-
-            for (int i = 0; i < points.Length; i++)
-            {
-                points[i].label &= ~NOISE_CANDIDATE_BIT;
-                points[i].label &= ~NOISE_REASON_MASK;
-            }
-
-            if (!TryCommitLabelMutation(renderer, points, previousLabels, "プレビュー解除に失敗しました。"))
+            PointLabelDelta delta = BuildNoiseDelta(points, 0x740000, 18,
+                index => (byte)(((points[index].label & 0x740000) >> 18) & ~0x1d));
+            if (!TryApplyNoiseDelta(renderer, delta, true, "プレビュー解除に失敗しました。"))
                 return false;
             Array.Clear(previewReasonCounts, 0, previewReasonCounts.Length);
             isPreviewActive = false;
@@ -145,23 +131,29 @@ namespace PointCloudWorkbench
 
             PointData[] points = renderer.GetPointData();
             if (points == null) return false;
-            if (!TryCaptureLabels(points, out int[] previousLabels)) return false;
-
             // プレビュー点はすべて非表示確定（HIDDEN）に変換
             // White Haze のように後続計算から除外するだけの候補も、
             // ユーザーが Commit した時点で「削除対象として確定した」とみなして隠す。
-            for (int i = 0; i < points.Length; i++)
+            PointLabelDelta delta = BuildNoiseDelta(points, 0x0c0000, 18, index =>
             {
-                if ((points[i].label & NOISE_CANDIDATE_BIT) != 0)
-                {
-                    points[i].label = (points[i].label & ~NOISE_CANDIDATE_BIT) | NOISE_HIDDEN_BIT;
-                }
-            }
-
-            if (!TryCommitLabelMutation(renderer, points, previousLabels, "ノイズ候補の確定に失敗しました。"))
+                int noise = (points[index].label & 0x0c0000) >> 18;
+                return (byte)((noise & 1) != 0 ? ((noise & ~1) | 2) : noise);
+            });
+            if (delta.PointCount == 0) return false;
+            if (!editHistory.CanRecord(delta))
+            {
+                LastMutationFailure = "ノイズUndo履歴の上限（1操作あたり128 MiB）を超えるため、点群は変更していません。";
+                UnityEngine.Debug.LogWarning($"[NoiseFilterManager] {LastMutationFailure}");
                 return false;
-            PushToUndo(previousLabels);
-            redoStack.Clear();
+            }
+            if (!TryApplyNoiseDelta(renderer, delta, true, "ノイズ候補の確定に失敗しました。"))
+                return false;
+            if (!editHistory.Record(delta))
+            {
+                TryApplyNoiseDelta(renderer, delta, false, "ノイズ履歴を保存できませんでした。");
+                LastMutationFailure = "ノイズUndo履歴を保存できなかったため、操作を取り消しました。";
+                return false;
+            }
             Array.Clear(previewReasonCounts, 0, previewReasonCounts.Length);
             isPreviewActive = false;
             boundRevision = renderer.ContentRevision;
@@ -174,23 +166,13 @@ namespace PointCloudWorkbench
         /// </summary>
         public bool Undo(PointCloudRenderer renderer)
         {
-            if (!CanUndo || !IsBoundToCurrentData(renderer)) return false;
-
+            if (!CanUndo || !ReferenceEquals(boundRenderer, renderer)) return false;
             PointData[] points = renderer.GetPointData();
-            if (points == null || undoStack.Peek().Length != points.Length) return false;
-
-            if (!TryCaptureLabels(points, out int[] previousLabels)) return false;
-            int[] restoreLabels = undoStack.Peek();
-            for (int i = 0; i < points.Length; i++)
-            {
-                points[i].label = restoreLabels[i];
-            }
-            if (!TryCommitLabelMutation(renderer, points, previousLabels, "ノイズUndoに失敗しました。"))
+            PointLabelDelta delta = editHistory.PeekUndo();
+            if (points == null || delta == null || !TryApplyNoiseDelta(renderer, delta, false, "ノイズUndoに失敗しました。"))
                 return false;
-            PushToRedo(previousLabels);
-            undoStack.Pop();
-            isPreviewActive = HasCandidates(restoreLabels);
-            RebuildPreviewReasonCounts(restoreLabels);
+            editHistory.CompleteUndo();
+            RebuildPreviewState(points);
             boundRevision = renderer.ContentRevision;
             UnityEngine.Debug.Log($"[NoiseFilterManager] ノイズ除去操作を Undo しました。(プレビュー活性状態: {isPreviewActive})");
             return true;
@@ -201,23 +183,13 @@ namespace PointCloudWorkbench
         /// </summary>
         public bool Redo(PointCloudRenderer renderer)
         {
-            if (!CanRedo || !IsBoundToCurrentData(renderer)) return false;
-
+            if (!CanRedo || !ReferenceEquals(boundRenderer, renderer)) return false;
             PointData[] points = renderer.GetPointData();
-            if (points == null || redoStack.Peek().Length != points.Length) return false;
-
-            if (!TryCaptureLabels(points, out int[] previousLabels)) return false;
-            int[] restoreLabels = redoStack.Peek();
-            for (int i = 0; i < points.Length; i++)
-            {
-                points[i].label = restoreLabels[i];
-            }
-            if (!TryCommitLabelMutation(renderer, points, previousLabels, "ノイズRedoに失敗しました。"))
+            PointLabelDelta delta = editHistory.PeekRedo();
+            if (points == null || delta == null || !TryApplyNoiseDelta(renderer, delta, true, "ノイズRedoに失敗しました。"))
                 return false;
-            PushToUndo(previousLabels);
-            redoStack.Pop();
-            isPreviewActive = HasCandidates(restoreLabels);
-            RebuildPreviewReasonCounts(restoreLabels);
+            editHistory.CompleteRedo();
+            RebuildPreviewState(points);
             boundRevision = renderer.ContentRevision;
             UnityEngine.Debug.Log($"[NoiseFilterManager] ノイズ除去操作を Redo しました。(プレビュー活性状態: {isPreviewActive})");
             return true;
@@ -233,17 +205,21 @@ namespace PointCloudWorkbench
             boundRevision = renderer.ContentRevision;
             PointData[] points = renderer.GetPointData();
             if (points == null) return false;
-            if (!TryCaptureLabels(points, out int[] previousLabels)) return false;
-
-            for (int i = 0; i < points.Length; i++)
+            PointLabelDelta delta = BuildNoiseDelta(points, 0x7c0000, 18, _ => 0);
+            if (delta.PointCount == 0) return true;
+            if (!editHistory.CanRecord(delta))
             {
-                points[i].label &= ~(NOISE_CANDIDATE_BIT | NOISE_HIDDEN_BIT | NOISE_REASON_MASK);
-            }
-
-            if (!TryCommitLabelMutation(renderer, points, previousLabels, "ノイズ状態のリセットに失敗しました。"))
+                LastMutationFailure = "ノイズUndo履歴の上限（1操作あたり128 MiB）を超えるため、点群は変更していません。";
+                UnityEngine.Debug.LogWarning($"[NoiseFilterManager] {LastMutationFailure}");
                 return false;
-            PushToUndo(previousLabels);
-            redoStack.Clear();
+            }
+            if (!TryApplyNoiseDelta(renderer, delta, true, "ノイズ状態のリセットに失敗しました。")) return false;
+            if (!editHistory.Record(delta))
+            {
+                TryApplyNoiseDelta(renderer, delta, false, "ノイズ履歴を保存できませんでした。");
+                LastMutationFailure = "ノイズUndo履歴を保存できなかったため、操作を取り消しました。";
+                return false;
+            }
             Array.Clear(previewReasonCounts, 0, previewReasonCounts.Length);
             isPreviewActive = false;
             boundRevision = renderer.ContentRevision;
@@ -251,67 +227,71 @@ namespace PointCloudWorkbench
             return true;
         }
 
-        private void PushToUndo(int[] labels)
-        {
-            if (!undoStack.Push(labels))
-                UnityEngine.Debug.LogWarning("[NoiseFilterManager] 点群が大きいためUndo履歴のメモリ上限を超えました。今回の操作はUndo対象になりません。");
-        }
+        // History is stored as sparse, noise-bit-only deltas.
 
-        private void PushToRedo(int[] labels)
+        private static PointLabelDelta BuildNoiseDelta(PointData[] points, int mask, int shift,
+            Func<int, byte> getAfterValue)
         {
-            if (!redoStack.Push(labels))
-                UnityEngine.Debug.LogWarning("[NoiseFilterManager] 点群が大きいためRedo履歴のメモリ上限を超えました。今回の操作はRedo対象になりません。");
-        }
-
-        private bool TryCaptureLabels(PointData[] points, out int[] labels)
-        {
-            labels = null;
-            long snapshotBytes = (long)points.Length * sizeof(int);
-            if (snapshotBytes > MAX_HISTORY_BYTES_PER_STACK)
+            int changedCount = 0;
+            for (int i = 0; i < points.Length; i++)
             {
-                LastMutationFailure = $"点群が大きく、noise rollback snapshotの上限（{MAX_HISTORY_BYTES_PER_STACK / (1024 * 1024)} MiB）を超えています。点群は変更していません。";
+                byte before = (byte)((points[i].label & mask) >> shift);
+                if (before != getAfterValue(i)) changedCount++;
+            }
+
+            int[] indices = new int[changedCount];
+            byte[] beforeValues = new byte[changedCount];
+            byte[] afterValues = new byte[changedCount];
+            int cursor = 0;
+            for (int i = 0; i < points.Length; i++)
+            {
+                byte before = (byte)((points[i].label & mask) >> shift);
+                byte after = getAfterValue(i);
+                if (before == after) continue;
+                indices[cursor] = i;
+                beforeValues[cursor] = before;
+                afterValues[cursor] = after;
+                cursor++;
+            }
+            return PointLabelDelta.MaskedValues(indices, mask, shift, beforeValues, afterValues);
+        }
+
+        private bool TryApplyNoiseDelta(PointCloudRenderer renderer, PointLabelDelta delta, bool forward,
+            string failureMessage)
+        {
+            if (delta == null || delta.PointCount == 0) return true;
+            PointData[] points = renderer != null ? renderer.GetPointData() : null;
+            if (points == null || !delta.MatchesExpected(points, forward))
+            {
+                LastMutationFailure = "ノイズ対象の状態が後から変更されたため、古い履歴を適用しませんでした。";
                 UnityEngine.Debug.LogWarning($"[NoiseFilterManager] {LastMutationFailure}");
                 return false;
             }
 
-            labels = new int[points.Length];
-            for (int i = 0; i < points.Length; i++) labels[i] = points[i].label;
-            return true;
-        }
-
-        private static bool HasCandidates(int[] labels)
-        {
-            for (int i = 0; i < labels.Length; i++)
-                if ((labels[i] & NOISE_CANDIDATE_BIT) != 0) return true;
-            return false;
-        }
-
-        private bool TryCommitLabelMutation(PointCloudRenderer renderer, PointData[] points,
-            int[] previousLabels, string failureMessage)
-        {
             try
             {
+                delta.Apply(points, forward);
                 if (!renderer.TryUpdatePointBuffer())
                     throw new InvalidOperationException("GPU点群バッファを更新できません。");
                 LastMutationFailure = string.Empty;
+                boundRevision = renderer.ContentRevision;
                 return true;
             }
             catch (Exception updateException)
             {
-                for (int i = 0; i < points.Length; i++) points[i].label = previousLabels[i];
-                bool gpuRestored = false;
+                bool restored = false;
                 try
                 {
-                    gpuRestored = renderer.TryUpdatePointBuffer();
+                    delta.Apply(points, !forward);
+                    restored = renderer.TryUpdatePointBuffer();
                 }
                 catch (Exception rollbackException)
                 {
-                    UnityEngine.Debug.LogError($"[NoiseFilterManager] {failureMessage} CPUラベルは復元しましたがGPU再同期にも失敗しました。\n{updateException}\n{rollbackException}");
+                    UnityEngine.Debug.LogError($"[NoiseFilterManager] {failureMessage} ノイズラベル復元にも失敗しました。\n{updateException}\n{rollbackException}");
                 }
-                boundRevision = renderer.ContentRevision;
-                LastMutationFailure = gpuRestored
+                LastMutationFailure = restored
                     ? $"{failureMessage} 点群と描画状態を変更前へ戻しました。\n{updateException.Message}"
-                    : $"{failureMessage} CPUラベルは戻しましたが描画バッファの同期に失敗しました。点群表示を再読み込みしてください。\n{updateException.Message}";
+                    : $"{failureMessage} CPUラベルまたは描画状態の復元に失敗しました。点群を再読み込みしてください。\n{updateException.Message}";
                 UnityEngine.Debug.LogWarning($"[RecoverableOperationError] {LastMutationFailure}");
                 return false;
             }
@@ -329,16 +309,14 @@ namespace PointCloudWorkbench
 
         private void Bind(PointCloudRenderer renderer)
         {
-            if (!PointCloudRevisionBinding.RequiresReset(boundRenderer, boundGeneration, boundRevision,
-                renderer, renderer.DatasetGeneration, renderer.ContentRevision)) return;
+            if (ReferenceEquals(boundRenderer, renderer) && boundGeneration == renderer.DatasetGeneration) return;
             boundRenderer = renderer;
             boundGeneration = renderer.DatasetGeneration;
             boundRevision = renderer.ContentRevision;
             currentResult = null;
             Array.Clear(previewReasonCounts, 0, previewReasonCounts.Length);
             isPreviewActive = false;
-            undoStack.Clear();
-            redoStack.Clear();
+            editHistory.Clear();
         }
 
         private void SetPreviewReasonCounts(int sor, int ror, int density, int cluster, int cc, int whiteHaze)
@@ -352,14 +330,16 @@ namespace PointCloudWorkbench
             previewReasonCounts[7] = whiteHaze;
         }
 
-        private void RebuildPreviewReasonCounts(int[] labels)
+        private void RebuildPreviewState(PointData[] points)
         {
             Array.Clear(previewReasonCounts, 0, previewReasonCounts.Length);
-            if (labels == null) return;
-            for (int i = 0; i < labels.Length; i++)
+            isPreviewActive = false;
+            if (points == null) return;
+            for (int i = 0; i < points.Length; i++)
             {
-                int label = labels[i];
+                int label = points[i].label;
                 if ((label & NOISE_CANDIDATE_BIT) == 0) continue;
+                isPreviewActive = true;
                 int reason = (label & NOISE_REASON_MASK) >> NOISE_REASON_SHIFT;
                 if (reason >= 0 && reason < previewReasonCounts.Length) previewReasonCounts[reason]++;
             }
@@ -368,9 +348,9 @@ namespace PointCloudWorkbench
         private bool IsBoundToCurrentData(PointCloudRenderer renderer)
         {
             if (renderer == null || !ReferenceEquals(boundRenderer, renderer) ||
-                renderer.DatasetGeneration != boundGeneration || renderer.ContentRevision != boundRevision)
+                renderer.DatasetGeneration != boundGeneration)
             {
-                UnityEngine.Debug.LogWarning("[NoiseFilterManager] 点群または編集状態が解析後に変化したため、古いノイズ結果・履歴を適用しません。");
+                UnityEngine.Debug.LogWarning("[NoiseFilterManager] 点群が切り替わったため、古いノイズ結果・履歴を適用しません。");
                 return false;
             }
             PointData[] points = renderer.GetPointData();
@@ -379,8 +359,7 @@ namespace PointCloudWorkbench
 
         private bool BoundStateIsCurrent()
         {
-            return boundRenderer != null && boundRenderer.DatasetGeneration == boundGeneration &&
-                boundRenderer.ContentRevision == boundRevision;
+            return boundRenderer != null && boundRenderer.DatasetGeneration == boundGeneration;
         }
 
     }

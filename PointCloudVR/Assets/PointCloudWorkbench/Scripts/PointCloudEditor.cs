@@ -112,13 +112,16 @@ public class PointCloudEditor : MonoBehaviour
     public int SelectedPointCount => selectedPointCount;
     public bool IsTrackpadSelectionActive => trackpadSelectionActive;
 
-    // Annotation History (Deep copy labels)
-    private const int MAX_ANNOTATION_HISTORY = 5;
-    private const long MAX_ANNOTATION_HISTORY_BYTES_PER_STACK = 16L * 1024 * 1024;
-    private BoundedHistory<int[]> annotationUndoStack = new BoundedHistory<int[]>(MAX_ANNOTATION_HISTORY,
-        MAX_ANNOTATION_HISTORY_BYTES_PER_STACK, labels => (long)labels.Length * sizeof(int));
-    private BoundedHistory<int[]> annotationRedoStack = new BoundedHistory<int[]>(MAX_ANNOTATION_HISTORY,
-        MAX_ANNOTATION_HISTORY_BYTES_PER_STACK, labels => (long)labels.Length * sizeof(int));
+    private const int SelectedLabelBit = 0x10000;
+    private const int DeletedLabelBit = 0x20000;
+    private readonly PointLabelEditHistory editHistory = new PointLabelEditHistory();
+    private long editHistoryGeneration = -1;
+    private string LastOperationFailure = string.Empty;
+    private bool brushStrokeActive;
+    private bool brushStrokeSelecting;
+    private bool brushStrokeOnlyUnclassified;
+    private int brushStrokeRecordedFrame = -1;
+    private readonly List<int> brushStrokeChangedIndices = new List<int>();
 
     private sealed class RecoveryLoadResult
     {
@@ -162,8 +165,12 @@ public class PointCloudEditor : MonoBehaviour
         : Path.GetFileName(recoverySourcePath);
     public string RecoveryDecisionStatus => recoveryDecisionStatus;
 
-    public bool CanAnnotationUndo => annotationUndoStack.Count > 0;
-    public bool CanAnnotationRedo => annotationRedoStack.Count > 0;
+    public bool CanAnnotationUndo => editHistory.CanUndo && IsEditHistoryForCurrentCloud() &&
+        activeSelectionOperation == null && !PointCloudProgressManager.Instance.IsRunning && !HasPendingRecovery;
+    public bool CanAnnotationRedo => editHistory.CanRedo && IsEditHistoryForCurrentCloud() &&
+        activeSelectionOperation == null && !PointCloudProgressManager.Instance.IsRunning && !HasPendingRecovery;
+    public long AnnotationHistoryRetainedBytes => editHistory.UndoBytes + editHistory.RedoBytes;
+    public long AnnotationHistoryStackLimitBytes => editHistory.MaxBytesPerStack;
 
     private readonly ConcurrentQueue<BackgroundSelectionResult> backgroundSelectionResults = new ConcurrentQueue<BackgroundSelectionResult>();
     private PointCloudOperation activeSelectionOperation;
@@ -536,66 +543,42 @@ public class PointCloudEditor : MonoBehaviour
             return;
         }
 
-        var changedIndices = new List<int>();
-        var previousLabels = new List<int>();
-        try
+        if ((result.Indices == null && result.Mask == null) ||
+            (result.Mask != null && result.Mask.Length != points.Length) ||
+            (result.Indices != null && !HasValidUniqueIndices(result.Indices, points.Length)))
         {
-            if (result.Indices != null)
-            {
-                for (int i = 0; i < result.Indices.Length; i++)
-                {
-                    int index = result.Indices[i];
-                    if (index < 0 || index >= points.Length) continue;
-                    int label = points[index].label;
-                    if (result.Selecting && result.SelectOnlyUnclassified && (label & 0xff) != 0) continue;
-                    int nextLabel = result.Selecting ? label | 0x10000 : label & ~0x10000;
-                    if (nextLabel == label) continue;
-                    changedIndices.Add(index);
-                    previousLabels.Add(label);
-                    PointData point = points[index];
-                    point.label = nextLabel;
-                    points[index] = point;
-                }
-            }
-            else if (result.Mask != null)
-            {
-                int count = Math.Min(result.Mask.Length, points.Length);
-                for (int index = 0; index < count; index++)
-                {
-                    if (!result.Mask[index]) continue;
-                    int label = points[index].label;
-                    int nextLabel = result.Selecting ? label | 0x10000 : label & ~0x10000;
-                    if (nextLabel == label) continue;
-                    changedIndices.Add(index);
-                    previousLabels.Add(label);
-                    PointData point = points[index];
-                    point.label = nextLabel;
-                    points[index] = point;
-                }
-            }
-
-            targetRenderer.UpdatePointBuffer();
-            statsDirty = true;
-            operation.Complete();
-            if (ReferenceEquals(activeSelectionOperation, operation)) activeSelectionOperation = null;
-            Debug.Log($"[{result.OperationTitle}] 選択結果を反映しました ({changedIndices.Count:N0} 点)。");
+            var error = new InvalidOperationException("選択結果の点インデックスが不正です。");
+            operation.Fail(result.OperationTitle, "選択結果を反映できませんでした。選択状態は変更していません。", error.ToString());
+            ClearActiveSelectionOperation(operation);
+            Debug.LogWarning($"[RecoverableOperationError] {result.OperationTitle}: {error}");
+            return;
         }
-        catch (Exception ex)
+
+        IList<int> candidates = result.Indices;
+        Func<int, bool> predicate = result.Mask != null
+            ? new Func<int, bool>(index => index < result.Mask.Length && result.Mask[index])
+            : null;
+        List<int> changed = CollectSelectionChanges(points, candidates, result.Selecting,
+            result.Selecting && result.SelectOnlyUnclassified, predicate);
+        if (changed.Count == 0)
         {
-            for (int i = 0; i < changedIndices.Count; i++)
-            {
-                PointData point = points[changedIndices[i]];
-                point.label = previousLabels[i];
-                points[changedIndices[i]] = point;
-            }
-            try { targetRenderer.UpdatePointBuffer(); }
-            catch (Exception rollbackException)
-            {
-                ex = new AggregateException("選択結果の反映と表示復元に失敗しました。", ex, rollbackException);
-            }
-            operation.Fail(result.OperationTitle, "選択結果を反映できませんでした。元の選択状態へ戻しました。", ex.ToString());
-            if (ReferenceEquals(activeSelectionOperation, operation)) activeSelectionOperation = null;
-            Debug.LogWarning($"[RecoverableOperationError] {result.OperationTitle}: {ex}");
+            operation.Complete();
+            ClearActiveSelectionOperation(operation);
+            return;
+        }
+
+        byte beforeValue = (byte)(result.Selecting ? 0 : 1);
+        PointLabelDelta delta = PointLabelDelta.ToggleConstant(changed.ToArray(), SelectedLabelBit, 16, beforeValue);
+        if (TryCommitEditDelta(delta, result.OperationTitle, allowedOperation: operation))
+        {
+            operation.Complete();
+            ClearActiveSelectionOperation(operation);
+            Debug.Log($"[{result.OperationTitle}] 選択結果を反映しました ({changed.Count:N0} 点)。");
+        }
+        else
+        {
+            operation.Fail(result.OperationTitle, "選択結果を反映できませんでした。選択状態は変更していません。", LastOperationFailure);
+            ClearActiveSelectionOperation(operation);
         }
     }
 
@@ -614,6 +597,10 @@ public class PointCloudEditor : MonoBehaviour
         while (backgroundSelectionResults.TryDequeue(out BackgroundSelectionResult result))
             ApplyBackgroundSelectionResult(result);
 
+        if (brushStrokeActive && (activeTool != EditTool.Brush || HasPendingRecovery ||
+            PointCloudProgressManager.Instance.IsRunning || !IsSelectionPointerHeld()))
+            FinishBrushStroke();
+
         // Lock interactions if a background task is running (modal progress dialog)
         if (HasPendingRecovery)
         {
@@ -629,6 +616,8 @@ public class PointCloudEditor : MonoBehaviour
             }
             return;
         }
+
+        HandleEditHistoryShortcuts();
 
         // Clean up brush visual if tool changed
         if (activeTool != EditTool.Brush && brushVisual != null && brushVisual.activeSelf)
@@ -669,6 +658,57 @@ public class PointCloudEditor : MonoBehaviour
         }
     }
 
+    private void HandleEditHistoryShortcuts()
+    {
+        if (GUIUtility.keyboardControl != 0 || (editorUI != null && editorUI.HasKeyboardInputFocus)) return;
+        bool controlDown = Input.GetKey(KeyCode.LeftControl) || Input.GetKey(KeyCode.RightControl);
+        if (!controlDown) return;
+        bool undo = Input.GetKeyDown(KeyCode.Z);
+        bool redo = !undo && Input.GetKeyDown(KeyCode.Y);
+        if (!undo && !redo) return;
+
+        // A held brush stroke is already applied to the point data but is committed
+        // to history only on release. Close it first so Ctrl+Z targets that stroke.
+        if (brushStrokeActive)
+        {
+            bool hadChanges = brushStrokeChangedIndices.Count > 0;
+            bool recorded = FinishBrushStroke();
+            if (hadChanges)
+            {
+                if (undo && recorded) AnnotationUndo();
+                return;
+            }
+        }
+        else if (undo && brushStrokeRecordedFrame == Time.frameCount)
+        {
+            AnnotationUndo();
+            return;
+        }
+
+        PointCloudEditorUI.CenterWorkspace workspace = editorUI != null
+            ? editorUI.ActiveCenterWorkspace
+            : PointCloudEditorUI.CenterWorkspace.Annotation;
+        if (workspace == PointCloudEditorUI.CenterWorkspace.Noise)
+        {
+            NoiseFilterManager noise = NoiseFilterManager.Instance;
+            bool applied = undo ? noise.Undo(targetRenderer) : noise.Redo(targetRenderer);
+            if (applied) MarkStatsDirty();
+            else if (undo ? !noise.CanUndo : !noise.CanRedo)
+            {
+                if (undo) AnnotationUndo();
+                else AnnotationRedo();
+            }
+            return;
+        }
+        if (workspace == PointCloudEditorUI.CenterWorkspace.Measurement && undo && CanMeasurementUndo)
+        {
+            UndoMeasurement();
+            return;
+        }
+        if (undo) AnnotationUndo();
+        else AnnotationRedo();
+    }
+
     private bool IsTrackpadSelectionGesture()
     {
         bool controlDown = Input.GetKey(KeyCode.LeftControl) || Input.GetKey(KeyCode.RightControl);
@@ -701,7 +741,13 @@ public class PointCloudEditor : MonoBehaviour
 
     void HandleBrushTool()
     {
-        if (editorUI != null && editorUI.IsMouseOverUI())
+        bool pointerOverUI = editorUI != null && editorUI.IsMouseOverUI();
+        bool pointerPressed = IsSelectionPointerPressed();
+        bool pointerReleased = IsSelectionPointerReleased();
+        if (pointerPressed && !pointerOverUI) BeginBrushStroke();
+        if (pointerReleased) FinishBrushStroke();
+
+        if (pointerOverUI)
         {
             if (brushVisual != null) brushVisual.SetActive(false);
             return;
@@ -733,10 +779,10 @@ public class PointCloudEditor : MonoBehaviour
             brushVisual.transform.position = worldCenter;
             brushVisual.transform.localScale = Vector3.one * (worldRadius * 2f);
 
-            // Perform selection when Middle Mouse (Wheel press) is dragged
-            if (IsSelectionPointerHeld())
+            if (brushStrokeActive && IsSelectionPointerHeld())
             {
-                ApplyBrushSelection(hitPoint);
+                ApplyBrushSelection(hitPoint, brushStrokeSelecting, brushStrokeOnlyUnclassified,
+                    brushStrokeChangedIndices);
             }
         }
         else
@@ -1117,8 +1163,62 @@ public class PointCloudEditor : MonoBehaviour
         return count;
     }
 
-    // Apply brush selection (Multi-threaded Parallel.For with Octree acceleration)
-    void ApplyBrushSelection(Vector3 brushCenterWorld)
+    private void BeginBrushStroke()
+    {
+        if (brushStrokeActive) FinishBrushStroke();
+        brushStrokeActive = true;
+        brushStrokeSelecting = brushSelectMode;
+        brushStrokeOnlyUnclassified = selectOnlyUnclassified;
+        brushStrokeChangedIndices.Clear();
+    }
+
+    private bool FinishBrushStroke()
+    {
+        if (!brushStrokeActive) return false;
+        brushStrokeActive = false;
+        if (brushStrokeChangedIndices.Count == 0) return false;
+
+        PointLabelDelta delta = PointLabelDelta.ToggleConstant(
+            brushStrokeChangedIndices.ToArray(), SelectedLabelBit, 16,
+            (byte)(brushStrokeSelecting ? 0 : 1));
+        PointData[] points = targetRenderer != null ? targetRenderer.GetPointData() : null;
+        if (points == null || editHistoryGeneration != targetRenderer.DatasetGeneration ||
+            !delta.MatchesExpected(points, false))
+        {
+            brushStrokeChangedIndices.Clear();
+            PointCloudProgressManager.Instance.ShowError("選択Undo", "ストローク後に選択状態が変わったため、誤って上書きしないよう履歴へ登録しませんでした。");
+            return false;
+        }
+        if (!editHistory.Record(delta))
+        {
+            bool restored = false;
+            if (points != null)
+            {
+                try
+                {
+                    delta.Apply(points, false);
+                    restored = targetRenderer.TryUpdatePointBuffer();
+                    statsDirty = true;
+                }
+                catch (Exception ex)
+                {
+                    Debug.LogError($"[RecoverableOperationError] ブラシ履歴を保存できず、選択状態の復元にも失敗しました: {ex}");
+                }
+            }
+            PointCloudProgressManager.Instance.ShowError("選択Undo", restored
+                ? "履歴メモリ上限を超えたため、ブラシストロークを取り消しました。"
+                : "履歴保存に失敗し、表示の再同期も確認できません。点群を再読み込みしてください。");
+            brushStrokeChangedIndices.Clear();
+            return false;
+        }
+        brushStrokeRecordedFrame = Time.frameCount;
+        brushStrokeChangedIndices.Clear();
+        return true;
+    }
+
+    // Apply only changed indices. The stroke is recorded once when the pointer is released.
+    void ApplyBrushSelection(Vector3 brushCenterWorld, bool selecting, bool onlyUnclassified,
+        List<int> strokeChangedIndices)
     {
         PointData[] points = targetRenderer.GetPointData();
         if (points == null || points.Length == 0) return;
@@ -1127,8 +1227,6 @@ public class PointCloudEditor : MonoBehaviour
         float localBrushRadius = targetRenderer.MillimetersToDataLength(brushRadius);
         float radiusSq = localBrushRadius * localBrushRadius;
 
-        bool selecting = brushSelectMode;
-
         var octree = targetRenderer.Octree;
         bool useOctree = octree != null && targetRenderer.IsOctreeReady;
 
@@ -1136,46 +1234,16 @@ public class PointCloudEditor : MonoBehaviour
         {
             searchCandidates.Clear();
             TraverseBrush(octree.root, localBrushCenter, localBrushRadius, searchCandidates);
-
-            Parallel.For(0, searchCandidates.Count, idxInCandidates =>
-            {
-                int i = searchCandidates[idxInCandidates];
-                int label = points[i].label;
-                bool isDeleted = (label & 0x20000) != 0;
-                if (isDeleted) return;
-                if (selecting && selectOnlyUnclassified && (label & 0xFF) != 0) return;
-
-                float distSq = (points[i].position - localBrushCenter).sqrMagnitude;
-                if (distSq <= radiusSq)
-                {
-                    if (selecting) label |= 0x10000;
-                    else label &= ~0x10000;
-                    points[i].label = label;
-                }
-            });
+            ApplySelectionMutation("3Dブラシ選択", selecting, onlyUnclassified,
+                searchCandidates, index => (points[index].position - localBrushCenter).sqrMagnitude <= radiusSq,
+                strokeChangedIndices);
         }
         else
         {
-            // Fallback to full scanning
-            Parallel.For(0, points.Length, i =>
-            {
-                int label = points[i].label;
-                bool isDeleted = (label & 0x20000) != 0;
-                if (isDeleted) return;
-                if (selecting && selectOnlyUnclassified && (label & 0xFF) != 0) return;
-
-                float distSq = (points[i].position - localBrushCenter).sqrMagnitude;
-                if (distSq <= radiusSq)
-                {
-                    if (selecting) label |= 0x10000;
-                    else label &= ~0x10000;
-                    points[i].label = label;
-                }
-            });
+            ApplySelectionMutation("3Dブラシ選択", selecting, onlyUnclassified, null,
+                index => (points[index].position - localBrushCenter).sqrMagnitude <= radiusSq,
+                strokeChangedIndices);
         }
-
-        targetRenderer.UpdatePointBuffer();
-        statsDirty = true;
     }
 
     private void TraverseBrush(PointCloudOctree.Node node, Vector3 localBrushCenter, float localBrushRadius, List<int> candidates)
@@ -1218,66 +1286,30 @@ public class PointCloudEditor : MonoBehaviour
             (max.y - min.y) / Screen.height
         );
 
-        Matrix4x4 localToScreen = Camera.main.projectionMatrix * Camera.main.worldToCameraMatrix * targetRenderer.DisplayTransform.localToWorldMatrix;
+        Camera camera = Camera.main;
+        if (camera == null) return;
+        Matrix4x4 localToScreen = camera.projectionMatrix * camera.worldToCameraMatrix * targetRenderer.DisplayTransform.localToWorldMatrix;
         bool selecting = brushSelectMode;
 
         var octree = targetRenderer.Octree;
         bool useOctree = octree != null && targetRenderer.IsOctreeReady;
 
+        IList<int> candidates = null;
         if (useOctree)
         {
             searchCandidates.Clear();
             TraverseMarquee(octree.root, localToScreen, selectRect, searchCandidates);
-
-            Parallel.For(0, searchCandidates.Count, idxInCandidates =>
-            {
-                int i = searchCandidates[idxInCandidates];
-                int label = points[i].label;
-                bool isDeleted = (label & 0x20000) != 0;
-                if (isDeleted) return;
-                if (selecting && selectOnlyUnclassified && (label & 0xFF) != 0) return;
-
-                Vector4 clipPos = localToScreen * new Vector4(points[i].position.x, points[i].position.y, points[i].position.z, 1f);
-                if (clipPos.w <= 0.0001f) return;
-
-                Vector3 ndc = new Vector3(clipPos.x / clipPos.w, clipPos.y / clipPos.w, clipPos.z / clipPos.w);
-                Vector2 screenPos = new Vector2(ndc.x * 0.5f + 0.5f, ndc.y * 0.5f + 0.5f);
-
-                if (selectRect.Contains(screenPos))
-                {
-                    if (selecting) label |= 0x10000;
-                    else label &= ~0x10000;
-                    points[i].label = label;
-                }
-            });
+            candidates = searchCandidates;
         }
-        else
+        ApplySelectionMutation("矩形選択", selecting, selectOnlyUnclassified, candidates, index =>
         {
-            // Fallback to full scanning
-            Parallel.For(0, points.Length, i =>
-            {
-                int label = points[i].label;
-                bool isDeleted = (label & 0x20000) != 0;
-                if (isDeleted) return;
-                if (selecting && selectOnlyUnclassified && (label & 0xFF) != 0) return;
-
-                Vector4 clipPos = localToScreen * new Vector4(points[i].position.x, points[i].position.y, points[i].position.z, 1f);
-                if (clipPos.w <= 0.0001f) return;
-
-                Vector3 ndc = new Vector3(clipPos.x / clipPos.w, clipPos.y / clipPos.w, clipPos.z / clipPos.w);
-                Vector2 screenPos = new Vector2(ndc.x * 0.5f + 0.5f, ndc.y * 0.5f + 0.5f);
-
-                if (selectRect.Contains(screenPos))
-                {
-                    if (selecting) label |= 0x10000;
-                    else label &= ~0x10000;
-                    points[i].label = label;
-                }
-            });
-        }
-
-        targetRenderer.UpdatePointBuffer();
-        statsDirty = true;
+            Vector3 position = points[index].position;
+            Vector4 clipPos = localToScreen * new Vector4(position.x, position.y, position.z, 1f);
+            if (clipPos.w <= 0.0001f) return false;
+            Vector2 screenPos = new Vector2(clipPos.x / clipPos.w * 0.5f + 0.5f,
+                clipPos.y / clipPos.w * 0.5f + 0.5f);
+            return selectRect.Contains(screenPos);
+        });
     }
 
     private void TraverseMarquee(PointCloudOctree.Node node, Matrix4x4 localToScreen, Rect selectRect, List<int> candidates)
@@ -1354,211 +1386,364 @@ public class PointCloudEditor : MonoBehaviour
 
     public void ClearSelection()
     {
-        PointData[] points = targetRenderer.GetPointData();
-        if (points == null) return;
-
-        Parallel.For(0, points.Length, i =>
-        {
-            points[i].label &= ~0x10000;
-        });
-        targetRenderer.UpdatePointBuffer();
-        statsDirty = true;
+        ApplySelectionMutation("選択クリア", false, false, null, null);
     }
 
     public void InvertSelection()
     {
         PointData[] points = targetRenderer.GetPointData();
         if (points == null) return;
-
-        Parallel.For(0, points.Length, i =>
-        {
-            bool isDeleted = (points[i].label & 0x20000) != 0;
-            if (!isDeleted)
-            {
-                points[i].label ^= 0x10000;
-            }
-        });
-        targetRenderer.UpdatePointBuffer();
-        statsDirty = true;
+        List<int> indices = CollectMatchingIndices(points,
+            index => (points[index].label & DeletedLabelBit) == 0);
+        if (indices.Count == 0) return;
+        byte[] before = new byte[indices.Count];
+        for (int i = 0; i < indices.Count; i++)
+            before[i] = (byte)((points[indices[i]].label & SelectedLabelBit) >> 16);
+        PointLabelDelta delta = PointLabelDelta.ToggleValues(indices.ToArray(), SelectedLabelBit, 16, before);
+        TryCommitEditDelta(delta, "選択反転");
     }
 
     public void DeleteSelected()
     {
         PointData[] points = targetRenderer.GetPointData();
         if (points == null) return;
-
-        Parallel.For(0, points.Length, i =>
+        List<int> indices = CollectMatchingIndices(points, index =>
         {
-            bool isSelected = (points[i].label & 0x10000) != 0;
-            if (isSelected)
-            {
-                points[i].label &= ~0x10000;
-                points[i].label |= 0x20000;  // Set deleted bit
-            }
+            int label = points[index].label;
+            return (label & SelectedLabelBit) != 0 && (label & DeletedLabelBit) == 0;
         });
-        targetRenderer.UpdatePointBuffer();
-        statsDirty = true;
+        if (indices.Count == 0) return;
+        TryCommitEditDelta(PointLabelDelta.ToggleConstant(indices.ToArray(),
+            SelectedLabelBit | DeletedLabelBit, 16, 1), "選択点の削除");
     }
 
     public void RestoreDeleted()
     {
         PointData[] points = targetRenderer.GetPointData();
         if (points == null) return;
-
-        Parallel.For(0, points.Length, i =>
-        {
-            points[i].label &= ~0x20000; // Clear deleted bit
-        });
-        targetRenderer.UpdatePointBuffer();
-        statsDirty = true;
-    }
-
-    public void PushAnnotationUndo()
-    {
-        PointData[] points = targetRenderer.GetPointData();
-        if (points == null) return;
-        if (!TryCaptureAnnotationLabels(points, "注釈Undo", out int[] labels)) return;
-        if (!annotationUndoStack.Push(labels))
-            PointCloudProgressManager.Instance.ShowError("注釈Undo", "点群が履歴メモリ上限を超えるため、Undo履歴を保存できません。");
-    }
-
-    public void PushAnnotationRedo()
-    {
-        PointData[] points = targetRenderer.GetPointData();
-        if (points == null) return;
-        if (!TryCaptureAnnotationLabels(points, "注釈Redo", out int[] labels)) return;
-        if (!annotationRedoStack.Push(labels))
-            PointCloudProgressManager.Instance.ShowError("注釈Redo", "点群が履歴メモリ上限を超えるため、Redo履歴を保存できません。");
-    }
-
-    private bool TryCaptureAnnotationLabels(PointData[] points, string operationTitle, out int[] labels)
-    {
-        labels = null;
-        long snapshotBytes = (long)points.Length * sizeof(int);
-        if (snapshotBytes > MAX_ANNOTATION_HISTORY_BYTES_PER_STACK)
-        {
-            string message = $"点数が多く、安全なUndo用スナップショットの上限（{MAX_ANNOTATION_HISTORY_BYTES_PER_STACK / (1024 * 1024)} MiB）を超えています。点群は変更していません。";
-            PointCloudProgressManager.Instance.ShowError(operationTitle, message);
-            return false;
-        }
-
-        labels = new int[points.Length];
-        for (int i = 0; i < points.Length; i++) labels[i] = points[i].label;
-        return true;
-    }
-
-    private bool TryApplyAnnotationLabels(PointData[] points, int[] nextLabels, int[] previousLabels,
-        string operationTitle)
-    {
-        return TryCommitAnnotationMutation(points, previousLabels, operationTitle, () =>
-        {
-            for (int i = 0; i < points.Length; i++) points[i].label = nextLabels[i];
-        });
-    }
-
-    private bool TryCommitAnnotationMutation(PointData[] points, int[] previousLabels,
-        string operationTitle, Action mutate)
-    {
-        try
-        {
-            mutate();
-            if (!targetRenderer.TryUpdatePointBuffer())
-                throw new InvalidOperationException("GPU点群バッファを更新できません。");
-            statsDirty = true;
-            return true;
-        }
-        catch (Exception applyException)
-        {
-            for (int i = 0; i < points.Length; i++) points[i].label = previousLabels[i];
-            bool rendererRestored = false;
-            try { rendererRestored = targetRenderer.TryUpdatePointBuffer(); }
-            catch (Exception rollbackException)
-            {
-                Debug.LogError($"[RecoverableOperationError] {operationTitle}: CPUラベルを戻しましたがGPU再同期にも失敗しました。\n{applyException}\n{rollbackException}");
-            }
-
-            string message = rendererRestored
-                ? "点群を変更前に戻しました。操作を再試行できます。"
-                : "CPUラベルを戻しましたが描画バッファの再同期に失敗しました。点群を再読み込みしてください。";
-            PointCloudProgressManager.Instance.ShowError(operationTitle, message);
-            Debug.LogWarning($"[RecoverableOperationError] {operationTitle}: {applyException}");
-            return false;
-        }
+        List<int> indices = CollectMatchingIndices(points,
+            index => (points[index].label & DeletedLabelBit) != 0);
+        if (indices.Count == 0) return;
+        TryCommitEditDelta(PointLabelDelta.ToggleConstant(indices.ToArray(), DeletedLabelBit, 17, 1), "削除点の復元");
     }
 
     public void ClearAnnotationRedo()
     {
-        annotationRedoStack.Clear();
+        editHistory.ClearRedo();
     }
 
     public bool AnnotationUndo()
     {
-        if (!CanAnnotationUndo || targetRenderer == null) return false;
-        PointData[] points = targetRenderer.GetPointData();
-        if (points == null) return false;
-
-        int[] prevLabels = annotationUndoStack.Peek();
-        if (prevLabels.Length != points.Length)
+        if (brushStrokeActive)
         {
-            annotationUndoStack.Clear();
-            annotationRedoStack.Clear();
-            PointCloudProgressManager.Instance.ShowError("注釈を元に戻す", "点群が切り替わったため、古いUndo履歴を破棄しました。");
-            return false;
+            bool hadChanges = brushStrokeChangedIndices.Count > 0;
+            bool recorded = FinishBrushStroke();
+            if (hadChanges && !recorded) return false;
         }
-        if (!TryCaptureAnnotationLabels(points, "注釈を元に戻す", out int[] currentLabels)) return false;
-        if (!TryApplyAnnotationLabels(points, prevLabels, currentLabels, "注釈を元に戻す")) return false;
-        annotationUndoStack.Pop();
-        if (!annotationRedoStack.Push(currentLabels))
-            Debug.LogWarning("[RecoverableOperationError] 注釈Undo後のRedo履歴をメモリ上限内に保存できませんでした。");
-        return true;
+        return ApplyEditHistory(false);
     }
 
     public bool AnnotationRedo()
     {
-        if (!CanAnnotationRedo || targetRenderer == null) return false;
-        PointData[] points = targetRenderer.GetPointData();
-        if (points == null) return false;
-
-        int[] nextLabels = annotationRedoStack.Peek();
-        if (nextLabels.Length != points.Length)
+        if (brushStrokeActive)
         {
-            annotationUndoStack.Clear();
-            annotationRedoStack.Clear();
-            PointCloudProgressManager.Instance.ShowError("注釈をやり直す", "点群が切り替わったため、古いRedo履歴を破棄しました。");
-            return false;
+            bool hadChanges = brushStrokeChangedIndices.Count > 0;
+            FinishBrushStroke();
+            if (hadChanges) return false;
         }
-        if (!TryCaptureAnnotationLabels(points, "注釈をやり直す", out int[] currentLabels)) return false;
-        if (!TryApplyAnnotationLabels(points, nextLabels, currentLabels, "注釈をやり直す")) return false;
-        annotationRedoStack.Pop();
-        if (!annotationUndoStack.Push(currentLabels))
-            Debug.LogWarning("[RecoverableOperationError] 注釈Redo後のUndo履歴をメモリ上限内に保存できませんでした。");
-        return true;
+        return ApplyEditHistory(true);
+    }
+
+    public void ResetPointLabelHistory()
+    {
+        if (brushStrokeActive) FinishBrushStroke();
+        editHistory.Clear();
+        brushStrokeChangedIndices.Clear();
+        editHistoryGeneration = targetRenderer != null ? targetRenderer.DatasetGeneration : -1;
     }
 
     public void AssignLabelToSelected()
     {
         PointData[] points = targetRenderer.GetPointData();
         if (points == null) return;
-
-        // Prepare a bounded rollback/undo snapshot before mutating the cloud.
-        if (!TryCaptureAnnotationLabels(points, "選択点の分類", out int[] previousLabels)) return;
-
         int classVal = activeLabelClass & 0xFF;
+        List<int> indices = CollectMatchingIndices(points,
+            index => (points[index].label & SelectedLabelBit) != 0);
+        if (indices.Count == 0) return;
+        byte[] beforeClasses = new byte[indices.Count];
+        for (int i = 0; i < indices.Count; i++)
+            beforeClasses[i] = (byte)(points[indices[i]].label & 0xff);
+        TryCommitEditDelta(PointLabelDelta.ClassAssignment(indices.ToArray(), beforeClasses, (byte)classVal),
+            "選択点の分類");
+    }
 
-        if (!TryCommitAnnotationMutation(points, previousLabels, "選択点の分類", () => Parallel.For(0, points.Length, i =>
+    private bool IsEditHistoryForCurrentCloud()
+    {
+        if (targetRenderer == null) return false;
+        long generation = targetRenderer.DatasetGeneration;
+        if (editHistoryGeneration < 0) editHistoryGeneration = generation;
+        return editHistoryGeneration == generation;
+    }
+
+    private bool EnsureEditHistoryBound()
+    {
+        if (targetRenderer == null) return false;
+        long generation = targetRenderer.DatasetGeneration;
+        if (editHistoryGeneration == generation) return true;
+        editHistory.Clear();
+        brushStrokeChangedIndices.Clear();
+        brushStrokeActive = false;
+        editHistoryGeneration = generation;
+        return true;
+    }
+
+    private List<int> CollectMatchingIndices(PointData[] points, Func<int, bool> predicate)
+    {
+        var matches = new List<int>();
+        object gate = new object();
+        Parallel.For(0, points.Length, () => new List<int>(), (index, _, local) =>
         {
-            bool isSelected = (points[i].label & 0x10000) != 0;
-            if (isSelected)
+            if (predicate(index)) local.Add(index);
+            return local;
+        }, local =>
+        {
+            lock (gate) matches.AddRange(local);
+        });
+        return matches;
+    }
+
+    private static bool HasValidUniqueIndices(int[] indices, int pointCount)
+    {
+        for (int i = 0; i < indices.Length; i++)
+            if ((uint)indices[i] >= (uint)pointCount) return false;
+        if (indices.Length < 2) return true;
+        int[] sorted = (int[])indices.Clone();
+        Array.Sort(sorted);
+        for (int i = 1; i < sorted.Length; i++)
+            if (sorted[i] == sorted[i - 1]) return false;
+        return true;
+    }
+
+    private List<int> CollectSelectionChanges(PointData[] points, IList<int> candidates,
+        bool selecting, bool onlyUnclassified, Func<int, bool> predicate)
+    {
+        int count = candidates != null ? candidates.Count : points.Length;
+        var changed = new List<int>();
+        object gate = new object();
+        Parallel.For(0, count, () => new List<int>(), (offset, _, local) =>
+        {
+            int index = candidates != null ? candidates[offset] : offset;
+            if ((uint)index >= (uint)points.Length) return local;
+            if (predicate != null && !predicate(index)) return local;
+            int label = points[index].label;
+            if ((label & DeletedLabelBit) != 0 ||
+                (selecting && onlyUnclassified && (label & 0xff) != 0)) return local;
+            if (((label & SelectedLabelBit) != 0) == selecting) return local;
+            local.Add(index);
+            return local;
+        }, local =>
+        {
+            lock (gate) changed.AddRange(local);
+        });
+        return changed;
+    }
+
+    private bool ApplySelectionMutation(string title, bool selecting, bool onlyUnclassified,
+        IList<int> candidates, Func<int, bool> predicate, List<int> strokeTarget = null,
+        PointCloudOperation allowedOperation = null)
+    {
+        if (!EnsureEditHistoryBound()) return false;
+        PointData[] points = targetRenderer.GetPointData();
+        if (points == null || points.Length == 0) return false;
+        List<int> changed = CollectSelectionChanges(points, candidates, selecting, onlyUnclassified, predicate);
+        if (changed.Count == 0) return false;
+        if (strokeTarget != null)
+            return TryApplyBrushStrokeChanges(title, points, changed, strokeTarget);
+        byte beforeValue = (byte)(selecting ? 0 : 1);
+        PointLabelDelta delta = PointLabelDelta.ToggleConstant(changed.ToArray(), SelectedLabelBit, 16, beforeValue);
+        return TryCommitEditDelta(delta, title, allowedOperation: allowedOperation);
+    }
+
+    private bool TryApplyBrushStrokeChanges(string title, PointData[] points,
+        List<int> changedIndices, List<int> strokeIndices)
+    {
+        if (PointCloudProgressManager.Instance.IsRunning || HasPendingRecovery || activeSelectionOperation != null)
+            return false;
+
+        long resultingBytes = 32L + ((long)strokeIndices.Count + changedIndices.Count) * sizeof(int);
+        if (resultingBytes > editHistory.MaxBytesPerStack)
+        {
+            LastOperationFailure = $"Undo履歴の上限（{editHistory.MaxBytesPerStack / (1024 * 1024)} MiB/操作）を超えるため、変更しませんでした。";
+            PointCloudProgressManager.Instance.ShowError(title, LastOperationFailure);
+            return false;
+        }
+
+        for (int i = 0; i < changedIndices.Count; i++)
+        {
+            int index = changedIndices[i];
+            PointData point = points[index];
+            point.label ^= SelectedLabelBit;
+            points[index] = point;
+        }
+
+        try
+        {
+            if (!targetRenderer.TryUpdatePointBuffer())
+                throw new InvalidOperationException("GPU点群バッファを更新できません。");
+        }
+        catch (Exception applyException)
+        {
+            for (int i = 0; i < changedIndices.Count; i++)
             {
-                int label = points[i].label;
-                label &= ~0xFF;          // Clear class ID (lower 8 bits)
-                label |= classVal;       // Set class ID
-                label &= ~0x10000;       // Clear selected
-                points[i].label = label;
+                int index = changedIndices[i];
+                PointData point = points[index];
+                point.label ^= SelectedLabelBit;
+                points[index] = point;
             }
-        }))) return;
-        annotationUndoStack.Push(previousLabels);
-        annotationRedoStack.Clear();
+            bool restored = false;
+            try { restored = targetRenderer.TryUpdatePointBuffer(); }
+            catch (Exception rollbackException)
+            {
+                Debug.LogError($"[RecoverableOperationError] {title}: GPU失敗後の点群再同期に失敗しました。\n{applyException}\n{rollbackException}");
+            }
+            LastOperationFailure = restored
+                ? "GPU更新失敗後、点群を変更前に戻しました。"
+                : "GPU更新失敗後に点群表示を同期できませんでした。再読み込みしてください。";
+            PointCloudProgressManager.Instance.ShowError(title, LastOperationFailure);
+            return false;
+        }
+
+        strokeIndices.AddRange(changedIndices);
+        statsDirty = true;
+        LastOperationFailure = string.Empty;
+        return true;
+    }
+
+    private bool TryCommitEditDelta(PointLabelDelta delta, string title,
+        PointCloudOperation allowedOperation = null)
+    {
+        if (brushStrokeActive) FinishBrushStroke();
+        LastOperationFailure = string.Empty;
+        if (!EnsureEditHistoryBound() || delta == null || targetRenderer == null) return false;
+        bool ownsRunningOperation = allowedOperation != null &&
+            ReferenceEquals(activeSelectionOperation, allowedOperation) && allowedOperation.IsCurrent;
+        if ((activeSelectionOperation != null && !ownsRunningOperation) ||
+            (PointCloudProgressManager.Instance.IsRunning && !ownsRunningOperation) || HasPendingRecovery)
+        {
+            LastOperationFailure = "別の処理中、または復旧確認中のため編集を適用しませんでした。";
+            return false;
+        }
+
+        if (!editHistory.CanRecord(delta))
+        {
+            LastOperationFailure = $"Undo履歴の上限（{editHistory.MaxBytesPerStack / (1024 * 1024)} MiB/操作）を超えるため、変更しませんでした。";
+            PointCloudProgressManager.Instance.ShowError(title, LastOperationFailure);
+            return false;
+        }
+
+        PointData[] points = targetRenderer.GetPointData();
+        if (points == null || !delta.MatchesExpected(points, true))
+        {
+            LastOperationFailure = "対象ラベルが変更されているため、古い状態を上書きしませんでした。";
+            return false;
+        }
+        try
+        {
+            delta.Apply(points, true);
+            if (!targetRenderer.TryUpdatePointBuffer())
+                throw new InvalidOperationException("GPU点群バッファを更新できません。");
+        }
+        catch (Exception applyException)
+        {
+            bool restored = false;
+            try
+            {
+                delta.Apply(points, false);
+                restored = targetRenderer.TryUpdatePointBuffer();
+            }
+            catch (Exception rollbackException)
+            {
+                Debug.LogError($"[RecoverableOperationError] {title}: CPUラベル復元またはGPU再同期に失敗しました。\n{applyException}\n{rollbackException}");
+            }
+            PointCloudProgressManager.Instance.ShowError(title, restored
+                ? "点群を変更前に戻しました。操作を再試行できます。"
+                : "点群状態の復元に失敗しました。表示とデータを確認してから再読み込みしてください。");
+            LastOperationFailure = restored
+                ? "GPUバッファ更新に失敗したため、CPU点群と表示を変更前に戻しました。"
+                : "GPU更新失敗後に点群表示を同期できませんでした。";
+            Debug.LogWarning($"[RecoverableOperationError] {title}: {applyException}");
+            return false;
+        }
+
+        if (!editHistory.Record(delta))
+        {
+            bool restored = false;
+            try
+            {
+                delta.Apply(points, false);
+                restored = targetRenderer.TryUpdatePointBuffer();
+            }
+            catch (Exception rollbackException)
+            {
+                Debug.LogError($"[RecoverableOperationError] {title}: 履歴保存失敗後の復元に失敗しました。{rollbackException}");
+            }
+            LastOperationFailure = restored
+                ? "Undo履歴を保存できなかったため、操作を取り消しました。"
+                : "Undo履歴保存後の復元に失敗しました。点群を再読み込みしてください。";
+            PointCloudProgressManager.Instance.ShowError(title, LastOperationFailure);
+            return false;
+        }
+
+        statsDirty = true;
+        LastOperationFailure = string.Empty;
+        return true;
+    }
+
+    private bool ApplyEditHistory(bool forward)
+    {
+        if (!(forward ? CanAnnotationRedo : CanAnnotationUndo) || targetRenderer == null) return false;
+        PointData[] points = targetRenderer.GetPointData();
+        PointLabelDelta delta = forward ? editHistory.PeekRedo() : editHistory.PeekUndo();
+        if (points == null || delta == null || !delta.MatchesExpected(points, forward))
+        {
+            PointCloudProgressManager.Instance.ShowError(forward ? "やり直し" : "元に戻す",
+                "対象ラベルが履歴と一致しないため適用しませんでした。新しい操作を優先して履歴を保持しました。");
+            return false;
+        }
+
+        try
+        {
+            delta.Apply(points, forward);
+            if (!targetRenderer.TryUpdatePointBuffer())
+                throw new InvalidOperationException("GPU点群バッファを更新できません。");
+        }
+        catch (Exception applyException)
+        {
+            bool restored = false;
+            try
+            {
+                delta.Apply(points, !forward);
+                restored = targetRenderer.TryUpdatePointBuffer();
+            }
+            catch (Exception rollbackException)
+            {
+                Debug.LogError($"[RecoverableOperationError] 履歴適用後の復元に失敗しました。\n{applyException}\n{rollbackException}");
+            }
+            PointCloudProgressManager.Instance.ShowError(forward ? "やり直し" : "元に戻す",
+                restored
+                    ? "変更を適用できず、点群を変更前に戻しました。操作を再試行できます。"
+                    : "変更適用に失敗し、描画との再同期も確認できません。点群を再読み込みしてください。");
+            return false;
+        }
+
+        bool moved = forward ? editHistory.CompleteRedo() : editHistory.CompleteUndo();
+        if (!moved)
+        {
+            Debug.LogError("[PointCloudEditor] 履歴スタックの移動に失敗しました。");
+            return false;
+        }
+        statsDirty = true;
+        return true;
     }
 
     // Recalculate statistics for labels
@@ -1768,6 +1953,19 @@ public class PointCloudEditor : MonoBehaviour
 
     void HandleLassoTool()
     {
+        bool keyboardAvailable = GUIUtility.keyboardControl == 0 &&
+            (editorUI == null || !editorUI.HasKeyboardInputFocus);
+        if (keyboardAvailable && lassoPoints.Count > 0 && Input.GetKeyDown(KeyCode.Backspace))
+        {
+            lassoPoints.RemoveAt(lassoPoints.Count - 1);
+            return;
+        }
+        if (keyboardAvailable && Input.GetKeyDown(KeyCode.Escape) && lassoPoints.Count > 0)
+        {
+            lassoPoints.Clear();
+            return;
+        }
+
         if (editorUI != null && editorUI.IsMouseOverUI() && lassoPoints.Count == 0)
         {
             if (brushVisual != null) brushVisual.SetActive(false);
@@ -1788,7 +1986,7 @@ public class PointCloudEditor : MonoBehaviour
         // Close and apply on Return key or Space key (Right-click removed to avoid camera rotation conflict)
         // テキスト入力フィールドにフォーカスがある場合はキー入力を無視する（IMEやBackspaceの競合を回避）
         bool pointerOverUi = editorUI != null && editorUI.IsMouseOverUI();
-        if (!pointerOverUi && GUIUtility.keyboardControl == 0 &&
+        if (!pointerOverUi && keyboardAvailable &&
             (Input.GetKeyDown(KeyCode.Return) || Input.GetKeyDown(KeyCode.Space)))
         {
             if (lassoPoints.Count >= 3)
@@ -1820,63 +2018,30 @@ public class PointCloudEditor : MonoBehaviour
 
         Rect polygonScreenRect = Rect.MinMaxRect(minX, minY, maxX, maxY);
 
-        Matrix4x4 localToScreen = Camera.main.projectionMatrix * Camera.main.worldToCameraMatrix * targetRenderer.DisplayTransform.localToWorldMatrix;
+        Camera camera = Camera.main;
+        if (camera == null) return;
+        Matrix4x4 localToScreen = camera.projectionMatrix * camera.worldToCameraMatrix * targetRenderer.DisplayTransform.localToWorldMatrix;
         bool selecting = brushSelectMode;
 
         var octree = targetRenderer.Octree;
         bool useOctree = octree != null && targetRenderer.IsOctreeReady;
 
+        IList<int> candidates = null;
         if (useOctree)
         {
             searchCandidates.Clear();
             TraverseMarquee(octree.root, localToScreen, polygonScreenRect, searchCandidates);
-
-            Parallel.For(0, searchCandidates.Count, idxInCandidates =>
-            {
-                int i = searchCandidates[idxInCandidates];
-                int label = points[i].label;
-                if ((label & 0x20000) != 0) return;
-                if (selecting && selectOnlyUnclassified && (label & 0xFF) != 0) return;
-
-                Vector4 clipPos = localToScreen * new Vector4(points[i].position.x, points[i].position.y, points[i].position.z, 1f);
-                if (clipPos.w <= 0.0001f) return;
-
-                Vector3 ndc = new Vector3(clipPos.x / clipPos.w, clipPos.y / clipPos.w, clipPos.z / clipPos.w);
-                Vector2 screenPos = new Vector2(ndc.x * 0.5f + 0.5f, ndc.y * 0.5f + 0.5f);
-
-                if (IsPointInPolygon(screenPos, normalizedPolygon))
-                {
-                    if (selecting) label |= 0x10000;
-                    else label &= ~0x10000;
-                    points[i].label = label;
-                }
-            });
+            candidates = searchCandidates;
         }
-        else
+        ApplySelectionMutation("なげなわ選択", selecting, selectOnlyUnclassified, candidates, index =>
         {
-            Parallel.For(0, points.Length, i =>
-            {
-                int label = points[i].label;
-                if ((label & 0x20000) != 0) return;
-                if (selecting && selectOnlyUnclassified && (label & 0xFF) != 0) return;
-
-                Vector4 clipPos = localToScreen * new Vector4(points[i].position.x, points[i].position.y, points[i].position.z, 1f);
-                if (clipPos.w <= 0.0001f) return;
-
-                Vector3 ndc = new Vector3(clipPos.x / clipPos.w, clipPos.y / clipPos.w, clipPos.z / clipPos.w);
-                Vector2 screenPos = new Vector2(ndc.x * 0.5f + 0.5f, ndc.y * 0.5f + 0.5f);
-
-                if (IsPointInPolygon(screenPos, normalizedPolygon))
-                {
-                    if (selecting) label |= 0x10000;
-                    else label &= ~0x10000;
-                    points[i].label = label;
-                }
-            });
-        }
-
-        targetRenderer.UpdatePointBuffer();
-        statsDirty = true;
+            Vector3 position = points[index].position;
+            Vector4 clipPos = localToScreen * new Vector4(position.x, position.y, position.z, 1f);
+            if (clipPos.w <= 0.0001f) return false;
+            Vector2 screenPos = new Vector2(clipPos.x / clipPos.w * 0.5f + 0.5f,
+                clipPos.y / clipPos.w * 0.5f + 0.5f);
+            return IsPointInPolygon(screenPos, normalizedPolygon);
+        });
     }
 
     private bool IsPointInPolygon(Vector2 p, List<Vector2> polygon)
@@ -2862,47 +3027,25 @@ public class PointCloudEditor : MonoBehaviour
             localFilterMin = targetRenderer.MillimetersToDataLength(filterMin);
             localFilterMax = targetRenderer.MillimetersToDataLength(filterMax);
         }
-        Parallel.For(0, points.Length, i =>
+        FilterType selectedFilter = filterType;
+        float requestedMin = filterMin;
+        float requestedMax = filterMax;
+        ApplySelectionMutation("属性フィルタ選択", selecting, selectOnlyUnclassified, null, i =>
         {
-            int label = points[i].label;
-            if ((label & 0x20000) != 0) return;
-
-            bool pass = false;
-            float val = 0f;
-
-            if (filterType == FilterType.Height)
+            float value;
+            if (selectedFilter == FilterType.Height) value = points[i].position.y;
+            else if (selectedFilter == FilterType.Distance) value = points[i].distance;
+            else
             {
-                val = points[i].position.y;
-                pass = (val >= localFilterMin && val <= localFilterMax);
+                Color32 color = PointData.UnpackColor(points[i].originalColor);
+                value = selectedFilter == FilterType.Redness
+                    ? (float)color.r / Math.Max(1f, (float)color.g + color.b)
+                    : (float)color.g / Math.Max(1f, (float)color.r + color.b);
             }
-            else if (filterType == FilterType.Distance)
-            {
-                val = points[i].distance;
-                pass = (val >= localFilterMin && val <= localFilterMax);
-            }
-            else if (filterType == FilterType.Redness)
-            {
-                Color32 c = PointData.UnpackColor(points[i].originalColor);
-                val = (float)c.r / Math.Max(1f, (float)c.g + c.b);
-                pass = (val >= filterMin && val <= filterMax);
-            }
-            else if (filterType == FilterType.Greenness)
-            {
-                Color32 c = PointData.UnpackColor(points[i].originalColor);
-                val = (float)c.g / Math.Max(1f, (float)c.r + c.b);
-                pass = (val >= filterMin && val <= filterMax);
-            }
-
-            if (pass)
-            {
-                if (selecting) label |= 0x10000;
-                else label &= ~0x10000;
-                points[i].label = label;
-            }
+            float min = selectedFilter == FilterType.Height || selectedFilter == FilterType.Distance ? localFilterMin : requestedMin;
+            float max = selectedFilter == FilterType.Height || selectedFilter == FilterType.Distance ? localFilterMax : requestedMax;
+            return value >= min && value <= max;
         });
-
-        targetRenderer.UpdatePointBuffer();
-        statsDirty = true;
     }
 
     void OnDestroy()
@@ -2955,8 +3098,13 @@ public class PointCloudEditor : MonoBehaviour
         recoveryLastEditUtc = DateTime.UtcNow;
         recoveryLabelSnapshot = null;
         recoverySnapshotCursor = 0;
-        annotationUndoStack.Clear();
-        annotationRedoStack.Clear();
+        lassoPoints.Clear();
+        isDrawingMarquee = false;
+        trackpadSelectionActive = false;
+        editHistory.Clear();
+        editHistoryGeneration = targetRenderer != null ? targetRenderer.DatasetGeneration : -1;
+        brushStrokeActive = false;
+        brushStrokeChangedIndices.Clear();
         ClearMeasurementVisuals();
         measurementCloudPath = Path.GetFullPath(path);
         measurementDocumentPath = MeasurementDocumentStore.GetSidecarPath(measurementCloudPath);
@@ -3210,6 +3358,7 @@ public class PointCloudEditor : MonoBehaviour
             recoveryLastEditUtc = DateTime.UtcNow;
             Debug.Log($"[Recovery] ユーザー確認後に編集ラベルを復元しました。points={points.Length:N0}, checkpoint_revision={pendingRecoveryRevision}");
             pendingRecoveryRevision = -1;
+            ResetPointLabelHistory();
             return true;
         }
         catch (Exception applyException)
