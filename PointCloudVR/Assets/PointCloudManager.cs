@@ -126,6 +126,7 @@ public class PointCloudManager : MonoBehaviour
 
     void Update()
     {
+        if (HardwareCompatibilityDiagnostic.HasBlockingGraphicsFailure) return;
         PointCloudProgressSnapshot progress = PointCloudProgressManager.Instance.GetSnapshot();
         if (progress.IsRunning || progress.HasError || progress.HasWarning) return;
 
@@ -454,6 +455,7 @@ public class PointCloudManager : MonoBehaviour
 
     void OnGUI()
     {
+        if (HardwareCompatibilityDiagnostic.HasBlockingGraphicsFailure) return;
         InitializeStyles();
         PointCloudProgressSnapshot activeProgress = PointCloudProgressManager.Instance.GetSnapshot();
         if (activeProgress.HasError || activeProgress.HasWarning) return;

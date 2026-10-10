@@ -387,6 +387,7 @@ public class PointCloudEditorUI : MonoBehaviour
 
     void OnGUI()
     {
+        if (HardwareCompatibilityDiagnostic.HasBlockingGraphicsFailure) return;
         if (editor == null || editor.targetRenderer == null) return;
         InitializeStyles();
         bool guiEnabledBeforeDraw = GUI.enabled;
@@ -492,6 +493,8 @@ public class PointCloudEditorUI : MonoBehaviour
                 editor.activeTool = PointCloudEditor.EditTool.Connect;
         }
         GUILayout.Label($"使用中: {GetToolDisplayName(editor.activeTool)}", textStyle);
+        if (editor.activeTool != PointCloudEditor.EditTool.None)
+            GUILayout.Label("選択操作: 中クリック/ドラッグ。ノートPC: Ctrl+左クリック/ドラッグ", textStyle);
         GUILayout.Space(5);
 
         // --- 2. Tool Configurations ---
@@ -505,9 +508,9 @@ public class PointCloudEditorUI : MonoBehaviour
         else if (editor.activeTool == PointCloudEditor.EditTool.Lasso)
         {
             GUILayout.Label("なげなわ多角形選択の操作方法:", textStyle);
-            GUILayout.Label("  - 画面上をクリックして頂点追加", textStyle);
+            GUILayout.Label("  - 中クリック、またはCtrl+左クリックで頂点追加", textStyle);
             GUILayout.Label($"  - 現在の頂点数: {editor.LassoPoints.Count}", textStyle);
-            GUILayout.Label("  - [Enter] または [右クリック] で多角形を閉じ、選択適用", textStyle);
+            GUILayout.Label("  - [Enter] または [Space] で多角形を閉じ、選択適用", textStyle);
             GUILayout.Space(5);
         }
         else if (editor.activeTool == PointCloudEditor.EditTool.Connect)

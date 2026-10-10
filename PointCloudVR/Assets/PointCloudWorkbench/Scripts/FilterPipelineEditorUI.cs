@@ -74,7 +74,11 @@ namespace PointCloudWorkbench
             noiseFilterUI = GetComponent<NoiseFilterUI>();
         }
 
-        void Update() => HandleKeyboard();
+        void Update()
+        {
+            if (HardwareCompatibilityDiagnostic.HasBlockingGraphicsFailure) return;
+            HandleKeyboard();
+        }
 
         // =========================================================
         // キーボードショートカット

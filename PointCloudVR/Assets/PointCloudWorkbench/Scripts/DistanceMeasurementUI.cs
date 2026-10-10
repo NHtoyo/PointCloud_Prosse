@@ -155,7 +155,7 @@ namespace PointCloudWorkbench
             DrawUndoControl();
 
             GUILayout.Space(5f);
-            GUILayout.Label("点の追加・置換は中央クリックです。左クリックはカメラ操作のままです。", hintStyle);
+            GUILayout.Label("点の追加・置換: 中クリック、またはノートPCではCtrl+左クリック。", hintStyle);
             GUILayout.Label("距離と座標はmmで表示しています。", hintStyle);
         }
 
@@ -288,7 +288,7 @@ namespace PointCloudWorkbench
                     if (GUILayout.Button("直近点を削除", buttonStyle, GUILayout.Height(30f))) editor.RemoveLastMeasurementPoint();
                     GUILayout.Label(editor.ReplacingMeasurementPointIndex >= 0
                         ? $"点{editor.ReplacingMeasurementPointIndex + 1}を置換中"
-                        : "中央クリックで点を追加", hintStyle);
+                        : "中クリック、またはCtrl+左クリックで点を追加", hintStyle);
                     GUILayout.EndHorizontal();
                     DrawDraftPoints();
                 }

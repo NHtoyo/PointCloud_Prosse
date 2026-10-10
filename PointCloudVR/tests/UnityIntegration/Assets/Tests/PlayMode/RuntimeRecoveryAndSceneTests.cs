@@ -12,6 +12,30 @@ using UnityEngine.TestTools;
 
 public sealed class RuntimeRecoveryAndSceneTests
 {
+    [Test]
+    public void GraphicsCompatibilityGateRequiresTheRendererContract()
+    {
+        Type diagnostic = AppDomain.CurrentDomain.GetAssemblies()
+            .Select(assembly => assembly.GetType("HardwareCompatibilityDiagnostic", false))
+            .FirstOrDefault(candidate => candidate != null);
+        Assert.That(diagnostic, Is.Not.Null, "HardwareCompatibilityDiagnostic was not loaded.");
+        MethodInfo evaluate = diagnostic.GetMethod("EvaluateGraphicsCompatibility", BindingFlags.Public | BindingFlags.Static);
+        Assert.That(evaluate, Is.Not.Null);
+
+        string supported = (string)evaluate.Invoke(null, new object[] { 50, true, 24, true, true });
+        string computeShaderUnavailable = (string)evaluate.Invoke(null, new object[] { 50, false, 24, true, true });
+        string shaderModelTooLow = (string)evaluate.Invoke(null, new object[] { 49, true, 24, true, true });
+        string shaderMissing = (string)evaluate.Invoke(null, new object[] { 50, true, 24, false, true });
+        string wrongStride = (string)evaluate.Invoke(null, new object[] { 50, true, 20, true, true });
+
+        Assert.That(supported, Is.Empty);
+        Assert.That(computeShaderUnavailable, Is.Empty,
+            "ComputeShader dispatch is not used by the renderer; this property alone must not reject a structured-buffer graphics path.");
+        Assert.That(shaderModelTooLow, Does.Contain("Shader Model 5.0"));
+        Assert.That(shaderMissing, Does.Contain("必須点群シェーダー"));
+        Assert.That(wrongStride, Does.Contain("PointDataのGPUデータ幅"));
+    }
+
     [UnityTest]
     public IEnumerator CenterWorkspaceSelectionShowsOnlyTheRequestedPanel()
     {

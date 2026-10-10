@@ -1,7 +1,7 @@
-open3d
-numpy
-scipy
-fastapi
-uvicorn
-pydantic
-matplotlib
+open3d==0.20.0
+numpy==2.5.3
+scipy==1.18.1
+fastapi==0.143.0
+uvicorn==0.54.0
+pydantic==2.14.0
+matplotlib==3.11.2

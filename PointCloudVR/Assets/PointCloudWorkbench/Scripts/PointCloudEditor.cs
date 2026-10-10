@@ -103,12 +103,14 @@ public class PointCloudEditor : MonoBehaviour
     private int visiblePointCount = 0;
     private int selectedPointCount = 0;
     private bool statsDirty = true;
+    private bool trackpadSelectionActive;
     private AnnotationPipelineEditorUI annotationUI;
 
     public Dictionary<int, int> GetLabelCountsMap() => labelCountsMap;
     public int GetNoiseDeletedCount() => noiseDeletedCount;
     public int VisiblePointCount => visiblePointCount;
     public int SelectedPointCount => selectedPointCount;
+    public bool IsTrackpadSelectionActive => trackpadSelectionActive;
 
     // Annotation History (Deep copy labels)
     private const int MAX_ANNOTATION_HISTORY = 5;
@@ -604,6 +606,7 @@ public class PointCloudEditor : MonoBehaviour
 
     void Update()
     {
+        if (HardwareCompatibilityDiagnostic.HasBlockingGraphicsFailure) return;
         if (targetRenderer == null) return;
         PollMeasurementFingerprint();
         UpdateSessionRecovery();
@@ -657,11 +660,43 @@ public class PointCloudEditor : MonoBehaviour
             HandleMeasureTool();
         }
 
+        if (trackpadSelectionActive && Input.GetMouseButtonUp(0)) trackpadSelectionActive = false;
+
         // Recalculate stats if marked dirty
         if (statsDirty)
         {
             RecalculateStats();
         }
+    }
+
+    private bool IsTrackpadSelectionGesture()
+    {
+        bool controlDown = Input.GetKey(KeyCode.LeftControl) || Input.GetKey(KeyCode.RightControl);
+        if (activeTool != EditTool.None && controlDown && Input.GetMouseButtonDown(0))
+            trackpadSelectionActive = true;
+        if (Input.GetMouseButtonUp(0)) trackpadSelectionActive = false;
+        return trackpadSelectionActive && Input.GetMouseButton(0);
+    }
+
+    private bool IsSelectionPointerHeld()
+    {
+        return Input.GetMouseButton(2) || IsTrackpadSelectionGesture();
+    }
+
+    private bool IsSelectionPointerPressed()
+    {
+        bool trackpadPressed = activeTool != EditTool.None &&
+            (Input.GetKey(KeyCode.LeftControl) || Input.GetKey(KeyCode.RightControl)) &&
+            Input.GetMouseButtonDown(0);
+        if (trackpadPressed) trackpadSelectionActive = true;
+        return Input.GetMouseButtonDown(2) || trackpadPressed;
+    }
+
+    private bool IsSelectionPointerReleased()
+    {
+        bool trackpadReleased = trackpadSelectionActive && Input.GetMouseButtonUp(0);
+        if (trackpadReleased) trackpadSelectionActive = false;
+        return Input.GetMouseButtonUp(2) || trackpadReleased;
     }
 
     void HandleBrushTool()
@@ -699,7 +734,7 @@ public class PointCloudEditor : MonoBehaviour
             brushVisual.transform.localScale = Vector3.one * (worldRadius * 2f);
 
             // Perform selection when Middle Mouse (Wheel press) is dragged
-            if (Input.GetMouseButton(2))
+            if (IsSelectionPointerHeld())
             {
                 ApplyBrushSelection(hitPoint);
             }
@@ -717,7 +752,7 @@ public class PointCloudEditor : MonoBehaviour
             return;
         }
 
-        if (Input.GetMouseButtonDown(2))
+        if (IsSelectionPointerPressed())
         {
             isDrawingMarquee = true;
             marqueeStart = Input.mousePosition;
@@ -727,7 +762,7 @@ public class PointCloudEditor : MonoBehaviour
         {
             marqueeEnd = Input.mousePosition;
 
-            if (Input.GetMouseButtonUp(2))
+            if (IsSelectionPointerReleased())
             {
                 isDrawingMarquee = false;
                 ApplyMarqueeSelection();
@@ -1741,8 +1776,8 @@ public class PointCloudEditor : MonoBehaviour
 
         if (brushVisual != null) brushVisual.SetActive(false);
 
-        // Add vertex on Middle-Click
-        if (Input.GetMouseButtonDown(2))
+        // Add a vertex with the middle button or Ctrl+left click for trackpads.
+        if (IsSelectionPointerPressed())
         {
             if (editorUI == null || !editorUI.IsMouseOverUI())
             {
@@ -1868,7 +1903,7 @@ public class PointCloudEditor : MonoBehaviour
 
         if (brushVisual != null) brushVisual.SetActive(false);
 
-        if (Input.GetMouseButtonDown(2))
+        if (IsSelectionPointerPressed())
         {
             Ray ray = Camera.main.ScreenPointToRay(Input.mousePosition);
             Vector3 hitPoint;
@@ -2688,8 +2723,7 @@ public class PointCloudEditor : MonoBehaviour
         string seedPath = Path.Combine(outputDir, "support_seed_indices.bin");
         string maskPath = Path.Combine(outputDir, "support_mask.bin");
         string scriptPath = Path.Combine(backendDir, "run_support_cylinder.py");
-        string pythonPath = Path.Combine(backendDir, ".venv/Scripts/python.exe");
-        if (!File.Exists(pythonPath)) pythonPath = "python";
+        string pythonPath = PythonBridge.GetPythonPath();
 
         PointCloudOperation operation = PointCloudProgressManager.Instance.TryStart("支柱抽出 Python", "Pythonバックエンドを起動中...");
         if (operation == null) return;
@@ -2709,6 +2743,8 @@ public class PointCloudEditor : MonoBehaviour
         CancellationToken token = operation.CancellationToken;
         try
         {
+            await PythonBridge.EnsureEnvironmentReadyAsync(token, operation);
+            pythonPath = PythonBridge.GetPythonPath();
             byte[] mask = await Task.Run(() =>
             {
                 Directory.CreateDirectory(outputDir);
@@ -3419,7 +3455,7 @@ public class PointCloudEditor : MonoBehaviour
     {
         if (!measurementDraftActive || index < 0 || index >= measurementPath.Points.Count) return;
         replaceMeasurementPointIndex = index;
-        measurementStatus = $"点{index + 1}の置換先を中央クリックしてください。";
+        measurementStatus = $"点{index + 1}の置換先を中クリック、またはCtrl+左クリックしてください。";
     }
 
     public int ReplacingMeasurementPointIndex => replaceMeasurementPointIndex;
@@ -3853,7 +3889,7 @@ public class PointCloudEditor : MonoBehaviour
         if (editorUI != null && editorUI.IsMouseOverUI()) return;
         DistanceMeasurementUI measureUI = GetComponent<DistanceMeasurementUI>();
         if (measureUI != null && measureUI.IsMouseOverPanel()) return;
-        if (!Input.GetMouseButtonDown(2)) return;
+        if (!IsSelectionPointerPressed()) return;
 
         Ray ray = Camera.main.ScreenPointToRay(Input.mousePosition);
         if (!FindClosestPointOnRay(ray, out Vector3 hitPoint)) return;

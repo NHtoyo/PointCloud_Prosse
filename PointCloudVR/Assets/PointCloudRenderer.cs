@@ -142,16 +142,41 @@ public class PointCloudRenderer : MonoBehaviour
 
     void Start()
     {
-        Initialize();
+        if (!Initialize()) return;
         if (pointData == null || pointData.Length == 0)
         {
             GenerateDemoPointCloud();
         }
     }
 
-    public void Initialize()
+    public bool Initialize()
     {
-        if (isInitialized && pointMaterial != null) return;
+        if (isInitialized && pointMaterial != null) return true;
+
+        if (SystemInfo.graphicsShaderLevel < 50)
+        {
+            string message = $"点群表示にはShader Model 5.0以上が必要です。現在のgraphicsShaderLevel={SystemInfo.graphicsShaderLevel}です。";
+            HardwareCompatibilityDiagnostic.ReportGraphicsFailure(message);
+            Debug.LogError("[PointCloudRenderer] " + message);
+            return false;
+        }
+
+        if (SystemInfo.graphicsDeviceType == UnityEngine.Rendering.GraphicsDeviceType.Null)
+        {
+            const string message = "有効なGraphics API/描画デバイスがありません。Direct3D 11/12またはVulkanを有効にしてください。";
+            HardwareCompatibilityDiagnostic.ReportGraphicsFailure(message);
+            Debug.LogError("[PointCloudRenderer] " + message);
+            return false;
+        }
+
+        int pointDataStride = Marshal.SizeOf(typeof(PointData));
+        if (pointDataStride != 24)
+        {
+            string message = $"点群GPUデータ形式が一致しません。PointData={pointDataStride} bytes、必要値=24 bytesです。";
+            HardwareCompatibilityDiagnostic.ReportGraphicsFailure(message);
+            Debug.LogError("[PointCloudRenderer] " + message);
+            return false;
+        }
 
         // Upgrade old sub-pixel point-size settings to the current pixel-based size.
         if (pointSize < 0.5f)
@@ -168,14 +193,25 @@ public class PointCloudRenderer : MonoBehaviour
         }
         else if (pointShader == null)
         {
-            Debug.LogError("[PointCloudRenderer] PointCloudShader not found! Add it to Always Included Shaders in Graphics Settings.");
-            return;
+            const string message = "必須の点群シェーダーPointCloudWorkbench/PointCloudShaderが見つかりません。";
+            HardwareCompatibilityDiagnostic.ReportGraphicsFailure(message);
+            Debug.LogError("[PointCloudRenderer] " + message);
+            return false;
+        }
+
+        if (!pointShader.isSupported)
+        {
+            string message = $"必須シェーダーが現在のGPU/APIで利用できません: {pointShader.name}";
+            HardwareCompatibilityDiagnostic.ReportGraphicsFailure(message);
+            Debug.LogError("[PointCloudRenderer] " + message);
+            return false;
         }
 
         pointMaterial = new Material(pointShader);
         InitializeDefaultLabelColors();
         isInitialized = true;
         Debug.Log("[PointCloudRenderer] Initialized with shader: " + pointShader.name);
+        return true;
     }
 
     private void InitializeDefaultLabelColors()
@@ -304,7 +340,7 @@ public class PointCloudRenderer : MonoBehaviour
     // Set dynamic points from standard positions and colors (used by PointCloudLoader)
     public void SetPointCloudData(Vector3[] positions, Color[] colors)
     {
-        Initialize();
+        if (!Initialize()) throw new System.InvalidOperationException("GPU描画条件を満たさないため、点群を設定できません。");
         if (positions == null || positions.Length == 0)
             throw new System.ArgumentException("点群データが空です。", nameof(positions));
 
@@ -366,7 +402,7 @@ public class PointCloudRenderer : MonoBehaviour
     // High performance SetData with full struct (for internal workbench use)
     public void SetPointCloudData(PointData[] data)
     {
-        Initialize();
+        if (!Initialize()) throw new System.InvalidOperationException("GPU描画条件を満たさないため、点群を設定できません。");
         if (data == null || data.Length == 0)
             throw new System.ArgumentException("点群データが空です。", nameof(data));
 
@@ -787,8 +823,9 @@ public class PointCloudRenderer : MonoBehaviour
         // Re-initialize if material was lost
         if (pointMaterial == null)
         {
+            if (HardwareCompatibilityDiagnostic.HasBlockingGraphicsFailure) return;
             isInitialized = false;
-            Initialize();
+            if (!Initialize()) return;
         }
 
         if (pointBuffer == null || pointMaterial == null || pointData == null || pointData.Length == 0)

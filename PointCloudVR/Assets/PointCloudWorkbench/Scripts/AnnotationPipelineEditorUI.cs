@@ -77,6 +77,7 @@ namespace PointCloudWorkbench
 
         void Update()
         {
+            if (HardwareCompatibilityDiagnostic.HasBlockingGraphicsFailure) return;
             HandleKeyboard();
         }
 

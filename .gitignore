@@ -7,6 +7,7 @@ external_repos/
 __pycache__/
 *.pyc
 *.md
+!/PointCloudVR/tests/UnityIntegration/GPU_COMPATIBILITY_TESTS.md
 !/THIRD_PARTY_NOTICES.md
 !/licenses/third_party/**
 

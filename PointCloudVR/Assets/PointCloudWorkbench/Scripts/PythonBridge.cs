@@ -52,14 +52,28 @@ namespace PointCloudWorkbench
         /// 螳溯｡檎腸蠅�↓縺翫￠繧倶ｻｮ諠ｳ迺ｰ蠅�� python.exe 縺ｮ繝代せ繧貞叙蠕励＠縺ｾ縺吶�
         /// 蟄伜惠縺励↑縺��ｴ蜷医�繧ｷ繧ｹ繝�Β迺ｰ蠅�ヱ繧ｹ縺ｮ python.exe 繧呈爾縺励∪縺吶�
         /// </summary>
-        private static string GetPythonPath()
+        public static string GetPythonPath()
         {
-            string venvPath = Path.Combine(Application.dataPath, "../python_backend/.venv/Scripts/python.exe");
-            if (File.Exists(venvPath))
-            {
-                return Path.GetFullPath(venvPath);
-            }
+            string userVenv = GetUserVenvPythonPath();
+            if (File.Exists(userVenv)) return userVenv;
+            string packagedVenv = GetPackagedVenvPythonPath();
+            if (File.Exists(packagedVenv)) return packagedVenv;
             return "python";
+        }
+
+        private static string GetPackagedVenvPythonPath()
+        {
+            return Path.GetFullPath(Path.Combine(Application.dataPath, "../python_backend/.venv/Scripts/python.exe"));
+        }
+
+        private static string GetUserVenvDirectory()
+        {
+            return Path.Combine(Application.persistentDataPath, "PythonEnvironment", ".venv");
+        }
+
+        private static string GetUserVenvPythonPath()
+        {
+            return Path.Combine(GetUserVenvDirectory(), "Scripts", "python.exe");
         }
 
         /// <summary>
@@ -274,56 +288,66 @@ namespace PointCloudWorkbench
         /// </summary>
         public static async Task EnsureEnvironmentReadyAsync(CancellationToken cancellationToken, PointCloudOperation operation = null)
         {
-            string venvPythonPath = Path.Combine(Application.dataPath, "../python_backend/.venv/Scripts/python.exe");
+            string packagedVenvPath = GetPackagedVenvPythonPath();
+            string userVenvPath = GetUserVenvPythonPath();
             string pythonBackendDir = Path.GetFullPath(Path.Combine(Application.dataPath, "../python_backend"));
             operation?.Update(0.01f, "Python環境を検証中...");
 
-            if (File.Exists(venvPythonPath))
+            if (File.Exists(userVenvPath))
             {
-                bool ready = await CheckCommandExistsAsync(venvPythonPath,
-                    "-c \"import numpy, scipy, open3d\"", cancellationToken);
+                bool ready = await CheckCommandExistsAsync(userVenvPath,
+                    GetPythonValidationArguments(), cancellationToken);
                 if (ready) return;
-
-                operation?.Update(0.08f, "プロジェクト内Python環境の依存ライブラリを修復中...");
-                await InstallBackendRequirementsAsync(venvPythonPath, pythonBackendDir, cancellationToken);
-                if (!await CheckCommandExistsAsync(venvPythonPath,
-                    "-c \"import numpy, scipy, open3d\"", cancellationToken))
-                    throw new InvalidOperationException("Python環境の検証に失敗しました。python_backend/requirements.txtと実行ログを確認してください。");
+                operation?.Update(0.08f, "ユーザー領域のPython依存ライブラリを修復中...");
+                await InstallBackendRequirementsAsync(userVenvPath, pythonBackendDir, cancellationToken);
+                if (!await CheckCommandExistsAsync(userVenvPath,
+                    GetPythonValidationArguments(), cancellationToken))
+                    throw new InvalidOperationException("Python環境の検証に失敗しました。python_backend/requirements.txtと診断レポートを確認してください。");
                 return;
             }
 
-            bool hasPython = await CheckCommandExistsAsync("python", "--version", cancellationToken);
+            if (File.Exists(packagedVenvPath))
+            {
+                bool ready = await CheckCommandExistsAsync(packagedVenvPath,
+                    GetPythonValidationArguments(), cancellationToken);
+                if (ready) return;
+                operation?.Update(0.04f, "同梱Python環境が不完全です。ユーザー領域へ新しい環境を作成します...");
+            }
+
+            bool hasPython = await CheckCommandExistsAsync("python",
+                "-c \"import sys; raise SystemExit(0 if sys.version_info[:2] == (3, 12) else 1)\"", cancellationToken);
             string pythonCommand = "python";
+            string pythonPrefix = string.Empty;
             if (!hasPython)
             {
-                hasPython = await CheckCommandExistsAsync("py", "--version", cancellationToken);
+                hasPython = await CheckCommandExistsAsync("py", "-3.12 --version", cancellationToken);
                 pythonCommand = "py";
+                pythonPrefix = "-3.12 ";
             }
             if (!hasPython)
-                throw new InvalidOperationException("Pythonが見つかりません。Pythonを手動でインストールしてからUnityを再起動してください。システム全体への自動インストールは行いません。");
+                throw new InvalidOperationException("対応するPython 3.12が見つかりません。Python 3.12をユーザー権限で導入するか、オフラインwheelhouseを使ってpython_backend/Setup-Python.ps1を実行してください。");
 
-            operation?.Update(0.05f, "Python仮想環境(.venv)を作成中... (約30秒〜1分)");
-            if (!Directory.Exists(pythonBackendDir))
-                Directory.CreateDirectory(pythonBackendDir);
+            operation?.Update(0.05f, "ユーザー領域にPython仮想環境を作成中...");
+            Directory.CreateDirectory(GetUserVenvDirectory());
 
-            bool venvSuccess = await RunCommandAsync(pythonCommand, "-m venv .venv", pythonBackendDir, cancellationToken);
+            string venvArguments = pythonPrefix + "-m venv \"" + GetUserVenvDirectory() + "\"";
+            bool venvSuccess = await RunCommandAsync(pythonCommand, venvArguments, pythonBackendDir, cancellationToken);
             if (!venvSuccess)
             {
-                throw new Exception("Python仮想環境 (.venv) の作成に失敗しました。\n" +
-                                    "手動で python_backend フォルダで 'python -m venv .venv' を実行できるか確認してください。");
+                throw new Exception("ユーザー領域のPython仮想環境を作成できませんでした。空き容量とPython 3.12のvenv機能を確認してください。");
             }
 
-            if (!File.Exists(venvPythonPath))
+            if (!File.Exists(userVenvPath))
             {
-                throw new Exception("仮想環境は作成されましたが、python.exe が見つかりませんでした。作成パスが異なる可能性があります。");
+                throw new Exception("Python仮想環境の作成後にpython.exeが見つかりませんでした。");
             }
 
-            operation?.Update(0.3f, "依存ライブラリをインストール中... (約1分〜2分)\n(Open3D, numpy, scipy等)");
-            await InstallBackendRequirementsAsync(venvPythonPath, pythonBackendDir, cancellationToken);
-            if (!await CheckCommandExistsAsync(venvPythonPath,
-                "-c \"import numpy, scipy, open3d\"", cancellationToken))
+            operation?.Update(0.3f, "固定バージョンの依存ライブラリをユーザー領域へ導入中...");
+            await InstallBackendRequirementsAsync(userVenvPath, pythonBackendDir, cancellationToken);
+            if (!await CheckCommandExistsAsync(userVenvPath,
+                GetPythonValidationArguments(), cancellationToken))
                 throw new InvalidOperationException("インストール後のPython依存ライブラリ検証に失敗しました。");
-            operation?.Update(0.99f, "Python環境の自動セットアップが完了しました！");
+            operation?.Update(0.99f, "ユーザー領域のPython環境を確認しました。");
         }
 
         private static async Task InstallBackendRequirementsAsync(string pythonPath, string backendDir,
@@ -332,7 +356,18 @@ namespace PointCloudWorkbench
             string requirementsPath = Path.Combine(backendDir, "requirements.txt");
             if (!File.Exists(requirementsPath))
                 throw new FileNotFoundException("Python依存関係一覧がありません。", requirementsPath);
-            await RunCommandAsync(pythonPath, "-m pip install -r requirements.txt", backendDir, cancellationToken);
+            string wheelhouse = Path.Combine(backendDir, "wheelhouse");
+            string installArguments = Directory.Exists(wheelhouse)
+                ? "-m pip install --no-index --find-links \"wheelhouse\" -r requirements.txt"
+                : "-m pip install -r requirements.txt";
+            await RunCommandAsync(pythonPath, installArguments, backendDir, cancellationToken);
+        }
+
+        private static string GetPythonValidationArguments()
+        {
+            return "-c \"import sys,importlib.metadata as m,numpy,scipy,open3d,fastapi,uvicorn,pydantic,matplotlib; " +
+                "expected={'open3d':'0.20.0','numpy':'2.5.3','scipy':'1.18.1','fastapi':'0.143.0','uvicorn':'0.54.0','pydantic':'2.14.0','matplotlib':'3.11.2'}; " +
+                "assert sys.version_info[:2]==(3,12) and all(m.version(k)==v for k,v in expected.items())\"";
         }
 
         private static async Task<bool> CheckCommandExistsAsync(string command, string arguments, CancellationToken cancellationToken)

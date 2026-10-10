@@ -162,6 +162,7 @@ public class CloudCompareCameraController : MonoBehaviour
 
     void Update()
     {
+        if (HardwareCompatibilityDiagnostic.HasBlockingGraphicsFailure) return;
         if (!hasCenteredOnCloud)
         {
             TryCenterOnPointCloud();
@@ -228,8 +229,13 @@ public class CloudCompareCameraController : MonoBehaviour
             }
         }
 
-        // 2. 回転（常に左ドラッグ）
-        bool rotating = Input.GetMouseButton(0) && !overUI;
+        // Ctrl+left is reserved for editing so trackpads can select without rotating the camera.
+        bool trackpadEditGesture = isEditing &&
+            (((Input.GetKey(KeyCode.LeftControl) || Input.GetKey(KeyCode.RightControl)) && Input.GetMouseButton(0)) ||
+             (editor != null && editor.IsTrackpadSelectionActive && Input.GetMouseButton(0)));
+
+        // 2. 回転（通常は左ドラッグ）
+        bool rotating = Input.GetMouseButton(0) && !overUI && !trackpadEditGesture;
 
         if (rotating)
         {

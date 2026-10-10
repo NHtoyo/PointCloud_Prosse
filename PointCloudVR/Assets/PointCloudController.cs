@@ -61,6 +61,7 @@ public class PointCloudController : MonoBehaviour
 
     void Update()
     {
+        if (HardwareCompatibilityDiagnostic.HasBlockingGraphicsFailure) return;
         // 1. VR Controls (when grabbed by VR Controllers)
         if (grabInteractable != null && grabInteractable.isSelected)
         {

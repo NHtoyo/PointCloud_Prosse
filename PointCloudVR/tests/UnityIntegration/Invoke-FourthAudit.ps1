@@ -87,8 +87,9 @@ $copyLog = Join-Path $artifactRoot 'snapshot_copy.log'
 $robocopyArgs = @(
     $projectRoot, $qaProject, '/E', '/COPY:DAT', '/DCOPY:DAT', '/R:1', '/W:1', '/NP', "/LOG:$copyLog",
     '/XD', '.git', 'Library', 'Temp', 'Obj', 'Logs', 'UserSettings', 'Build', 'Builds', '.venv',
+    (Join-Path $projectRoot 'Assets\_Recovery'),
     'output', 'output_generations', 'bench_output', '__pycache__',
-    '/XF', '*.pyc'
+    '/XF', '*.pyc', (Join-Path $projectRoot 'Assets\_Recovery.meta')
 )
 & robocopy @robocopyArgs | Out-Null
 if ($LASTEXITCODE -ge 8) { throw "隔離コピーに失敗しました。robocopy exit=$LASTEXITCODE : $copyLog" }
@@ -198,13 +199,14 @@ if (-not $SkipPlayerBuild) {
     if ($buildProcess.ExitCode -ne 0) { throw "Windows Player build failed. exit=$($buildProcess.ExitCode) : $buildLog" }
 
     $playerPython = Join-Path $playerRoot 'python_backend'
-    $pythonCopyLog = Join-Path $artifactRoot 'player_python_staging.log'
-    $pythonCopyArgs = @(
-        (Join-Path $qaProject 'python_backend'), $playerPython, '/E', '/COPY:DAT', '/DCOPY:DAT', '/R:1', '/W:1', '/NP', "/LOG:$pythonCopyLog",
-        '/XD', 'tests', 'output', 'output_generations', 'bench_output', '__pycache__'
-    )
-    & robocopy @pythonCopyArgs | Out-Null
-    if ($LASTEXITCODE -ge 8) { throw "Player Python staging failed. robocopy exit=$LASTEXITCODE : $pythonCopyLog" }
+    foreach ($requiredFile in @('requirements.txt', 'Setup-Python.ps1', 'run_noise_filter.py', 'run_stem_diameter.py', 'run_reference_sphere.py')) {
+        if (-not (Test-Path -LiteralPath (Join-Path $playerPython $requiredFile) -PathType Leaf)) {
+            throw "Windows Player build did not stage required Python backend file: $requiredFile"
+        }
+    }
+    if (Test-Path -LiteralPath (Join-Path $playerPython '.venv')) {
+        throw 'Player build unexpectedly bundled a Python virtual environment.'
+    }
 }
 
 $playerExe = Join-Path $playerRoot 'PointCloudVR_QA.exe'
