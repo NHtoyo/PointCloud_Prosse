@@ -124,6 +124,99 @@ public sealed class ReliabilityBoundaryTests
     }
 
     [Test]
+    public void SharedPointHistory_UndoesMixedNoiseAndAnnotationInReverseAndRedoesChronologically()
+    {
+        Type deltaType = RuntimeType("PointCloudWorkbench.PointLabelDelta");
+        Type historyType = RuntimeType("PointCloudWorkbench.PointLabelEditHistory");
+        Type domainType = RuntimeType("PointCloudWorkbench.PointLabelHistoryDomain");
+        object history = Activator.CreateInstance(historyType);
+        Array points = NewPointData(3, 0);
+        SetLabel(points, 0, 0x40000);
+
+        object noise = deltaType.GetMethod("MaskedValues").Invoke(null,
+            new object[] { new[] { 0 }, 0x0c0000, 18, new byte[] { 1 }, new byte[] { 2 } });
+        RecordWithDomain(deltaType, historyType, domainType, history, points, noise, "Noise");
+
+        object brushStroke = deltaType.GetMethod("ToggleConstant").Invoke(null,
+            new object[] { new[] { 1, 2 }, 0x10000, 16, (byte)0 });
+        RecordWithDomain(deltaType, historyType, domainType, history, points, brushStroke, "Annotation");
+
+        object classification = deltaType.GetMethod("ClassAssignment").Invoke(null,
+            new object[] { new[] { 1 }, new byte[] { 0 }, (byte)3 });
+        RecordWithDomain(deltaType, historyType, domainType, history, points, classification, "Annotation");
+
+        object deletion = deltaType.GetMethod("ToggleConstant").Invoke(null,
+            new object[] { new[] { 2 }, 0x20000, 17, (byte)0 });
+        RecordWithDomain(deltaType, historyType, domainType, history, points, deletion, "Annotation");
+
+        for (int i = 0; i < 4; i++) ApplyHistory(historyType, history, points, undo: true);
+        Assert.That(GetLabel(points, 0) & 0x0c0000, Is.EqualTo(0x40000), "noise commit is undone last");
+        Assert.That(GetLabel(points, 1) & (0xff | 0x10000), Is.Zero, "classification and brush are undone in order");
+        Assert.That(GetLabel(points, 2) & (0x10000 | 0x20000), Is.Zero, "delete and brush are undone in order");
+
+        for (int i = 0; i < 4; i++) ApplyHistory(historyType, history, points, undo: false);
+        Assert.That(GetLabel(points, 0) & 0x0c0000, Is.EqualTo(0x80000), "noise commit is redone first");
+        Assert.That(GetLabel(points, 1) & (0xff | 0x10000), Is.EqualTo(3));
+        Assert.That(GetLabel(points, 2) & (0x10000 | 0x20000), Is.EqualTo(0x30000));
+    }
+
+    [Test]
+    public void SharedPointHistory_ClearingAnnotationDomainPreservesNoiseHistory()
+    {
+        Type deltaType = RuntimeType("PointCloudWorkbench.PointLabelDelta");
+        Type historyType = RuntimeType("PointCloudWorkbench.PointLabelEditHistory");
+        Type domainType = RuntimeType("PointCloudWorkbench.PointLabelHistoryDomain");
+        object history = Activator.CreateInstance(historyType);
+        Array points = NewPointData(2, 0);
+        SetLabel(points, 0, 0x40000);
+
+        object noise = deltaType.GetMethod("MaskedValues").Invoke(null,
+            new object[] { new[] { 0 }, 0x0c0000, 18, new byte[] { 1 }, new byte[] { 2 } });
+        RecordWithDomain(deltaType, historyType, domainType, history, points, noise, "Noise");
+        object annotation = deltaType.GetMethod("ToggleConstant").Invoke(null,
+            new object[] { new[] { 1 }, 0x10000, 16, (byte)0 });
+        RecordWithDomain(deltaType, historyType, domainType, history, points, annotation, "Annotation");
+
+        MethodInfo clearDomain = historyType.GetMethod("ClearDomain");
+        clearDomain.Invoke(history, new[] { Enum.Parse(domainType, "Annotation") });
+
+        Assert.That((bool)historyType.GetProperty("CanUndo").GetValue(history), Is.True);
+        Assert.That(historyType.GetProperty("UndoDomain").GetValue(history).ToString(), Is.EqualTo("Noise"));
+        ApplyHistory(historyType, history, points, undo: true);
+        Assert.That(GetLabel(points, 0) & 0x0c0000, Is.EqualTo(0x40000));
+        Assert.That((bool)historyType.GetProperty("CanRedo").GetValue(history), Is.True);
+        Assert.That(historyType.GetProperty("RedoDomain").GetValue(history).ToString(), Is.EqualTo("Noise"));
+    }
+
+    [TestCase(1024, 768)]
+    [TestCase(1280, 720)]
+    [TestCase(1600, 900)]
+    public void SharedUILayout_SeparatesPanelsAndDiagnosticButton(int width, int height)
+    {
+        Type layoutType = RuntimeType("PointCloudWorkbench.PointCloudUILayout");
+        object regions = layoutType.GetMethod("Calculate", BindingFlags.Public | BindingFlags.Static)
+            .Invoke(null, new object[] { (float)width, (float)height });
+        Type regionsType = regions.GetType();
+        UnityEngine.Rect left = (UnityEngine.Rect)regionsType.GetField("LeftPanel").GetValue(regions);
+        UnityEngine.Rect center = (UnityEngine.Rect)regionsType.GetField("CenterPanel").GetValue(regions);
+        UnityEngine.Rect right = (UnityEngine.Rect)regionsType.GetField("RightPanel").GetValue(regions);
+        UnityEngine.Rect diagnostic = (UnityEngine.Rect)regionsType.GetField("DiagnosticButton").GetValue(regions);
+
+        Assert.That(left.xMax, Is.LessThanOrEqualTo(center.x));
+        Assert.That(center.xMax, Is.LessThanOrEqualTo(right.x));
+        Assert.That(left.Overlaps(center), Is.False);
+        Assert.That(center.Overlaps(right), Is.False);
+        Assert.That(diagnostic.Overlaps(center), Is.False);
+        Assert.That(diagnostic.Overlaps(right), Is.False);
+        Assert.That(right.yMin, Is.GreaterThanOrEqualTo(diagnostic.yMax));
+        Assert.That(left.xMin, Is.GreaterThanOrEqualTo(0f));
+        Assert.That(right.xMax, Is.LessThanOrEqualTo(width));
+        Assert.That(left.yMax, Is.LessThanOrEqualTo(height));
+        Assert.That(right.yMax, Is.LessThanOrEqualTo(height));
+        Assert.That(center.width, Is.GreaterThan(0f));
+    }
+
+    [Test]
     public void MaskedHistory_UndoAndRedoPreserveSelectionDeletionAndClassBits()
     {
         Type deltaType = RuntimeType("PointCloudWorkbench.PointLabelDelta");
@@ -155,7 +248,7 @@ public sealed class ReliabilityBoundaryTests
             new object[] { Enumerable.Range(0, 20).ToArray(), 0x10000, 16, (byte)0 });
 
         bool canRecord = (bool)historyType.GetMethod("CanRecord").Invoke(history, new[] { tooLarge });
-        bool recorded = (bool)historyType.GetMethod("Record").Invoke(history, new[] { tooLarge });
+        bool recorded = (bool)historyType.GetMethod("Record", new[] { deltaType }).Invoke(history, new[] { tooLarge });
         Assert.That(canRecord, Is.False);
         Assert.That(recorded, Is.False);
         Assert.That((bool)historyType.GetProperty("CanUndo").GetValue(history), Is.False);
@@ -205,7 +298,16 @@ public sealed class ReliabilityBoundaryTests
     private static void ApplyAndRecord(Type deltaType, Type historyType, object history, Array points, object delta)
     {
         deltaType.GetMethod("Apply").Invoke(delta, new object[] { points, true });
-        Assert.That((bool)historyType.GetMethod("Record").Invoke(history, new[] { delta }), Is.True);
+        Assert.That((bool)historyType.GetMethod("Record", new[] { deltaType }).Invoke(history, new[] { delta }), Is.True);
+    }
+
+    private static void RecordWithDomain(Type deltaType, Type historyType, Type domainType,
+        object history, Array points, object delta, string domainName)
+    {
+        deltaType.GetMethod("Apply").Invoke(delta, new object[] { points, true });
+        object domain = Enum.Parse(domainType, domainName);
+        Assert.That((bool)historyType.GetMethod("Record", new[] { deltaType, domainType })
+            .Invoke(history, new[] { delta, domain }), Is.True);
     }
 
     private static void ApplyHistory(Type historyType, object history, Array points, bool undo)

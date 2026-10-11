@@ -423,8 +423,8 @@ public class PointCloudEditorUI : MonoBehaviour
         int totalPoints = points != null ? points.Length : 0;
 
         // Keep enough width for readable controls while preserving a usable center view.
-        float minimumWidth = Mathf.Min(280f, Mathf.Max(180f, Screen.width - 40f));
-        float width = Mathf.Min(460f, Mathf.Max(minimumWidth, Screen.width * 0.28f));
+        PointCloudUIRegions regions = PointCloudUILayout.Calculate(Screen.width, Screen.height);
+        float width = regions.LeftPanel.width;
         bool compactTools = width < 340f;
         headerStyle.fontSize = compactTools ? 16 : 22;
         buttonStyle.fontSize = compactTools ? 12 : 14;
@@ -436,14 +436,9 @@ public class PointCloudEditorUI : MonoBehaviour
         buttonStyle.wordWrap = compactTools;
         activeButtonStyle.wordWrap = compactTools;
         foldoutHeaderStyle.wordWrap = compactTools;
-        float height = Mathf.Min(930f, Screen.height - 40f);
-        float posX = 20f;
-        float posY = 20f;
-        leftPanelRect = new Rect(posX, posY, width, height);
-        float sideWidth = width;
-        float centerX = sideWidth + 30f;
-        float centerRight = Screen.width - sideWidth - 30f;
-        centerPanelViewport = new Rect(centerX, 15f, Mathf.Max(0f, centerRight - centerX), Mathf.Max(0f, Screen.height - 30f));
+        float height = regions.LeftPanel.height;
+        leftPanelRect = regions.LeftPanel;
+        centerPanelViewport = regions.CenterPanel;
         centerWorkspaceToolbarRect = new Rect(centerPanelViewport.x, centerPanelViewport.y,
             centerPanelViewport.width, CenterWorkspaceTabsHeight);
         centerPanelBodyViewport = new Rect(centerPanelViewport.x,
@@ -717,10 +712,11 @@ public class PointCloudEditorUI : MonoBehaviour
             bool guiWasEnabled = GUI.enabled;
             GUILayout.BeginHorizontal();
             GUI.enabled = guiWasEnabled && editor.CanAnnotationUndo;
-            if (GUILayout.Button("選択/分類を元に戻す  Ctrl+Z", buttonStyle, GUILayout.MinHeight(32f))) editor.AnnotationUndo();
+            if (GUILayout.Button("直前の点群編集を元に戻す  Ctrl+Z", buttonStyle, GUILayout.MinHeight(32f))) editor.AnnotationUndo();
             GUI.enabled = guiWasEnabled && editor.CanAnnotationRedo;
-            if (GUILayout.Button("選択/分類をやり直す  Ctrl+Y", buttonStyle, GUILayout.MinHeight(32f))) editor.AnnotationRedo();
+            if (GUILayout.Button("点群編集をやり直す  Ctrl+Y", buttonStyle, GUILayout.MinHeight(32f))) editor.AnnotationRedo();
             GUI.enabled = guiWasEnabled;
+            GUILayout.Label("選択・分類・削除・ノイズ確定は操作順でUndo/Redoします。距離計測の履歴は別です。", textStyle);
             GUILayout.EndHorizontal();
             float historyLimitMiB = editor.AnnotationHistoryStackLimitBytes / (1024f * 1024f);
             GUILayout.Label($"履歴使用量 {editor.AnnotationHistoryRetainedBytes / (1024f * 1024f):F1} MiB / 最大 {historyLimitMiB * 2f:F0} MiB (Undo/Redo各100件・{historyLimitMiB:F0} MiB)", textStyle);
@@ -765,7 +761,7 @@ public class PointCloudEditorUI : MonoBehaviour
                     {
                         if (layer != activeLayer)
                         {
-                            editor.ResetPointLabelHistory();
+                            editor.ResetAnnotationHistory();
                             rend.SwitchAnnotationLayer(layer);
                         }
                         editor.MarkStatsDirty();
@@ -800,7 +796,7 @@ public class PointCloudEditorUI : MonoBehaviour
                 {
                     if (GUILayout.Button("現在のアクティブレイヤーを削除", activeButtonStyle))
                     {
-                        editor.ResetPointLabelHistory();
+                        editor.ResetAnnotationHistory();
                         rend.DeleteAnnotationLayer(activeLayer);
                         editor.MarkStatsDirty();
                     }
@@ -1092,7 +1088,7 @@ public class PointCloudEditorUI : MonoBehaviour
     private void AddLayerIfValid(PointCloudRenderer renderer, List<string> layers)
     {
         if (string.IsNullOrEmpty(newLayerName) || layers.Contains(newLayerName)) return;
-        editor.ResetPointLabelHistory();
+        editor.ResetAnnotationHistory();
         renderer.AddAnnotationLayer(newLayerName);
         renderer.SwitchAnnotationLayer(newLayerName);
         editor.MarkStatsDirty();

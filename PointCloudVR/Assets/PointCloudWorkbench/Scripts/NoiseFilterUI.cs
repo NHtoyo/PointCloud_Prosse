@@ -242,17 +242,17 @@ namespace PointCloudWorkbench
             GUILayout.Space(5);
             GUILayout.BeginHorizontal();
             bool previousEnabled = GUI.enabled;
-            GUI.enabled = previousEnabled && mgr.CanUndo;
-            if (GUILayout.Button("↩ 元に戻す (Undo)", buttonStyle))
+            GUI.enabled = previousEnabled && editor.CanAnnotationUndo;
+            if (GUILayout.Button("↩ 直前の点群編集を元に戻す", buttonStyle))
             {
-                if (mgr.Undo(editor.targetRenderer)) editor.MarkStatsDirty();
-                else PointCloudProgressManager.Instance.ShowError("ノイズUndo", MutationFailure(mgr, "履歴を適用できませんでした。"));
+                if (editor.AnnotationUndo()) editor.MarkStatsDirty();
+                else PointCloudProgressManager.Instance.ShowError("点群編集を元に戻す", "直前の点群編集を適用できませんでした。状態を確認して再試行してください。");
             }
-            GUI.enabled = previousEnabled && mgr.CanRedo;
-            if (GUILayout.Button("↪ やり直す (Redo)", buttonStyle))
+            GUI.enabled = previousEnabled && editor.CanAnnotationRedo;
+            if (GUILayout.Button("↪ 点群編集をやり直す", buttonStyle))
             {
-                if (mgr.Redo(editor.targetRenderer)) editor.MarkStatsDirty();
-                else PointCloudProgressManager.Instance.ShowError("ノイズRedo", MutationFailure(mgr, "履歴を適用できませんでした。"));
+                if (editor.AnnotationRedo()) editor.MarkStatsDirty();
+                else PointCloudProgressManager.Instance.ShowError("点群編集をやり直す", "直前に元へ戻した点群編集を適用できませんでした。状態を確認して再試行してください。");
             }
             GUI.enabled = previousEnabled;
             GUILayout.EndHorizontal();

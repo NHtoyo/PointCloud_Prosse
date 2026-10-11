@@ -460,12 +460,10 @@ public class PointCloudManager : MonoBehaviour
         PointCloudProgressSnapshot activeProgress = PointCloudProgressManager.Instance.GetSnapshot();
         if (activeProgress.HasError || activeProgress.HasWarning) return;
 
-        // 画面幅に応じてパネル幅を動的に決定（最大460、画面幅の25%を超えない）
-        float width = Mathf.Min(460f, Screen.width * 0.25f);
-        float height = Mathf.Min(930f, Screen.height - 40f);
-        float posX = Screen.width - width - 20f;
-        float posY = 20f;
-        LastPanelRect = new Rect(posX, posY, width, height);
+        PointCloudUIRegions regions = PointCloudUILayout.Calculate(Screen.width, Screen.height);
+        LastPanelRect = regions.RightPanel;
+        float width = LastPanelRect.width;
+        float height = LastPanelRect.height;
         bool compactLayout = width < 340f;
         headerStyle.fontSize = compactLayout ? 15 : 20;
         buttonStyle.fontSize = compactLayout ? 12 : 14;

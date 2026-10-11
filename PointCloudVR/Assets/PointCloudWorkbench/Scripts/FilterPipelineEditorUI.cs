@@ -47,9 +47,8 @@ namespace PointCloudWorkbench
         private bool stylesInitialized = false;
 
         // 左パネルと右パネルの間に配置する（画面幅に応じて動的計算）
-        private float BAR_X  => Mathf.Min(460f, Screen.width * 0.25f) + 30f;
+        private float BAR_X  => PointCloudUILayout.Calculate(Screen.width, Screen.height).CenterPanel.x;
         private const float BAR_Y      = 15f;
-        private float RIGHT_W => Mathf.Min(460f, Screen.width * 0.25f) + 20f;
         private const float PAL_W      = 175f;
         private const float PARAM_H    = 140f;     // 下段高さ(パラメータ) (90->140へ拡大)
 
@@ -155,7 +154,7 @@ namespace PointCloudWorkbench
             if (editor == null || noiseFilterUI == null) return;
             InitStyles();
 
-            float barW = Mathf.Max(280f, Screen.width - BAR_X - RIGHT_W - 30f);
+            float barW = PointCloudUILayout.Calculate(Screen.width, Screen.height).CenterPanel.width;
             var pl = noiseFilterUI?.Params?.customPipeline;
             bool hasSelection = selectedBlockIndex >= 0 && pl != null && selectedBlockIndex < pl.Count;
             bool compact = barW < 780f;
@@ -549,13 +548,13 @@ namespace PointCloudWorkbench
         private void DrawHistoryButton(Rect rect, string label, bool undo)
         {
             bool wasEnabled = GUI.enabled;
-            bool canRun = undo ? NoiseFilterManager.Instance.CanUndo : NoiseFilterManager.Instance.CanRedo;
+            bool canRun = undo ? editor.CanAnnotationUndo : editor.CanAnnotationRedo;
             GUI.enabled = wasEnabled && canRun;
             if (GUI.Button(rect, label, blockStyle))
             {
-                if (undo) NoiseFilterManager.Instance.Undo(editor.targetRenderer);
-                else NoiseFilterManager.Instance.Redo(editor.targetRenderer);
-                editor.MarkStatsDirty();
+                bool applied = undo ? editor.AnnotationUndo() : editor.AnnotationRedo();
+                if (applied) editor.MarkStatsDirty();
+                else PointCloudProgressManager.Instance.ShowError("点群編集履歴", "直前の点群編集を適用できませんでした。状態を確認して再試行してください。");
             }
             GUI.enabled = wasEnabled;
         }

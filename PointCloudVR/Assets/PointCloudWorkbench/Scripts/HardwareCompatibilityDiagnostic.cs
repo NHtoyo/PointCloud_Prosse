@@ -5,6 +5,7 @@ using System.IO;
 using System.Text;
 using System.Threading.Tasks;
 using UnityEngine;
+using PointCloudWorkbench;
 using Process = System.Diagnostics.Process;
 using ProcessStartInfo = System.Diagnostics.ProcessStartInfo;
 
@@ -407,7 +408,7 @@ public sealed class HardwareCompatibilityDiagnostic : MonoBehaviour
 
         if (Event.current.type == EventType.KeyDown && Event.current.keyCode == KeyCode.F10 && GUIUtility.keyboardControl == 0)
             detailsOpen = !detailsOpen;
-        Rect buttonRect = new Rect((Screen.width - 242f) * 0.5f, 8f, 242f, 32f);
+        Rect buttonRect = PointCloudUILayout.Calculate(Screen.width, Screen.height).DiagnosticButton;
         if (GUI.Button(buttonRect, "PC互換性・Python診断", buttonStyle)) detailsOpen = !detailsOpen;
         if (detailsOpen) DrawDetailsWindow();
     }

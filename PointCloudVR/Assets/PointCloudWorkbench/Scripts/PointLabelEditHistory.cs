@@ -3,6 +3,12 @@ using PointCloudWorkbench;
 
 namespace PointCloudWorkbench
 {
+    public enum PointLabelHistoryDomain
+    {
+        Annotation,
+        Noise
+    }
+
     public sealed class PointLabelDelta
     {
         private enum DeltaKind
@@ -160,14 +166,28 @@ namespace PointCloudWorkbench
         public const int DefaultCapacity = 100;
         public const long DefaultMaxBytesPerStack = 128L * 1024 * 1024;
 
-        private readonly BoundedHistory<PointLabelDelta> undo;
-        private readonly BoundedHistory<PointLabelDelta> redo;
+        private sealed class Entry
+        {
+            public readonly PointLabelDelta Delta;
+            public readonly PointLabelHistoryDomain Domain;
+
+            public Entry(PointLabelDelta delta, PointLabelHistoryDomain domain)
+            {
+                Delta = delta;
+                Domain = domain;
+            }
+        }
+
+        private readonly BoundedHistory<Entry> undo;
+        private readonly BoundedHistory<Entry> redo;
 
         public bool CanUndo => undo.Count > 0;
         public bool CanRedo => redo.Count > 0;
         public long UndoBytes => undo.RetainedBytes;
         public long RedoBytes => redo.RetainedBytes;
         public long MaxBytesPerStack { get; }
+        public PointLabelHistoryDomain UndoDomain => CanUndo ? undo.Peek().Domain : PointLabelHistoryDomain.Annotation;
+        public PointLabelHistoryDomain RedoDomain => CanRedo ? redo.Peek().Domain : PointLabelHistoryDomain.Annotation;
 
         public PointLabelEditHistory()
             : this(DefaultCapacity, DefaultMaxBytesPerStack)
@@ -177,21 +197,23 @@ namespace PointCloudWorkbench
         public PointLabelEditHistory(int capacity, long maxBytesPerStack)
         {
             MaxBytesPerStack = maxBytesPerStack;
-            undo = new BoundedHistory<PointLabelDelta>(capacity, maxBytesPerStack, delta => delta.EstimatedBytes);
-            redo = new BoundedHistory<PointLabelDelta>(capacity, maxBytesPerStack, delta => delta.EstimatedBytes);
+            undo = new BoundedHistory<Entry>(capacity, maxBytesPerStack, entry => entry.Delta.EstimatedBytes);
+            redo = new BoundedHistory<Entry>(capacity, maxBytesPerStack, entry => entry.Delta.EstimatedBytes);
         }
 
         public bool CanRecord(PointLabelDelta delta) => delta != null && delta.EstimatedBytes <= MaxBytesPerStack;
 
-        public bool Record(PointLabelDelta delta)
+        public bool Record(PointLabelDelta delta) => Record(delta, PointLabelHistoryDomain.Annotation);
+
+        public bool Record(PointLabelDelta delta, PointLabelHistoryDomain domain)
         {
-            if (!CanRecord(delta) || !undo.Push(delta)) return false;
+            if (!CanRecord(delta) || !undo.Push(new Entry(delta, domain))) return false;
             redo.Clear();
             return true;
         }
 
-        public PointLabelDelta PeekUndo() => CanUndo ? undo.Peek() : null;
-        public PointLabelDelta PeekRedo() => CanRedo ? redo.Peek() : null;
+        public PointLabelDelta PeekUndo() => CanUndo ? undo.Peek().Delta : null;
+        public PointLabelDelta PeekRedo() => CanRedo ? redo.Peek().Delta : null;
 
         public bool CompleteUndo()
         {
@@ -209,10 +231,29 @@ namespace PointCloudWorkbench
 
         public void ClearRedo() => redo.Clear();
 
+        public void ClearDomain(PointLabelHistoryDomain domain)
+        {
+            RemoveDomain(undo, domain);
+            RemoveDomain(redo, domain);
+        }
+
         public void Clear()
         {
             undo.Clear();
             redo.Clear();
+        }
+
+        private static void RemoveDomain(BoundedHistory<Entry> history, PointLabelHistoryDomain domain)
+        {
+            var retained = new System.Collections.Generic.List<Entry>();
+            while (history.Count > 0)
+            {
+                Entry entry = history.Pop();
+                if (entry.Domain != domain) retained.Add(entry);
+            }
+
+            for (int i = retained.Count - 1; i >= 0; i--)
+                history.Push(retained[i]);
         }
     }
 }

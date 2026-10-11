@@ -39,8 +39,7 @@ namespace PointCloudWorkbench
         private readonly List<Rect> classBlockRects = new List<Rect>();
 
         // UI設定 (パラメータパネルを廃止して高さはTOP_Hのみ)
-        private float BAR_X => Mathf.Min(460f, Screen.width * 0.25f) + 30f;
-        private float RIGHT_W => Mathf.Min(460f, Screen.width * 0.25f) + 20f;
+        private float BAR_X => PointCloudUILayout.Calculate(Screen.width, Screen.height).CenterPanel.x;
         private const float PAL_W = 200f; // 左カラムの幅を200fに広げて文字サイズ拡大に対応
         private const float TOP_H = 160f;
 
@@ -167,7 +166,7 @@ namespace PointCloudWorkbench
             if (editor == null || activePreset == null) return;
             InitStyles();
 
-            float barW = Screen.width - BAR_X - RIGHT_W - 30f;
+            float barW = PointCloudUILayout.Calculate(Screen.width, Screen.height).CenterPanel.width;
             float laneWidth = Mathf.Max(120f, barW - PAL_W - 11f);
             int laneRows = GetClassLaneRowCount(laneWidth);
             float wrappedLaneHeight = (barW < 800f ? 54f : 46f) + laneRows * 36f + Mathf.Max(0, laneRows - 1) * 3f;
@@ -480,7 +479,7 @@ namespace PointCloudWorkbench
 
             // Class IDs are remapped across every annotation layer; earlier label
             // deltas no longer describe a safe point-in-time state after this.
-            editor.ResetPointLabelHistory();
+            editor.ResetAnnotationHistory();
 
             // 1. PointCloudRenderer内の全レイヤーラベルを更新
             var renderer = editor.targetRenderer;

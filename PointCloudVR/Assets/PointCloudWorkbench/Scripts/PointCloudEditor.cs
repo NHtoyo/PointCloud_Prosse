@@ -114,7 +114,7 @@ public class PointCloudEditor : MonoBehaviour
 
     private const int SelectedLabelBit = 0x10000;
     private const int DeletedLabelBit = 0x20000;
-    private readonly PointLabelEditHistory editHistory = new PointLabelEditHistory();
+    private PointLabelEditHistory editHistory => NoiseFilterManager.Instance.SharedEditHistory;
     private long editHistoryGeneration = -1;
     private string LastOperationFailure = string.Empty;
     private bool brushStrokeActive;
@@ -685,26 +685,8 @@ public class PointCloudEditor : MonoBehaviour
             return;
         }
 
-        PointCloudEditorUI.CenterWorkspace workspace = editorUI != null
-            ? editorUI.ActiveCenterWorkspace
-            : PointCloudEditorUI.CenterWorkspace.Annotation;
-        if (workspace == PointCloudEditorUI.CenterWorkspace.Noise)
-        {
-            NoiseFilterManager noise = NoiseFilterManager.Instance;
-            bool applied = undo ? noise.Undo(targetRenderer) : noise.Redo(targetRenderer);
-            if (applied) MarkStatsDirty();
-            else if (undo ? !noise.CanUndo : !noise.CanRedo)
-            {
-                if (undo) AnnotationUndo();
-                else AnnotationRedo();
-            }
-            return;
-        }
-        if (workspace == PointCloudEditorUI.CenterWorkspace.Measurement && undo && CanMeasurementUndo)
-        {
-            UndoMeasurement();
-            return;
-        }
+        // Ctrl+Z/Y always target the chronological point-label edit stack. Measurement
+        // documents are an independent data domain and use their explicitly named UI action.
         if (undo) AnnotationUndo();
         else AnnotationRedo();
     }
@@ -1462,6 +1444,14 @@ public class PointCloudEditor : MonoBehaviour
         editHistoryGeneration = targetRenderer != null ? targetRenderer.DatasetGeneration : -1;
     }
 
+    public void ResetAnnotationHistory()
+    {
+        if (brushStrokeActive) FinishBrushStroke();
+        editHistory.ClearDomain(PointLabelHistoryDomain.Annotation);
+        brushStrokeChangedIndices.Clear();
+        editHistoryGeneration = targetRenderer != null ? targetRenderer.DatasetGeneration : -1;
+    }
+
     public void AssignLabelToSelected()
     {
         PointData[] points = targetRenderer.GetPointData();
@@ -1704,6 +1694,7 @@ public class PointCloudEditor : MonoBehaviour
         if (!(forward ? CanAnnotationRedo : CanAnnotationUndo) || targetRenderer == null) return false;
         PointData[] points = targetRenderer.GetPointData();
         PointLabelDelta delta = forward ? editHistory.PeekRedo() : editHistory.PeekUndo();
+        PointLabelHistoryDomain domain = forward ? editHistory.RedoDomain : editHistory.UndoDomain;
         if (points == null || delta == null || !delta.MatchesExpected(points, forward))
         {
             PointCloudProgressManager.Instance.ShowError(forward ? "やり直し" : "元に戻す",
@@ -1742,6 +1733,8 @@ public class PointCloudEditor : MonoBehaviour
             Debug.LogError("[PointCloudEditor] 履歴スタックの移動に失敗しました。");
             return false;
         }
+        if (domain == PointLabelHistoryDomain.Noise)
+            NoiseFilterManager.Instance.NotifySharedHistoryApplied(targetRenderer, points);
         statsDirty = true;
         return true;
     }

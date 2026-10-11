@@ -443,12 +443,9 @@ public sealed class StemDiameterUI : MonoBehaviour
         if (editorUI == null || !editorUI.showStemDiameterUI) return;
 
         RefreshSourceInfo();
-        float barX = Mathf.Min(460f, Screen.width * 0.25f) + 30f;
-        float rightWidth = Mathf.Min(480f, Screen.width * 0.25f) + 30f;
-        float availableWidth = Screen.width - barX - rightWidth - 30f;
-        float barWidth = Mathf.Min(Screen.width - 30f, Mathf.Max(430f, availableWidth));
-        barWidth = Mathf.Max(280f, barWidth);
-        barX = Mathf.Clamp(barX + (availableWidth - barWidth) * 0.5f, 15f, Screen.width - barWidth - 15f);
+        Rect centerBounds = PointCloudUILayout.Calculate(Screen.width, Screen.height).CenterPanel;
+        float barX = centerBounds.x;
+        float barWidth = centerBounds.width;
         bool hasResult = result != null && result.sections != null && result.sections.Length > 0;
         float preferredHeight = hasResult ? 570f : 390f;
         float availableHeight = Mathf.Max(160f, Screen.height - currentY - 18f);

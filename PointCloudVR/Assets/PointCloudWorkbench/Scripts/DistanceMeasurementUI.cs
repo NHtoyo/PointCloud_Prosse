@@ -25,8 +25,7 @@ namespace PointCloudWorkbench
         private readonly List<Texture2D> styleTextures = new List<Texture2D>();
         private bool stylesInitialized;
 
-        private float BarX => Mathf.Min(460f, Screen.width * 0.25f) + 30f;
-        private float AvailableWidth => Screen.width - BarX - Mathf.Min(480f, Screen.width * 0.25f) - 30f;
+        private Rect CenterBounds => PointCloudUILayout.Calculate(Screen.width, Screen.height).CenterPanel;
 
         private void Start()
         {
@@ -99,8 +98,9 @@ namespace PointCloudWorkbench
             if (editor == null || editorUI == null) return;
             InitStyles();
 
-            float barW = Mathf.Min(Mathf.Max(430f, AvailableWidth), Screen.width - 30f);
-            float barX = Mathf.Clamp(BarX + (AvailableWidth - barW) * 0.5f, 15f, Screen.width - barW - 15f);
+            Rect centerBounds = CenterBounds;
+            float barW = centerBounds.width;
+            float barX = centerBounds.x;
             float barH = Mathf.Min(460f, Mathf.Max(220f, Screen.height - currentY - 18f));
             lastPanelRect = new Rect(barX, currentY, barW, barH);
             GUI.Box(lastPanelRect, GUIContent.none, panelStyle);
@@ -308,6 +308,7 @@ namespace PointCloudWorkbench
             if (GUILayout.Button("↶ 計測を元に戻す", buttonStyle, GUILayout.Height(30f))) editor.UndoMeasurement();
             GUI.enabled = undoWasEnabled;
             GUILayout.EndHorizontal();
+            GUILayout.Label("このUndoは距離計測だけに適用されます。点群編集はCtrl+Z / Ctrl+Yで操作します。", hintStyle);
         }
 
         private void DrawModeButtons(bool editing)

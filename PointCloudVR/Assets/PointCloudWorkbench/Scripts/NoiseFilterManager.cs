@@ -39,10 +39,11 @@ namespace PointCloudWorkbench
         private readonly int[] previewReasonCounts = new int[8];
 
         public NoiseFilterResult CurrentResult => currentResult;
+        public PointLabelEditHistory SharedEditHistory => editHistory;
         public bool IsPreviewActive => isPreviewActive;
         public int GetPreviewReasonCount(int reason) => reason >= 0 && reason < previewReasonCounts.Length ? previewReasonCounts[reason] : 0;
-        public bool CanUndo => editHistory.CanUndo && BoundStateIsCurrent();
-        public bool CanRedo => editHistory.CanRedo && BoundStateIsCurrent();
+        public bool CanUndo => editHistory.CanUndo && editHistory.UndoDomain == PointLabelHistoryDomain.Noise && BoundStateIsCurrent();
+        public bool CanRedo => editHistory.CanRedo && editHistory.RedoDomain == PointLabelHistoryDomain.Noise && BoundStateIsCurrent();
 
         /// <summary>
         /// 最新のノイズ除去処理結果を設定します。
@@ -148,7 +149,7 @@ namespace PointCloudWorkbench
             }
             if (!TryApplyNoiseDelta(renderer, delta, true, "ノイズ候補の確定に失敗しました。"))
                 return false;
-            if (!editHistory.Record(delta))
+            if (!editHistory.Record(delta, PointLabelHistoryDomain.Noise))
             {
                 TryApplyNoiseDelta(renderer, delta, false, "ノイズ履歴を保存できませんでした。");
                 LastMutationFailure = "ノイズUndo履歴を保存できなかったため、操作を取り消しました。";
@@ -169,12 +170,13 @@ namespace PointCloudWorkbench
             if (!CanUndo || !ReferenceEquals(boundRenderer, renderer)) return false;
             PointData[] points = renderer.GetPointData();
             PointLabelDelta delta = editHistory.PeekUndo();
+            PointLabelHistoryDomain domain = editHistory.UndoDomain;
             if (points == null || delta == null || !TryApplyNoiseDelta(renderer, delta, false, "ノイズUndoに失敗しました。"))
                 return false;
             editHistory.CompleteUndo();
-            RebuildPreviewState(points);
+            if (domain == PointLabelHistoryDomain.Noise) RebuildPreviewState(points);
             boundRevision = renderer.ContentRevision;
-            UnityEngine.Debug.Log($"[NoiseFilterManager] ノイズ除去操作を Undo しました。(プレビュー活性状態: {isPreviewActive})");
+            UnityEngine.Debug.Log($"[NoiseFilterManager] 点群ラベル操作を Undo しました。domain={domain}");
             return true;
         }
 
@@ -186,12 +188,13 @@ namespace PointCloudWorkbench
             if (!CanRedo || !ReferenceEquals(boundRenderer, renderer)) return false;
             PointData[] points = renderer.GetPointData();
             PointLabelDelta delta = editHistory.PeekRedo();
+            PointLabelHistoryDomain domain = editHistory.RedoDomain;
             if (points == null || delta == null || !TryApplyNoiseDelta(renderer, delta, true, "ノイズRedoに失敗しました。"))
                 return false;
             editHistory.CompleteRedo();
-            RebuildPreviewState(points);
+            if (domain == PointLabelHistoryDomain.Noise) RebuildPreviewState(points);
             boundRevision = renderer.ContentRevision;
-            UnityEngine.Debug.Log($"[NoiseFilterManager] ノイズ除去操作を Redo しました。(プレビュー活性状態: {isPreviewActive})");
+            UnityEngine.Debug.Log($"[NoiseFilterManager] 点群ラベル操作を Redo しました。domain={domain}");
             return true;
         }
 
@@ -214,7 +217,7 @@ namespace PointCloudWorkbench
                 return false;
             }
             if (!TryApplyNoiseDelta(renderer, delta, true, "ノイズ状態のリセットに失敗しました。")) return false;
-            if (!editHistory.Record(delta))
+            if (!editHistory.Record(delta, PointLabelHistoryDomain.Noise))
             {
                 TryApplyNoiseDelta(renderer, delta, false, "ノイズ履歴を保存できませんでした。");
                 LastMutationFailure = "ノイズUndo履歴を保存できなかったため、操作を取り消しました。";
@@ -343,6 +346,14 @@ namespace PointCloudWorkbench
                 int reason = (label & NOISE_REASON_MASK) >> NOISE_REASON_SHIFT;
                 if (reason >= 0 && reason < previewReasonCounts.Length) previewReasonCounts[reason]++;
             }
+        }
+
+        public void NotifySharedHistoryApplied(PointCloudRenderer renderer, PointData[] points)
+        {
+            if (!ReferenceEquals(boundRenderer, renderer) || renderer == null ||
+                renderer.DatasetGeneration != boundGeneration) return;
+            RebuildPreviewState(points);
+            boundRevision = renderer.ContentRevision;
         }
 
         private bool IsBoundToCurrentData(PointCloudRenderer renderer)
