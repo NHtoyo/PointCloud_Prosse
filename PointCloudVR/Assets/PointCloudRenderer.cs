@@ -143,10 +143,21 @@ public class PointCloudRenderer : MonoBehaviour
     void Start()
     {
         if (!Initialize()) return;
-        if (pointData == null || pointData.Length == 0)
+        bool hasPointData = pointData != null && pointData.Length > 0;
+        bool hasLoader = GetComponent<PointCloudLoader>() != null;
+        if (ShouldGenerateDemoFallback(hasLoader, hasPointData))
         {
             GenerateDemoPointCloud();
         }
+        else if (hasLoader && !hasPointData)
+        {
+            Debug.Log("[PointCloudRenderer] Waiting for the configured point-cloud loader; demo data is suppressed.");
+        }
+    }
+
+    internal static bool ShouldGenerateDemoFallback(bool hasLoader, bool hasPointData)
+    {
+        return !hasPointData && !hasLoader;
     }
 
     public bool Initialize()

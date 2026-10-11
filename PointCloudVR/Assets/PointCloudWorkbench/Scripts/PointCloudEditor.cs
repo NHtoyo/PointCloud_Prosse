@@ -660,6 +660,7 @@ public class PointCloudEditor : MonoBehaviour
 
     private void HandleEditHistoryShortcuts()
     {
+        if (HardwareCompatibilityDiagnostic.IsDetailsOpen) return;
         if (GUIUtility.keyboardControl != 0 || (editorUI != null && editorUI.HasKeyboardInputFocus)) return;
         bool controlDown = Input.GetKey(KeyCode.LeftControl) || Input.GetKey(KeyCode.RightControl);
         if (!controlDown) return;

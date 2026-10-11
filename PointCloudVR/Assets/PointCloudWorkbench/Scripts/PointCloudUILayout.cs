@@ -8,6 +8,7 @@ namespace PointCloudWorkbench
         public Rect CenterPanel;
         public Rect RightPanel;
         public Rect DiagnosticButton;
+        public Rect DiagnosticDetails;
     }
 
     public static class PointCloudUILayout
@@ -15,6 +16,12 @@ namespace PointCloudWorkbench
         private const float SideMargin = 20f;
         private const float PanelGap = 10f;
         private const float TopReservedHeight = 48f;
+        private const float CompactToolsWidth = 390f;
+
+        public static bool UsesCompactTools(float leftPanelWidth)
+        {
+            return leftPanelWidth < CompactToolsWidth;
+        }
 
         public static PointCloudUIRegions Calculate(float screenWidth, float screenHeight)
         {
@@ -43,14 +50,24 @@ namespace PointCloudWorkbench
             float buttonWidth = Mathf.Min(242f, Mathf.Max(0f, width - 32f));
             Rect diagnostic = new Rect(Mathf.Max(16f, width - 16f - buttonWidth), 8f,
                 buttonWidth, 32f);
+            float detailsWidth = Mathf.Min(600f, Mathf.Max(0f, width - 32f));
+            float detailsHeight = Mathf.Min(550f, Mathf.Max(0f, height - 56f));
+            Rect diagnosticDetails = new Rect(Mathf.Max(16f, width - detailsWidth - 16f), 48f,
+                detailsWidth, detailsHeight);
 
             return new PointCloudUIRegions
             {
                 LeftPanel = left,
                 CenterPanel = center,
                 RightPanel = right,
-                DiagnosticButton = diagnostic
+                DiagnosticButton = diagnostic,
+                DiagnosticDetails = diagnosticDetails
             };
+        }
+
+        public static bool BlocksUnderlyingInput(bool detailsOpen, Rect diagnosticButton, Vector2 pointer)
+        {
+            return detailsOpen || diagnosticButton.Contains(pointer);
         }
     }
 }

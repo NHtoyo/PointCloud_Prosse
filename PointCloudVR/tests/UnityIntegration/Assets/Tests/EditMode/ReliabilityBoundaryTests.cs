@@ -191,6 +191,7 @@ public sealed class ReliabilityBoundaryTests
     [TestCase(1024, 768)]
     [TestCase(1280, 720)]
     [TestCase(1600, 900)]
+    [TestCase(1920, 1080)]
     public void SharedUILayout_SeparatesPanelsAndDiagnosticButton(int width, int height)
     {
         Type layoutType = RuntimeType("PointCloudWorkbench.PointCloudUILayout");
@@ -201,6 +202,7 @@ public sealed class ReliabilityBoundaryTests
         UnityEngine.Rect center = (UnityEngine.Rect)regionsType.GetField("CenterPanel").GetValue(regions);
         UnityEngine.Rect right = (UnityEngine.Rect)regionsType.GetField("RightPanel").GetValue(regions);
         UnityEngine.Rect diagnostic = (UnityEngine.Rect)regionsType.GetField("DiagnosticButton").GetValue(regions);
+        UnityEngine.Rect details = (UnityEngine.Rect)regionsType.GetField("DiagnosticDetails").GetValue(regions);
 
         Assert.That(left.xMax, Is.LessThanOrEqualTo(center.x));
         Assert.That(center.xMax, Is.LessThanOrEqualTo(right.x));
@@ -214,6 +216,30 @@ public sealed class ReliabilityBoundaryTests
         Assert.That(left.yMax, Is.LessThanOrEqualTo(height));
         Assert.That(right.yMax, Is.LessThanOrEqualTo(height));
         Assert.That(center.width, Is.GreaterThan(0f));
+        MethodInfo usesCompactTools = layoutType.GetMethod("UsesCompactTools", BindingFlags.Public | BindingFlags.Static);
+        Assert.That((bool)usesCompactTools.Invoke(null, new object[] { left.width }),
+            Is.EqualTo(width < 1600));
+        Assert.That(details.xMin, Is.GreaterThanOrEqualTo(0f));
+        Assert.That(details.yMin, Is.GreaterThanOrEqualTo(0f));
+        Assert.That(details.xMax, Is.LessThanOrEqualTo(width));
+        Assert.That(details.yMax, Is.LessThanOrEqualTo(height));
+
+        MethodInfo blocksInput = layoutType.GetMethod("BlocksUnderlyingInput", BindingFlags.Public | BindingFlags.Static);
+        Assert.That((bool)blocksInput.Invoke(null, new object[] { false, diagnostic, diagnostic.center }), Is.True);
+        Assert.That((bool)blocksInput.Invoke(null, new object[] { true, diagnostic, UnityEngine.Vector2.zero }), Is.True);
+        Assert.That((bool)blocksInput.Invoke(null, new object[] { false, diagnostic, UnityEngine.Vector2.zero }), Is.False);
+    }
+
+    [TestCase(false, false, true)]
+    [TestCase(true, false, false)]
+    [TestCase(false, true, false)]
+    [TestCase(true, true, false)]
+    public void RendererDemoFallback_DoesNotRaceConfiguredLoader(bool hasLoader, bool hasPointData, bool expected)
+    {
+        Type rendererType = RuntimeType("PointCloudRenderer");
+        bool actual = (bool)rendererType.GetMethod("ShouldGenerateDemoFallback", BindingFlags.Static | BindingFlags.NonPublic)
+            .Invoke(null, new object[] { hasLoader, hasPointData });
+        Assert.That(actual, Is.EqualTo(expected));
     }
 
     [Test]

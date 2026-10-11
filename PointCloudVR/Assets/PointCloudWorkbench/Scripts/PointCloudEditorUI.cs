@@ -40,6 +40,8 @@ public class PointCloudEditorUI : MonoBehaviour
     // UI Scroll Position
     private Vector2 mainScrollPos;
     private Vector2 centerPanelScroll;
+    private int lastLayoutScreenWidth = -1;
+    private int lastLayoutScreenHeight = -1;
     private Rect leftPanelRect;
     private Rect centerPanelViewport;
     private Rect centerPanelBodyViewport;
@@ -316,10 +318,12 @@ public class PointCloudEditorUI : MonoBehaviour
     public bool IsMouseOverUI()
     {
         if (editor != null && editor.HasPendingRecovery) return true;
+        if (HardwareCompatibilityDiagnostic.IsDetailsOpen) return true;
         // Block mouse interactions if modal progress dialog is running or parameters dialogs are open
         PointCloudProgressSnapshot progress = PointCloudProgressManager.Instance.GetSnapshot();
         if (progress.IsRunning || progress.HasError || progress.HasWarning || showDownsampleDialog || showScaleCalibDialog || showReferenceSphereDialog || showExportDialog) return true;
         Vector2 guiMousePosition = new Vector2(Input.mousePosition.x, Screen.height - Input.mousePosition.y);
+        if (HardwareCompatibilityDiagnostic.BlocksUnderlyingInput(guiMousePosition)) return true;
         if (GUIUtility.hotControl != 0) return true;
         if (leftPanelRect.Contains(guiMousePosition) || centerWorkspaceToolbarRect.Contains(guiMousePosition) ||
             centerPanelScrollBarRect.Contains(guiMousePosition)) return true;
@@ -395,6 +399,7 @@ public class PointCloudEditorUI : MonoBehaviour
     void OnGUI()
     {
         if (HardwareCompatibilityDiagnostic.HasBlockingGraphicsFailure) return;
+        if (HardwareCompatibilityDiagnostic.IsDetailsOpen) return;
         if (editor == null || editor.targetRenderer == null) return;
         InitializeStyles();
         bool guiEnabledBeforeDraw = GUI.enabled;
@@ -424,8 +429,18 @@ public class PointCloudEditorUI : MonoBehaviour
 
         // Keep enough width for readable controls while preserving a usable center view.
         PointCloudUIRegions regions = PointCloudUILayout.Calculate(Screen.width, Screen.height);
+        if (lastLayoutScreenWidth != Screen.width || lastLayoutScreenHeight != Screen.height)
+        {
+            lastLayoutScreenWidth = Screen.width;
+            lastLayoutScreenHeight = Screen.height;
+            mainScrollPos = Vector2.zero;
+            centerPanelScroll = Vector2.zero;
+            fileScrollPos = Vector2.zero;
+            errorScrollPos = Vector2.zero;
+            centerPanelScrollBarRect = Rect.zero;
+        }
         float width = regions.LeftPanel.width;
-        bool compactTools = width < 340f;
+        bool compactTools = PointCloudUILayout.UsesCompactTools(width);
         headerStyle.fontSize = compactTools ? 16 : 22;
         buttonStyle.fontSize = compactTools ? 12 : 14;
         activeButtonStyle.fontSize = buttonStyle.fontSize;
@@ -710,14 +725,25 @@ public class PointCloudEditorUI : MonoBehaviour
             }
             GUILayout.Space(5);
             bool guiWasEnabled = GUI.enabled;
-            GUILayout.BeginHorizontal();
-            GUI.enabled = guiWasEnabled && editor.CanAnnotationUndo;
-            if (GUILayout.Button("直前の点群編集を元に戻す  Ctrl+Z", buttonStyle, GUILayout.MinHeight(32f))) editor.AnnotationUndo();
-            GUI.enabled = guiWasEnabled && editor.CanAnnotationRedo;
-            if (GUILayout.Button("点群編集をやり直す  Ctrl+Y", buttonStyle, GUILayout.MinHeight(32f))) editor.AnnotationRedo();
-            GUI.enabled = guiWasEnabled;
-            GUILayout.Label("選択・分類・削除・ノイズ確定は操作順でUndo/Redoします。距離計測の履歴は別です。", textStyle);
-            GUILayout.EndHorizontal();
+            if (compactTools)
+            {
+                GUI.enabled = guiWasEnabled && editor.CanAnnotationUndo;
+                if (GUILayout.Button("元に戻す  Ctrl+Z", buttonStyle, GUILayout.MinHeight(32f))) editor.AnnotationUndo();
+                GUI.enabled = guiWasEnabled && editor.CanAnnotationRedo;
+                if (GUILayout.Button("やり直す  Ctrl+Y", buttonStyle, GUILayout.MinHeight(32f))) editor.AnnotationRedo();
+                GUI.enabled = guiWasEnabled;
+            }
+            else
+            {
+                GUILayout.BeginHorizontal();
+                GUI.enabled = guiWasEnabled && editor.CanAnnotationUndo;
+                if (GUILayout.Button("元に戻す  Ctrl+Z", buttonStyle, GUILayout.MinHeight(32f))) editor.AnnotationUndo();
+                GUI.enabled = guiWasEnabled && editor.CanAnnotationRedo;
+                if (GUILayout.Button("やり直す  Ctrl+Y", buttonStyle, GUILayout.MinHeight(32f))) editor.AnnotationRedo();
+                GUI.enabled = guiWasEnabled;
+                GUILayout.EndHorizontal();
+            }
+            GUILayout.Label("選択・分類・削除・ノイズ確定を操作順でUndo/Redoします。距離計測は別履歴です。", textStyle);
             float historyLimitMiB = editor.AnnotationHistoryStackLimitBytes / (1024f * 1024f);
             GUILayout.Label($"履歴使用量 {editor.AnnotationHistoryRetainedBytes / (1024f * 1024f):F1} MiB / 最大 {historyLimitMiB * 2f:F0} MiB (Undo/Redo各100件・{historyLimitMiB:F0} MiB)", textStyle);
             if (compactTools)

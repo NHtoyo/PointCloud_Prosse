@@ -63,6 +63,13 @@ public sealed class HardwareCompatibilityDiagnostic : MonoBehaviour
     private GUIStyle buttonStyle;
 
     public static bool HasBlockingGraphicsFailure => instance != null && !string.IsNullOrEmpty(instance.graphicsFailure);
+    public static bool IsDetailsOpen => instance != null && instance.detailsOpen;
+
+    public static bool BlocksUnderlyingInput(Vector2 guiPointer)
+    {
+        PointCloudUIRegions regions = PointCloudUILayout.Calculate(Screen.width, Screen.height);
+        return PointCloudUILayout.BlocksUnderlyingInput(IsDetailsOpen, regions.DiagnosticButton, guiPointer);
+    }
 
     [RuntimeInitializeOnLoadMethod(RuntimeInitializeLoadType.AfterSceneLoad)]
     private static void Bootstrap()
@@ -447,15 +454,15 @@ public sealed class HardwareCompatibilityDiagnostic : MonoBehaviour
 
     private void DrawDetailsWindow()
     {
-        float width = Mathf.Min(600f, Screen.width - 32f);
-        float height = Mathf.Min(550f, Screen.height - 56f);
-        Rect panel = new Rect(Mathf.Max(16f, Screen.width - width - 16f), 48f, width, height);
+        Rect panel = PointCloudUILayout.Calculate(Screen.width, Screen.height).DiagnosticDetails;
+        float height = panel.height;
         GUI.Box(panel, GUIContent.none);
         GUILayout.BeginArea(new Rect(panel.x + 14f, panel.y + 12f, panel.width - 28f, panel.height - 24f));
         GUILayout.Label("PC互換性診断", titleStyle);
         GUILayout.Label(BuildSummary(), bodyStyle, GUILayout.Height(height - 118f));
         if (GUILayout.Button("診断JSONを保存", buttonStyle)) SaveReport();
         if (!string.IsNullOrEmpty(saveStatus)) GUILayout.Label(saveStatus, bodyStyle);
+        if (GUILayout.Button("閉じる", buttonStyle)) detailsOpen = false;
         GUILayout.EndArea();
     }
 
