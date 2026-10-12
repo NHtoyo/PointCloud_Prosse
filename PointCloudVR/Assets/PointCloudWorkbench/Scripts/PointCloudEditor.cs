@@ -18,7 +18,7 @@ public class PointCloudEditor : MonoBehaviour
 
     [Header("Tool Settings")]
     public EditTool activeTool = EditTool.None;
-    public float brushRadius = 200f;
+    public float brushRadius = 50f;
     public bool brushSelectMode = true; // true = select, false = deselect
     public bool selectOnlyUnclassified = false; // true = ignore points with label > 0
     public int activeLabelClass = 2; // Default to Leaf (2) for painting

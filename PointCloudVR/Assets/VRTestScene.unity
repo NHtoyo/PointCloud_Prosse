@@ -5386,7 +5386,7 @@ MonoBehaviour:
   m_EditorClassIdentifier: Assembly-CSharp::PointCloudEditor
   targetRenderer: {fileID: 589584589}
   activeTool: 0
-  brushRadius: 200
+  brushRadius: 50
   brushSelectMode: 1
   activeLabelClass: 2
   brushColor: {r: 1, g: 0.9, b: 0, a: 0.3}
