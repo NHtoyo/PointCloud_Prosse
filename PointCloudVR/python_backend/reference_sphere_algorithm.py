@@ -31,6 +31,78 @@ class ReferenceSphereResult:
     fit_inlier_indices: np.ndarray
 
 
+def _smallest_nonnegative_eigenvalue_index(eigenvalues: np.ndarray) -> int:
+    values = np.asarray(eigenvalues, dtype=np.float64)
+    if values.ndim != 1:
+        raise ValueError("T eigenvalues must be a one-dimensional array")
+    if not np.all(np.isfinite(values)):
+        raise ValueError("T eigenvalues contain NaN or inf")
+    candidates = np.flatnonzero(values >= 0.0)
+    if len(candidates) == 0:
+        raise ValueError("T has no non-negative eigenvalue for sphere fitting")
+    return int(candidates[np.argmin(values[candidates])])
+
+
+def _sphere_parameters_from_algebraic(
+    mean: np.ndarray,
+    coefficients: np.ndarray,
+    coordinate_scale: float,
+) -> tuple[np.ndarray, float]:
+    center_mean = np.asarray(mean, dtype=np.float64)
+    a = np.asarray(coefficients, dtype=np.float64)
+    if center_mean.shape != (3,) or a.shape != (5,):
+        raise ValueError("invalid algebraic sphere parameters")
+    if not np.all(np.isfinite(center_mean)) or not np.all(np.isfinite(a)):
+        raise ValueError("algebraic sphere parameters contain NaN or inf")
+
+    coefficient_scale = float(np.max(np.abs(a)))
+    scale = float(coordinate_scale)
+    if coefficient_scale <= 0.0 or not np.isfinite(scale) or scale <= 0.0:
+        raise ValueError("sphere fit became degenerate")
+
+    # A is homogeneous; test curvature after expressing its equation in units
+    # of the observed cloud extent, not against an absolute coefficient cutoff.
+    a = a / coefficient_scale
+    with np.errstate(over="ignore", invalid="ignore"):
+        dimensionless_coefficients = np.concatenate(
+            (
+                np.array([a[0] * scale * scale]),
+                a[1:4] * scale,
+                np.array([a[4]]),
+            )
+        )
+    if not np.all(np.isfinite(dimensionless_coefficients)):
+        raise ValueError("dimensionless sphere coefficients are not finite")
+    coefficient_reference = float(np.max(np.abs(dimensionless_coefficients)))
+    if coefficient_reference <= 0.0:
+        raise ValueError("sphere fit became degenerate")
+    curvature_resolution = np.finfo(np.float64).eps * coefficient_reference
+    if abs(float(dimensionless_coefficients[0])) <= curvature_resolution:
+        raise ValueError("sphere curvature is below float64 resolution for the input extent")
+    b = dimensionless_coefficients
+    if b[0] == 0.0:
+        raise ValueError("sphere fit became degenerate")
+
+    discriminant = float(
+        b[1] * b[1] + b[2] * b[2] + b[3] * b[3] - 4.0 * b[0] * b[4]
+    )
+    if not np.isfinite(discriminant):
+        raise ValueError("sphere discriminant is not finite")
+    if discriminant < 0.0:
+        raise ValueError(
+            f"sphere radius became imaginary (discriminant={discriminant:.17g})"
+        )
+
+    radius_normalized = np.sqrt(discriminant) / (2.0 * abs(float(b[0])))
+    center_normalized = -b[1:4] / (2.0 * b[0])
+    with np.errstate(over="ignore", invalid="ignore"):
+        center = center_mean + scale * center_normalized
+        radius = scale * radius_normalized
+    if not np.all(np.isfinite(center)) or not np.isfinite(radius) or radius <= 0.0:
+        raise ValueError("invalid fitted sphere")
+    return center, float(radius)
+
+
 def hyper_sphere_fit(points: np.ndarray) -> tuple[np.ndarray, float]:
     """Hyperaccurate algebraic sphere fit, preserving input coordinate space."""
     x = np.asarray(points, dtype=np.float64)
@@ -41,11 +113,20 @@ def hyper_sphere_fit(points: np.ndarray) -> tuple[np.ndarray, float]:
     if not np.all(np.isfinite(x)):
         raise ValueError("points contain NaN or inf")
 
-    mean = x.mean(axis=0)
-    q = x - mean
-    w = np.sum(q * q, axis=1)
+    with np.errstate(over="ignore", invalid="ignore"):
+        mean = x.mean(axis=0)
+        q = x - mean
+        w = np.sum(q * q, axis=1)
+    if not np.all(np.isfinite(mean)) or not np.all(np.isfinite(q)) or not np.all(np.isfinite(w)):
+        raise ValueError("centered sphere coordinates are not finite")
     z = np.column_stack((w, q[:, 0], q[:, 1], q[:, 2], np.ones(len(x))))
+    if not np.all(np.isfinite(z)):
+        raise ValueError("sphere design matrix is not finite")
     _, singular_values, vt = np.linalg.svd(z, full_matrices=False)
+    if not np.all(np.isfinite(singular_values)):
+        raise ValueError("sphere design matrix SVD is not finite")
+    if not np.all(np.isfinite(vt)):
+        raise ValueError("sphere design matrix right singular vectors are not finite")
     v = vt.T
     if singular_values[0] <= 0:
         raise ValueError("degenerate sphere fitting problem")
@@ -68,31 +149,25 @@ def hyper_sphere_fit(points: np.ndarray) -> tuple[np.ndarray, float]:
         y = v @ s @ v.T
         t = y @ g @ y
         t = (t + t.T) * 0.5
+        if not np.all(np.isfinite(t)):
+            raise ValueError("sphere constraint matrix T is not finite")
         eigenvalues, eigenvectors = np.linalg.eigh(t)
-        tolerance = 1e-12 * max(1.0, float(np.max(np.abs(eigenvalues))))
-        candidates = np.where(eigenvalues >= -tolerance)[0]
-        if len(candidates) == 0:
-            eig_idx = int(np.argmin(np.abs(eigenvalues)))
-        else:
-            eig_idx = candidates[np.argmin(eigenvalues[candidates])]
+        if not np.all(np.isfinite(eigenvectors)):
+            raise ValueError("T eigenvectors contain NaN or inf")
+        eig_idx = _smallest_nonnegative_eigenvalue_index(eigenvalues)
         a_star = eigenvectors[:, eig_idx]
-        inv_s = np.diag(1.0 / singular_values)
+        if np.any(singular_values <= 0.0):
+            raise ValueError("sphere design matrix has a zero singular value")
+        inverse_singular_values = 1.0 / singular_values
+        if not np.all(np.isfinite(inverse_singular_values)):
+            raise ValueError("sphere design matrix inverse singular values are not finite")
+        inv_s = np.diag(inverse_singular_values)
         a = v @ inv_s @ v.T @ a_star
 
-    a1, a2, a3, a4, a5 = a
-    if abs(a1) < 1e-15:
-        raise ValueError("sphere fit became degenerate")
-    discriminant = a2 * a2 + a3 * a3 + a4 * a4 - 4.0 * a1 * a5
-    if discriminant < 0:
-        if discriminant > -1e-12:
-            discriminant = 0.0
-        else:
-            raise ValueError("sphere radius became imaginary")
-    radius = np.sqrt(discriminant) / (2.0 * abs(a1))
-    center = mean - np.array([a2, a3, a4], dtype=np.float64) / (2.0 * a1)
-    if not np.all(np.isfinite(center)) or not np.isfinite(radius) or radius <= 0:
-        raise ValueError("invalid fitted sphere")
-    return center, float(radius)
+    if not np.all(np.isfinite(a)):
+        raise ValueError("algebraic sphere coefficients contain NaN or inf")
+    coordinate_scale = float(np.sqrt(np.max(w)))
+    return _sphere_parameters_from_algebraic(mean, a, coordinate_scale)
 
 
 def _logexp(x: float) -> float:
@@ -121,81 +196,172 @@ def sskernel_density(
     max_grid: int = 1000,
     max_iterations: int = 20,
 ) -> tuple[np.ndarray, np.ndarray, float]:
+    """Return the Shimazaki-Shinomoto KDE; constants use a point-mass special case."""
     x = np.asarray(values, dtype=np.float64)
-    x = x[np.isfinite(x)]
+    if x.ndim != 1:
+        raise ValueError("KDE values must be a one-dimensional array")
     if len(x) == 0:
         raise ValueError("empty data")
-    if len(x) == 1 or np.ptp(x) == 0:
+    if not np.all(np.isfinite(x)):
+        raise ValueError("KDE values contain NaN or inf")
+    if (
+        isinstance(max_grid, (bool, np.bool_))
+        or not isinstance(max_grid, (int, np.integer))
+        or max_grid < 2
+    ):
+        raise ValueError("max_grid must be an integer greater than or equal to 2")
+    if (
+        isinstance(max_iterations, (bool, np.bool_))
+        or not isinstance(max_iterations, (int, np.integer))
+        or max_iterations < 0
+    ):
+        raise ValueError("max_iterations must be a non-negative integer")
+    if len(x) == 1 or np.all(x == x[0]):
+        # This is a discrete point-mass representation, not a continuous KDE.
         return np.array([x[0]]), np.array([1.0]), 0.0
 
     # KDE is translation invariant; shifting near zero prevents grid steps from
     # collapsing when residuals vary less than the ULP of their absolute offset.
     offset = float(np.min(x))
-    shifted_x = x - offset
+    with np.errstate(over="ignore", invalid="ignore"):
+        shifted_x = x - offset
+    if not np.all(np.isfinite(shifted_x)):
+        raise ValueError("KDE data range is not finite")
     sorted_x = np.sort(shifted_x)
     differences = np.diff(sorted_x)
     differences = differences[differences > 0]
-    total_range = float(np.ptp(shifted_x))
-    if total_range <= 0:
-        return np.array([offset]), np.array([1.0]), 0.0
-    sampling_resolution = total_range / max_grid if len(differences) == 0 else float(differences[0])
-    grid_count = min(int(np.ceil(total_range / sampling_resolution)), max_grid)
-    grid_count = max(grid_count, 50)
+    total_range = float(np.max(shifted_x))
+    if not np.isfinite(total_range) or total_range <= 0.0:
+        raise ValueError("KDE data range must be finite and positive")
+    if len(differences) == 0:
+        raise ValueError("KDE has no positive sampling interval")
+    sampling_resolution = float(differences[0])
+    if not np.isfinite(sampling_resolution) or sampling_resolution <= 0.0:
+        raise ValueError("KDE sampling interval must be finite and positive")
+
+    # Cap the requested grid without forming an overflowing range / interval ratio.
+    if sampling_resolution <= total_range / max_grid:
+        grid_count = int(max_grid)
+    else:
+        grid_ratio = total_range / sampling_resolution
+        if not np.isfinite(grid_ratio):
+            raise ValueError("KDE grid-count ratio is not finite")
+        grid_count = min(int(np.ceil(grid_ratio)), int(max_grid))
+    grid_count = max(grid_count, 2)
     grid = np.linspace(0.0, total_range, grid_count)
-    dt = float(np.min(np.diff(grid)))
+    dt = total_range / (grid_count - 1)
     if not np.isfinite(dt) or dt <= 0:
-        return np.array([offset]), np.array([1.0]), 0.0
+        raise ValueError("KDE grid interval must be finite and positive")
+    if not np.all(np.diff(grid) > 0.0):
+        raise ValueError("KDE grid is not resolvable at float64 precision")
     edges = np.concatenate((grid - dt * 0.5, [grid[-1] + dt * 0.5]))
+    if not np.all(np.isfinite(edges)) or not np.all(np.diff(edges) > 0.0):
+        raise ValueError("KDE histogram edges are not finite and strictly increasing")
     histogram, _ = np.histogram(shifted_x, bins=edges)
     sample_count = int(histogram.sum())
-    if sample_count == 0:
-        raise ValueError("KDE histogram contains no samples")
-    histogram_density = histogram.astype(np.float64) / sample_count / dt
+    if sample_count != len(x):
+        raise ValueError(
+            f"KDE histogram retained {sample_count} of {len(x)} input samples"
+        )
+    with np.errstate(over="ignore", divide="ignore", invalid="ignore"):
+        histogram_density = histogram.astype(np.float64) / sample_count / dt
+    if not np.all(np.isfinite(histogram_density)):
+        raise ValueError("KDE histogram density is not finite")
 
     def cost_function(width: float) -> tuple[float, np.ndarray]:
-        smoothed = _fft_gaussian_kernel(histogram_density, width / dt)
-        cost = (
-            np.sum(smoothed * smoothed) * dt
-            - 2.0 * np.sum(smoothed * histogram_density) * dt
-            + 2.0 / (np.sqrt(2.0 * np.pi) * width * sample_count)
-        )
-        return float(cost * sample_count * sample_count), smoothed
+        if not np.isfinite(width) or width <= 0.0:
+            raise ValueError("KDE bandwidth must be finite and positive")
+        with np.errstate(over="ignore", divide="ignore", invalid="ignore"):
+            width_bins = width / dt
+        if not np.isfinite(width_bins) or width_bins <= 0.0:
+            raise ValueError("KDE bandwidth in grid units is not finite and positive")
+        smoothed = _fft_gaussian_kernel(histogram_density, width_bins)
+        with np.errstate(over="ignore", divide="ignore", invalid="ignore"):
+            cost = (
+                np.sum(smoothed * smoothed) * dt
+                - 2.0 * np.sum(smoothed * histogram_density) * dt
+                + 2.0 / (np.sqrt(2.0 * np.pi) * width * sample_count)
+            )
+            objective = float(cost * sample_count * sample_count)
+        if not np.isfinite(objective) or not np.all(np.isfinite(smoothed)):
+            raise ValueError("KDE objective or density is not finite")
+        return objective, smoothed
 
-    width_min = 2.0 * dt
+    with np.errstate(over="ignore", invalid="ignore"):
+        width_min = 2.0 * dt
     width_max = total_range
-    a = _ilogexp(width_min)
-    b = _ilogexp(width_max)
-    phi = (np.sqrt(5.0) + 1.0) / 2.0
-    c1 = (phi - 1.0) * a + (2.0 - phi) * b
-    c2 = (2.0 - phi) * a + (phi - 1.0) * b
-    f1, _ = cost_function(_logexp(c1))
-    f2, _ = cost_function(_logexp(c2))
-    tolerance = 1e-5
-    optimal_width = None
-    density = None
-    iteration = 1
-    while abs(b - a) > tolerance * (abs(c1) + abs(c2)) and iteration <= max_iterations:
-        if f1 < f2:
-            b, c2 = c2, c1
-            c1 = (phi - 1.0) * a + (2.0 - phi) * b
-            f2 = f1
-            f1, density = cost_function(_logexp(c1))
-            optimal_width = _logexp(c1)
-        else:
-            a, c1 = c1, c2
-            c2 = (2.0 - phi) * a + (phi - 1.0) * b
-            f1 = f2
-            f2, density = cost_function(_logexp(c2))
-            optimal_width = _logexp(c2)
-        iteration += 1
+    if (
+        not np.isfinite(width_min)
+        or not np.isfinite(width_max)
+        or width_min <= 0.0
+        or width_max <= 0.0
+    ):
+        raise ValueError("KDE bandwidth bounds must be finite and positive")
+    if width_min > width_max:
+        raise ValueError(
+            f"KDE bandwidth interval is reversed: {width_min:.17g} > {width_max:.17g}"
+        )
 
-    if optimal_width is None:
-        optimal_width = (width_min + width_max) * 0.5
-        _, density = cost_function(optimal_width)
-    normalization = np.sum(density) * dt
-    if normalization > 0:
+    if width_min == width_max:
+        optimal_width = width_min
+        best_cost, density = cost_function(optimal_width)
+    else:
+        log_min = _ilogexp(width_min)
+        log_max = _ilogexp(width_max)
+        if not np.isfinite(log_min) or not np.isfinite(log_max) or log_min >= log_max:
+            raise ValueError("KDE bandwidth interval collapsed in log-exp coordinates")
+
+        a = log_min
+        b = log_max
+        phi = (np.sqrt(5.0) + 1.0) / 2.0
+        c1 = (phi - 1.0) * a + (2.0 - phi) * b
+        c2 = (2.0 - phi) * a + (phi - 1.0) * b
+        if not np.isfinite(c1) or not np.isfinite(c2) or c1 >= c2:
+            raise ValueError("KDE golden-section candidates are not resolvable")
+        width1 = _logexp(c1)
+        width2 = _logexp(c2)
+        f1, density1 = cost_function(width1)
+        f2, density2 = cost_function(width2)
+        if f1 <= f2:
+            optimal_width, best_cost, density = width1, f1, density1
+        else:
+            optimal_width, best_cost, density = width2, f2, density2
+
+        tolerance = 1e-5
+        iteration = 1
+        while abs(b - a) > tolerance * (abs(c1) + abs(c2)) and iteration <= max_iterations:
+            if f1 < f2:
+                b, c2 = c2, c1
+                c1 = (phi - 1.0) * a + (2.0 - phi) * b
+                f2 = f1
+                width1 = _logexp(c1)
+                f1, candidate_density = cost_function(width1)
+                if f1 < best_cost:
+                    optimal_width, best_cost, density = width1, f1, candidate_density
+            else:
+                a, c1 = c1, c2
+                c2 = (2.0 - phi) * a + (phi - 1.0) * b
+                f1 = f2
+                width2 = _logexp(c2)
+                f2, candidate_density = cost_function(width2)
+                if f2 < best_cost:
+                    optimal_width, best_cost, density = width2, f2, candidate_density
+            iteration += 1
+
+            # Stop only when float64 can no longer distinguish the interior points.
+            if c1 == c2:
+                break
+
+    with np.errstate(over="ignore", invalid="ignore"):
+        normalization = np.sum(density) * dt
+    if not np.isfinite(normalization) or normalization <= 0.0:
+        raise ValueError("KDE density cannot be normalized")
+    with np.errstate(over="ignore", divide="ignore", invalid="ignore"):
         density = density / normalization
-    return grid + offset, density, float(optimal_width)
+        output_grid = grid + offset
+    if not np.all(np.isfinite(density)) or not np.all(np.isfinite(output_grid)):
+        raise ValueError("normalized KDE output is not finite")
+    return output_grid, density, float(optimal_width)
 
 
 def mode_sskernel(values: np.ndarray) -> float:
