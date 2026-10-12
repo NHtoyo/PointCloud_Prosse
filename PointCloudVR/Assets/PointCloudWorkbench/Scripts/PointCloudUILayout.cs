@@ -39,10 +39,10 @@ namespace PointCloudWorkbench
             }
 
             Rect left = new Rect(SideMargin, 20f, leftWidth,
-                Mathf.Min(930f, Mathf.Max(0f, height - 40f)));
+                Mathf.Max(0f, height - 40f));
             Rect right = new Rect(Mathf.Max(left.xMax + PanelGap, width - SideMargin - rightWidth),
                 TopReservedHeight, rightWidth,
-                Mathf.Min(930f, Mathf.Max(0f, height - TopReservedHeight - 20f)));
+                Mathf.Max(0f, height - TopReservedHeight - 20f));
             float centerX = left.xMax + PanelGap;
             float centerRight = Mathf.Max(centerX, right.x - PanelGap);
             Rect center = new Rect(centerX, 15f, centerRight - centerX, Mathf.Max(0f, height - 30f));

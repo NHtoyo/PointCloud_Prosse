@@ -473,7 +473,7 @@ public class PointCloudEditorUI : MonoBehaviour
         GUILayout.Space(5);
 
         // Scrollview to fit everything cleanly
-        mainScrollPos = GUILayout.BeginScrollView(mainScrollPos, GUILayout.Width(width - 15), GUILayout.Height(height - 40));
+        mainScrollPos = GUILayout.BeginScrollView(mainScrollPos, GUILayout.Width(width - 15), GUILayout.ExpandHeight(true));
 
         // --- 1. Tool Selection ---
         GUILayout.Label("操作ツール選択 (基本ツール)", textStyle);

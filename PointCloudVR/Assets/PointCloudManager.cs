@@ -60,6 +60,8 @@ public class PointCloudManager : MonoBehaviour
     private PointCloudEditorUI editorUIInstance;
     private AnnotationPipelineEditorUI annotationUI;
     private Vector2 rightScrollPos;
+    private int lastLayoutScreenWidth = -1;
+    private int lastLayoutScreenHeight = -1;
     private bool foldoutLOD = true;
     private bool foldoutStats = true;
 
@@ -462,6 +464,12 @@ public class PointCloudManager : MonoBehaviour
         if (activeProgress.HasError || activeProgress.HasWarning) return;
 
         PointCloudUIRegions regions = PointCloudUILayout.Calculate(Screen.width, Screen.height);
+        if (lastLayoutScreenWidth != Screen.width || lastLayoutScreenHeight != Screen.height)
+        {
+            lastLayoutScreenWidth = Screen.width;
+            lastLayoutScreenHeight = Screen.height;
+            rightScrollPos = Vector2.zero;
+        }
         LastPanelRect = regions.RightPanel;
         float width = LastPanelRect.width;
         float height = LastPanelRect.height;
@@ -496,7 +504,7 @@ public class PointCloudManager : MonoBehaviour
         GUILayout.Space(5);
 
         // Scrollview to fit everything cleanly
-        rightScrollPos = GUILayout.BeginScrollView(rightScrollPos, GUILayout.Width(width - 15), GUILayout.Height(height - 40));
+        rightScrollPos = GUILayout.BeginScrollView(rightScrollPos, GUILayout.Width(width - 15), GUILayout.ExpandHeight(true));
 
         // Find PointCloudEditor if not found
         if (editorInstance == null)

@@ -190,8 +190,10 @@ public sealed class ReliabilityBoundaryTests
 
     [TestCase(1024, 768)]
     [TestCase(1280, 720)]
+    [TestCase(1366, 768)]
     [TestCase(1600, 900)]
     [TestCase(1920, 1080)]
+    [TestCase(2560, 1440)]
     public void SharedUILayout_SeparatesPanelsAndDiagnosticButton(int width, int height)
     {
         Type layoutType = RuntimeType("PointCloudWorkbench.PointCloudUILayout");
@@ -206,6 +208,10 @@ public sealed class ReliabilityBoundaryTests
 
         Assert.That(left.xMax, Is.LessThanOrEqualTo(center.x));
         Assert.That(center.xMax, Is.LessThanOrEqualTo(right.x));
+        Assert.That(left.y, Is.EqualTo(20f));
+        Assert.That(left.yMax, Is.EqualTo(height - 20f));
+        Assert.That(right.y, Is.EqualTo(48f));
+        Assert.That(right.yMax, Is.EqualTo(height - 20f));
         Assert.That(left.Overlaps(center), Is.False);
         Assert.That(center.Overlaps(right), Is.False);
         Assert.That(diagnostic.Overlaps(center), Is.False);
