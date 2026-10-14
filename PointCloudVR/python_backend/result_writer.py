@@ -102,6 +102,7 @@ def write_results(output_dir: str, results: dict, params: dict, mode: str,
             "coordinate_unit": "mm",
             "coordinate_scale_to_mm": coordinate_scale_to_mm,
             "source_path": str(Path(source_path).expanduser().resolve()) if source_path else None,
+            "component_keep_runs": results.get("component_keep_runs", []),
             "scalar_units": {
                 "sor_score": "mm",
                 "cc_noise_score": "mm",
@@ -137,6 +138,8 @@ def write_results(output_dir: str, results: dict, params: dict, mode: str,
             "removed_by_white_haze": results["removed_by_white_haze_count"],
             "white_haze_candidate_count": results["white_haze_candidate_count"],
             "dbscan_timeout": results["dbscan_timeout"],
+            "component_keep_runs": results.get("component_keep_runs", []),
+            "removed_by_component_keep": results.get("removed_by_component_keep_count", 0),
             "parameters_used": params,
         }
         _write_removal_report(stage / "removal_report.json", report)

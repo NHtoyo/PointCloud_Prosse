@@ -14,7 +14,8 @@ namespace PointCloudWorkbench
         SmallCluster = 4,
         CC_Noise = 5,
         Manual = 6,
-        WhiteHaze = 7
+        WhiteHaze = 7,
+        ComponentKeep = 8
     }
 
     /// <summary>

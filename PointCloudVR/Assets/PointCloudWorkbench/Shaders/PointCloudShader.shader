@@ -127,7 +127,7 @@ Shader "PointCloudWorkbench/PointCloudShader"
                 bool isDeleted = (labelVal & 0x20000) != 0;
                 bool isNoiseCandidate = (labelVal & 0x40000) != 0; // bit18
                 bool isNoiseHidden = (labelVal & 0x80000) != 0;    // bit19
-                int noiseReason = (labelVal & 0x700000) >> 20;     // bit20-22
+                int noiseReason = (labelVal & 0xF00000) >> 20;     // bit20-23; values 0-7 remain compatible
 
                 // Discard deleted points immediately by setting size to 0
                 if (isDeleted || isNoiseHidden)
@@ -165,7 +165,12 @@ Shader "PointCloudWorkbench/PointCloudShader"
                 o.pos.xy += offset;
 
                 // Set color according to mode (Override if selected or noise candidate)
-                if (isSelected)
+                if (isNoiseCandidate && noiseReason == 8)
+                {
+                    // Keep component candidates visible even when the selection bit is also set.
+                    o.color = float4(0.28, 1.0, 0.22, 1.0);
+                }
+                else if (isSelected)
                 {
                     o.color = float4(1.0, 0.85, 0.0, 1.0); // Bright Yellow for selection highlight
                 }

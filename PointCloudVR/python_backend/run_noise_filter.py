@@ -82,6 +82,8 @@ def setup_argparser():
     # JSON構成ファイルの指定（優先）
     parser.add_argument("--config_json", default=None, help="パイプラインの順序とパラメータを記述したJSON構成ファイルのパス")
     parser.add_argument("--deleted_mask", default=None, help="削除済みフラグ配列(deleted_mask.bin)のパス")
+    parser.add_argument("--selection_mask", default=None, help="元点インデックス順の選択状態マスクのパス")
+    parser.add_argument("--expected_xyz_sha256", default=None, help="Unity側点群との順序・座標照合用SHA-256")
     parser.add_argument("--operation_id", default=None, help="Unity operation ID for this immutable result generation")
     
     parser.add_argument("--filters", nargs="*", choices=["sor", "ror", "dbscan", "density", "cc_noise", "white_haze", "none"], default=None,
@@ -124,13 +126,14 @@ def build_pipeline_from_json(json_path):
         },
         "white_haze": {"brightness_min": 190.0, "saturation_max": 0.20}
     }
+    params["component_keep"] = {"knn_k": 8, "alpha": 2.5, "mode": "largest"}
     
     enabled_filters = set()
     
     for step_cfg in steps_data:
         name = step_cfg["name"]
         enabled = step_cfg.get("enabled", True)
-        exclude = step_cfg.get("excludeFromNext", False)
+        exclude = step_cfg.get("excludeFromNext", name == "component_keep")
         step_params = step_cfg.get("params", {})
         
         if enabled:
@@ -186,6 +189,10 @@ def build_pipeline_from_args(args):
     return pipeline, params, enabled_filters
 
 def run_downsample_mode(points, colors, params, enabled_filters, pipeline, args, original_count):
+    if any(step.enabled and step.name == "component_keep" for step in pipeline.steps):
+        raise ValueError(
+            "連結成分選別は元点群の正確なインデックス対応が必要なため、Downsampleモードでは実行できません。Fullモードを選択してください。"
+        )
     print("Downsample Preview モードで処理を開始します...")
     os.makedirs(args.output_dir, exist_ok=True)
     base_spacing = noise_filters.estimate_base_spacing(points)
@@ -216,7 +223,9 @@ def run_downsample_mode(points, colors, params, enabled_filters, pipeline, args,
     print(f"ダウンサンプリング完了. 点数: {analysis_count:,} (比率: {analysis_count/original_count:.2%})")
     
     deleted_mask = None
-    if args.deleted_mask and os.path.exists(args.deleted_mask):
+    if args.deleted_mask:
+        if not os.path.isfile(args.deleted_mask):
+            raise FileNotFoundError(f"deleted_maskが見つかりません: {args.deleted_mask}")
         print(f"削除済みフラグマスクをロードします: {args.deleted_mask}")
         # downsampleモード時はオリジナル点のマスクなので、ダウンサンプル点群に対して再度NearestNeighborなどでマッピングする必要がある
         # しかしダウンサンプル後にフィルタをかける場合、とりあえず今回はダウンサンプル前のマスクをそのまま渡すとサイズエラーになる。
@@ -264,18 +273,33 @@ def run_full_mode(points, colors, params, enabled_filters, pipeline, args, origi
     print("Full モードで処理を開始します...")
     
     deleted_mask = None
-    if args.deleted_mask and os.path.exists(args.deleted_mask):
+    if args.deleted_mask:
+        if not os.path.isfile(args.deleted_mask):
+            raise FileNotFoundError(f"deleted_maskが見つかりません: {args.deleted_mask}")
         print(f"削除済みフラグマスクをロードします: {args.deleted_mask}")
-        deleted_mask = np.fromfile(args.deleted_mask, dtype=np.uint8) == 1
-        if len(deleted_mask) != original_count:
-            print(f"[Warning] deleted_maskのサイズ ({len(deleted_mask):,}) が点群 ({original_count:,}) と一致しません。足りない分を削除済みとしてパディングします。")
-            if len(deleted_mask) < original_count:
-                pad_size = original_count - len(deleted_mask)
-                deleted_mask = np.pad(deleted_mask, (0, pad_size), constant_values=True)
-            else:
-                deleted_mask = deleted_mask[:original_count]
+        raw_deleted = np.fromfile(args.deleted_mask, dtype=np.uint8)
+        if len(raw_deleted) != original_count:
+            raise ValueError(
+                f"deleted_maskの長さ ({len(raw_deleted):,}) が点群 ({original_count:,}) と一致しません。"
+            )
+        if np.any(raw_deleted > 1):
+            raise ValueError("deleted_maskに0/1以外の値があります。")
+        deleted_mask = raw_deleted.astype(bool, copy=False)
 
-    results = pipeline.run(points, colors, deleted_mask=deleted_mask)
+    selection_mask = None
+    if args.selection_mask:
+        raw_selection = np.fromfile(args.selection_mask, dtype=np.uint8)
+        if len(raw_selection) != original_count:
+            raise ValueError(
+                f"selection_maskの長さ ({len(raw_selection):,}) が点群 ({original_count:,}) と一致しません。"
+            )
+        if np.any(raw_selection > 1):
+            raise ValueError("selection_maskに0/1以外の値があります。")
+        selection_mask = raw_selection.astype(bool, copy=False)
+
+    results = pipeline.run(
+        points, colors, deleted_mask=deleted_mask, selection_mask=selection_mask
+    )
     analysis_count = original_count
     
     if results['dbscan_mode'] == 'downsample':
@@ -336,6 +360,18 @@ def main(argv=None):
     except Exception as e:
         print(f"[Error] 点群のロードに失敗しました: {e}", file=sys.stderr)
         sys.exit(1)
+
+    has_indexed_masks = bool(args.deleted_mask or args.selection_mask)
+    if has_indexed_masks and not args.expected_xyz_sha256:
+        raise ValueError("インデックス付きマスクを使うには--expected_xyz_sha256が必要です。")
+    if args.expected_xyz_sha256:
+        try:
+            actual_fingerprint = pointcloud_io.validate_xyz_sha256(points, args.expected_xyz_sha256)
+        except ValueError as exc:
+            raise ValueError(
+                "PLYの点順または座標がUnity側スナップショットと一致しません。マスクを適用せず中止しました。"
+            ) from exc
+        print(f"[NoiseFilterInput] xyz_sha256={actual_fingerprint}")
         
     coordinate_scale_to_mm = validate_coordinate_scale_to_mm(args.coordinate_scale_to_mm)
     raw_xyz_span = np.ptp(points, axis=0)
@@ -363,6 +399,10 @@ def main(argv=None):
             args.voxel_size = cfg.get("voxelSize", args.voxel_size)
 
     if args.mode == "downsample":
+        if any(step.enabled and step.name == "component_keep" for step in pipeline.steps):
+            raise ValueError(
+                "連結成分選別は元点群の正確なインデックス対応が必要なため、Downsampleモードでは実行できません。Fullモードを選択してください。"
+            )
         results, analysis_count = run_downsample_mode(
             points, colors, params, enabled_filters, pipeline, args, original_count
         )

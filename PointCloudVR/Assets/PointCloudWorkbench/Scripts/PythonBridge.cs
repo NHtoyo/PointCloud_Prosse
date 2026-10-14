@@ -2,6 +2,7 @@ using System;
 using System.Diagnostics;
 using System.IO;
 using System.Net.Http;
+using System.Security.Cryptography;
 using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
@@ -476,6 +477,15 @@ namespace PointCloudWorkbench
             {
                 throw new ArgumentOutOfRangeException(nameof(coordinateScaleToMm), "座標からmmへの倍率は正の有限値である必要があります。");
             }
+
+            if (points == null || points.Length == 0)
+                throw new InvalidDataException("ノイズ解析対象の点群が空です。");
+
+            bool needsSelectionMask = HasEnabledSelectedComponentKeep(filterParams);
+            byte[] deletedMaskSnapshot = new byte[points.Length];
+            byte[] selectionMaskSnapshot = needsSelectionMask ? new byte[points.Length] : null;
+            string expectedXyzSha256 = SnapshotPointInputs(points, deletedMaskSnapshot, selectionMaskSnapshot);
+
             await EnsureEnvironmentReadyAsync(cancellationToken, operation);
 
             string pythonPath = GetPythonPath();
@@ -492,26 +502,20 @@ namespace PointCloudWorkbench
 
             // 削除済みフラグのマスクを書き出す
             string deletedMaskPath = Path.Combine(outputDir, "deleted_mask." + operationId + ".bin");
+            string selectionMaskPath = needsSelectionMask
+                ? Path.Combine(outputDir, "selection_mask." + operationId + ".bin")
+                : null;
             string configJsonPath = Path.Combine(outputDir, "pipeline_config." + operationId + ".json");
             try
             {
-            if (points != null && points.Length > 0)
-            {
-                byte[] deletedMask = new byte[points.Length];
-                for (int i = 0; i < points.Length; i++)
-                {
-                    deletedMask[i] = (points[i].label & 0x20000) != 0 ? (byte)1 : (byte)0;
-                }
-                // 非同期で書き込み
-                using (var fs = new FileStream(deletedMaskPath, FileMode.Create, FileAccess.Write, FileShare.None, 4096, true))
-                {
-                    await fs.WriteAsync(deletedMask, 0, deletedMask.Length, cancellationToken);
-                }
-            }
+            await WriteMaskSnapshotAsync(deletedMaskPath, deletedMaskSnapshot, cancellationToken);
+            if (selectionMaskSnapshot != null)
+                await WriteMaskSnapshotAsync(selectionMaskPath, selectionMaskSnapshot, cancellationToken);
 
             // 引数の構築
             string arguments = BuildArguments(scriptPath, inputPlyPath, outputDir, filterParams,
-                deletedMaskPath, configJsonPath, coordinateScaleToMm, operationId);
+                deletedMaskPath, selectionMaskPath, expectedXyzSha256, configJsonPath,
+                coordinateScaleToMm, operationId);
 
             ProcessStartInfo psi = new ProcessStartInfo
             {
@@ -648,8 +652,64 @@ namespace PointCloudWorkbench
             finally
             {
                 TryDeleteTemporaryFile(deletedMaskPath);
+                TryDeleteTemporaryFile(selectionMaskPath);
                 TryDeleteTemporaryFile(configJsonPath);
             }
+        }
+
+        private static bool HasEnabledSelectedComponentKeep(NoiseFilterParams parameters)
+        {
+            if (parameters == null) return false;
+            var pipeline = parameters.GetPipeline();
+            for (int i = 0; pipeline != null && i < pipeline.Count; i++)
+            {
+                if (pipeline[i] is ComponentKeepConfig component && component.enabled && component.mode == "selected")
+                    return true;
+            }
+            return false;
+        }
+
+        private static string SnapshotPointInputs(PointData[] points, byte[] deletedMask, byte[] selectionMask)
+        {
+            const int pointsPerChunk = 16384;
+            float[] coordinateChunk = new float[pointsPerChunk * 3];
+            byte[] byteChunk = new byte[coordinateChunk.Length * sizeof(float)];
+            using (SHA256 sha = SHA256.Create())
+            {
+                int cursor = 0;
+                for (int i = 0; i < points.Length; i++)
+                {
+                    int label = points[i].label;
+                    deletedMask[i] = (label & (0x20000 | NoiseFilterManager.NOISE_HIDDEN_BIT)) != 0 ? (byte)1 : (byte)0;
+                    if (selectionMask != null)
+                        selectionMask[i] = (label & 0x10000) != 0 ? (byte)1 : (byte)0;
+
+                    Vector3 position = points[i].position;
+                    coordinateChunk[cursor++] = position.x;
+                    coordinateChunk[cursor++] = position.y;
+                    coordinateChunk[cursor++] = position.z;
+                    if (cursor == coordinateChunk.Length || i == points.Length - 1)
+                    {
+                        int byteCount = cursor * sizeof(float);
+                        Buffer.BlockCopy(coordinateChunk, 0, byteChunk, 0, byteCount);
+                        if (!BitConverter.IsLittleEndian)
+                        {
+                            for (int offset = 0; offset < byteCount; offset += sizeof(float))
+                                Array.Reverse(byteChunk, offset, sizeof(float));
+                        }
+                        sha.TransformBlock(byteChunk, 0, byteCount, byteChunk, 0);
+                        cursor = 0;
+                    }
+                }
+                sha.TransformFinalBlock(Array.Empty<byte>(), 0, 0);
+                return BitConverter.ToString(sha.Hash).Replace("-", string.Empty).ToLowerInvariant();
+            }
+        }
+
+        private static async Task WriteMaskSnapshotAsync(string path, byte[] mask, CancellationToken cancellationToken)
+        {
+            using (var fs = new FileStream(path, FileMode.CreateNew, FileAccess.Write, FileShare.None, 65536, true))
+                await fs.WriteAsync(mask, 0, mask.Length, cancellationToken);
         }
 
         /// <summary>
@@ -802,7 +862,8 @@ namespace PointCloudWorkbench
         /// 同時に、順序と個別パラメータを含んだ JSON 構成ファイルを保存し、引数で渡します。
         /// </summary>
         private static string BuildArguments(string scriptPath, string inputPlyPath, string outputDir, NoiseFilterParams p,
-            string deletedMaskPath, string configJsonPath, float coordinateScaleToMm, string operationId)
+            string deletedMaskPath, string selectionMaskPath, string expectedXyzSha256,
+            string configJsonPath, float coordinateScaleToMm, string operationId)
         {
             // パイプライン構成JSONの構築
             var pipelineSteps = p.GetPipeline();
@@ -861,6 +922,13 @@ namespace PointCloudWorkbench
                     jsonBuilder.Append($"        \"target_points\": {db.target},\n");
                     jsonBuilder.Append($"        \"timeout_sec\": {db.timeout}\n");
                 }
+                else if (step is ComponentKeepConfig component)
+                {
+                    jsonBuilder.Append($"        \"knn_k\": {component.knnK},\n");
+                    jsonBuilder.Append($"        \"alpha\": {component.alpha.ToString(System.Globalization.CultureInfo.InvariantCulture)},\n");
+                    string mode = component.mode == "selected" ? "selected" : "largest";
+                    jsonBuilder.Append($"        \"mode\": \"{mode}\"\n");
+                }
                 else
                 {
                     // フォールバック（パラメータなし）
@@ -896,6 +964,10 @@ namespace PointCloudWorkbench
             {
                 argsBuilder.Append($" --deleted_mask \"{deletedMaskPath}\"");
             }
+            if (!string.IsNullOrEmpty(selectionMaskPath) && File.Exists(selectionMaskPath))
+                argsBuilder.Append(" --selection_mask " + QuoteCommandLineArgument(selectionMaskPath));
+            if (!string.IsNullOrEmpty(expectedXyzSha256))
+                argsBuilder.Append(" --expected_xyz_sha256 " + QuoteCommandLineArgument(expectedXyzSha256));
 
             return argsBuilder.ToString();
         }

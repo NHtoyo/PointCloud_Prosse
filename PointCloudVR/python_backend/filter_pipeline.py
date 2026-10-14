@@ -25,13 +25,23 @@ class FilterPipeline:
         self.steps.append(step)
         return self
 
-    def run(self, points: np.ndarray, colors: np.ndarray = None, deleted_mask: np.ndarray = None) -> dict:
+    def run(
+        self,
+        points: np.ndarray,
+        colors: np.ndarray = None,
+        deleted_mask: np.ndarray = None,
+        selection_mask: np.ndarray = None,
+    ) -> dict:
         """
         パイプラインのステップを順に実行し、各フィルタの結果をマージして返します。
         各フィルタは active_points (前段で除外されなかった点群) に対して実行され、
         結果は元の点群サイズ N のマスク/スコアに展開されて記録されます。
         """
         n_points = len(points)
+        if deleted_mask is not None and (np.asarray(deleted_mask).ndim != 1 or len(deleted_mask) != n_points):
+            raise ValueError("deleted_mask length must exactly match the input point count")
+        if selection_mask is not None and (np.asarray(selection_mask).ndim != 1 or len(selection_mask) != n_points):
+            raise ValueError("selection_mask length must exactly match the input point count")
         
         # 全ステップ実行後の出力用配列を準備
         if deleted_mask is not None:
@@ -45,6 +55,7 @@ class FilterPipeline:
         remove_mask_density = np.zeros(n_points, dtype=bool)
         remove_mask_cc = np.zeros(n_points, dtype=bool)
         remove_mask_dbscan = np.zeros(n_points, dtype=bool)
+        remove_mask_component = np.zeros(n_points, dtype=bool)
 
         sor_score = np.zeros(n_points, dtype=np.float32)
         density_score = np.zeros(n_points, dtype=np.float32)
@@ -57,6 +68,7 @@ class FilterPipeline:
         dbscan_voxel_size = None
         dbscan_analysis_count = 0
         dbscan_timeout = False
+        component_keep_runs = []
 
         print(f"[Pipeline] original_count={n_points:,}")
         
@@ -78,6 +90,7 @@ class FilterPipeline:
             "ror": 15.0,
             "density": 15.0,
             "dbscan": 3.0,
+            "component_keep": 20.0,
             "white_haze": 1.0
         }
         
@@ -254,6 +267,61 @@ class FilterPipeline:
                         active_mask[active_indices[local_remove_mask]] = False
                         active_generation += 1
  
+            elif step.name == "component_keep":
+                from pointcloud_components import select_connected_component
+
+                knn_k = step.params.get("knn_k", 8)
+                alpha = step.params.get("alpha", 2.5)
+                mode = step.params.get("mode", "largest")
+                print(
+                    f"[NoiseFilter][STAGE][START] COMPONENT_KEEP input_points={active_count} "
+                    f"K={knn_k} alpha={alpha} mode={mode}",
+                    flush=True,
+                )
+
+                def component_progress(percent, message):
+                    cb(float(percent) / 100.0)
+
+                active_selection = None
+                if selection_mask is not None:
+                    active_selection = np.asarray(selection_mask, dtype=bool)[active_indices]
+                component_result = select_connected_component(
+                    active_points,
+                    knn_k=knn_k,
+                    alpha=alpha,
+                    mode=mode,
+                    selection_mask=active_selection,
+                    progress_callback=component_progress,
+                )
+                local_remove_mask = ~component_result.keep_mask
+                remove_mask_component[active_indices] |= local_remove_mask
+                removed_points = int(np.count_nonzero(local_remove_mask))
+                component_keep_runs.append({
+                    "mode": mode,
+                    "knn_k": int(knn_k),
+                    "alpha": float(alpha),
+                    "input_point_count": int(active_count),
+                    "kept_point_count": int(component_result.kept_point_count),
+                    "removed_point_count": removed_points,
+                    "median_knn_distance_mm": float(component_result.median_knn_distance),
+                    "connectivity_epsilon_mm": float(component_result.epsilon),
+                    "component_count": int(component_result.component_count),
+                    "edge_count": int(component_result.edge_count),
+                    "max_degree": int(component_result.max_degree),
+                })
+                print(
+                    f"[NoiseFilter][STAGE][OK] COMPONENT_KEEP input_points={active_count} "
+                    f"kept_points={component_result.kept_point_count} removed_points={removed_points} "
+                    f"median_knn_distance_mm={component_result.median_knn_distance:.9g} "
+                    f"epsilon_mm={component_result.epsilon:.9g} components={component_result.component_count} "
+                    f"edges={component_result.edge_count} max_degree={component_result.max_degree} "
+                    f"K={knn_k} alpha={alpha} mode={mode}",
+                    flush=True,
+                )
+                if step.exclude_from_next:
+                    active_mask[active_indices[local_remove_mask]] = False
+                    active_generation += 1
+
             elif step.name == "dbscan":
                 cb(0.0)
                 # DBSCAN は自動ダウンサンプリング判定や KDTree 伝播など独自の内部制御が必要
@@ -320,8 +388,14 @@ class FilterPipeline:
             accumulated_weight += w
             print(f"[Pipeline] Step '{step.name}' 完了. (所要時間: {time.time() - t0:.2f}秒)")
 
-        preview_mask = remove_mask_wh | remove_mask_sor | remove_mask_ror | remove_mask_cc | remove_mask_dbscan | remove_mask_density
-        final_remove_mask = remove_mask_sor | remove_mask_ror | remove_mask_cc | remove_mask_dbscan | remove_mask_density
+        preview_mask = (
+            remove_mask_wh | remove_mask_sor | remove_mask_ror | remove_mask_cc |
+            remove_mask_dbscan | remove_mask_density | remove_mask_component
+        )
+        final_remove_mask = (
+            remove_mask_sor | remove_mask_ror | remove_mask_cc | remove_mask_dbscan |
+            remove_mask_density | remove_mask_component
+        )
  
         # プレビュー理由の割り当て (優先度順: 白モヤ 7 が最前面に来るよう、後から上書き)
         preview_reason = np.zeros(n_points, dtype=np.int32)
@@ -331,6 +405,7 @@ class FilterPipeline:
         preview_reason[remove_mask_dbscan] = 4
         preview_reason[remove_mask_cc] = 5
         preview_reason[remove_mask_wh] = 7
+        preview_reason[remove_mask_component] = 8
         preview_reason[~preview_mask] = 0
  
         # 最終候補の理由
@@ -340,6 +415,7 @@ class FilterPipeline:
         reason[remove_mask_density] = 3
         reason[remove_mask_dbscan] = 4
         reason[remove_mask_cc] = 5
+        reason[remove_mask_component] = 8
         reason[~final_remove_mask] = 0
  
         return {
@@ -348,6 +424,7 @@ class FilterPipeline:
             'preview_mask': preview_mask,
             'preview_reason': preview_reason,
             'white_haze_candidate_mask': remove_mask_wh,
+            'component_keep_candidate_mask': remove_mask_component,
             'sor_score': sor_score,
             'density_score': density_score,
             'radius_neighbor_count': radius_neighbor_count,
@@ -359,11 +436,13 @@ class FilterPipeline:
             'dbscan_voxel_size': dbscan_voxel_size,
             'dbscan_analysis_count': dbscan_analysis_count,
             'dbscan_timeout': dbscan_timeout,
+            'component_keep_runs': component_keep_runs,
             'removed_by_sor_count': int(np.sum(reason == 1)),
             'removed_by_ror_count': int(np.sum(reason == 2)),
             'removed_by_low_density_count': int(np.sum(reason == 3)),
             'removed_by_small_cluster_count': int(np.sum(reason == 4)),
             'removed_by_cc_noise_count': int(np.sum(reason == 5)),
+            'removed_by_component_keep_count': int(np.sum(reason == 8)),
             'removed_by_white_haze_count': int(np.sum(remove_mask_wh)),
             'white_haze_candidate_count': int(np.sum(remove_mask_wh))
         }

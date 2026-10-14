@@ -107,6 +107,21 @@ namespace PointCloudWorkbench
         }
     }
 
+    [System.Serializable]
+    public class ComponentKeepConfig : FilterStepConfig
+    {
+        public int knnK = 8;
+        public float alpha = 2.5f;
+        public string mode = "largest";
+
+        public ComponentKeepConfig()
+        {
+            name = "component_keep";
+            enabled = true;
+            excludeFromNext = true;
+        }
+    }
+
     /// <summary>
     /// 全フィルタパラメータとパイプライン構成を保持する統合パラメータクラス。
     /// </summary>
@@ -120,6 +135,7 @@ namespace PointCloudWorkbench
         public RorConfig ror = new RorConfig();
         public DensityConfig density = new DensityConfig();
         public DbscanConfig dbscan = new DbscanConfig();
+        public ComponentKeepConfig componentKeep = new ComponentKeepConfig();
 
         // 実行モード
         public string processMode = "full";
@@ -146,6 +162,70 @@ namespace PointCloudWorkbench
                 density,
                 dbscan
             };
+        }
+
+        public bool HasEnabledComponentKeep()
+        {
+            List<FilterStepConfig> pipeline = GetPipeline();
+            for (int i = 0; i < pipeline.Count; i++)
+            {
+                if (pipeline[i] != null && pipeline[i].name == "component_keep" && pipeline[i].enabled)
+                    return true;
+            }
+            return false;
+        }
+
+        public NoiseFilterParams DeepCopy()
+        {
+            var copy = new NoiseFilterParams
+            {
+                processMode = processMode,
+                voxelSize = voxelSize,
+                whiteHaze = (WhiteHazeConfig)Copy(whiteHaze),
+                cc = (CcConfig)Copy(cc),
+                sor = (SorConfig)Copy(sor),
+                ror = (RorConfig)Copy(ror),
+                density = (DensityConfig)Copy(density),
+                dbscan = (DbscanConfig)Copy(dbscan),
+                componentKeep = (ComponentKeepConfig)Copy(componentKeep),
+                customPipeline = new List<FilterStepConfig>()
+            };
+
+            List<FilterStepConfig> pipeline = GetPipeline();
+            for (int i = 0; pipeline != null && i < pipeline.Count; i++)
+                copy.customPipeline.Add(Copy(pipeline[i]));
+            return copy;
+        }
+
+        private static FilterStepConfig Copy(FilterStepConfig step)
+        {
+            if (step == null) return null;
+            if (step is WhiteHazeConfig wh)
+                return new WhiteHazeConfig { name = wh.name, enabled = wh.enabled, excludeFromNext = wh.excludeFromNext,
+                    brightness = wh.brightness, saturation = wh.saturation };
+            if (step is CcConfig cc)
+                return new CcConfig { name = cc.name, enabled = cc.enabled, excludeFromNext = cc.excludeFromNext,
+                    useKnn = cc.useKnn, k = cc.k, radius = cc.radius, removeIsolated = cc.removeIsolated,
+                    useRelative = cc.useRelative, sigma = cc.sigma, error = cc.error };
+            if (step is SorConfig sor)
+                return new SorConfig { name = sor.name, enabled = sor.enabled, excludeFromNext = sor.excludeFromNext,
+                    nb = sor.nb, std = sor.std };
+            if (step is RorConfig ror)
+                return new RorConfig { name = ror.name, enabled = ror.enabled, excludeFromNext = ror.excludeFromNext,
+                    mul = ror.mul, min = ror.min };
+            if (step is DensityConfig density)
+                return new DensityConfig { name = density.name, enabled = density.enabled,
+                    excludeFromNext = density.excludeFromNext, k = density.k,
+                    threshold = density.threshold, percentile = density.percentile };
+            if (step is DbscanConfig dbscan)
+                return new DbscanConfig { name = dbscan.name, enabled = dbscan.enabled,
+                    excludeFromNext = dbscan.excludeFromNext, eps = dbscan.eps, min = dbscan.min,
+                    cluster = dbscan.cluster, target = dbscan.target, timeout = dbscan.timeout };
+            if (step is ComponentKeepConfig component)
+                return new ComponentKeepConfig { name = component.name, enabled = component.enabled,
+                    excludeFromNext = component.excludeFromNext, knnK = component.knnK,
+                    alpha = component.alpha, mode = component.mode };
+            return new FilterStepConfig { name = step.name, enabled = step.enabled, excludeFromNext = step.excludeFromNext };
         }
     }
 }

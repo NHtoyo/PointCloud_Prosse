@@ -66,7 +66,7 @@ namespace PointCloudWorkbench
             currentParams.voxelSize = data.voxelSize;
             currentParams.customPipeline.Clear();
 
-            bool wh = false, cc = false, sor = false, ror = false, den = false, dbs = false;
+            bool wh = false, cc = false, sor = false, ror = false, den = false, dbs = false, component = false;
 
             for (int i = 0; i < data.pipelineTypes.Count; i++)
             {
@@ -82,6 +82,7 @@ namespace PointCloudWorkbench
                     case "ror": step = ror ? new RorConfig() : currentParams.ror; ror = true; break;
                     case "density": step = den ? new DensityConfig() : currentParams.density; den = true; break;
                     case "dbscan": step = dbs ? new DbscanConfig() : currentParams.dbscan; dbs = true; break;
+                    case "component_keep": step = component ? new ComponentKeepConfig() : currentParams.componentKeep; component = true; break;
                     default: step = new FilterStepConfig(); break;
                 }
 

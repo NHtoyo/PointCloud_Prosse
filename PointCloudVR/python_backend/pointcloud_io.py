@@ -1,3 +1,5 @@
+import hashlib
+import hmac
 import open3d as o3d
 import numpy as np
 
@@ -23,6 +25,21 @@ def load_ply(path: str) -> tuple[np.ndarray, np.ndarray]:
         colors = np.zeros_like(points, dtype=np.uint8)
         
     return points, colors
+
+
+def xyz_sha256(points: np.ndarray) -> str:
+    """Hash the ordered XYZ coordinates in the canonical little-endian float32 form."""
+    xyz = np.asarray(points, dtype="<f4", order="C")
+    if xyz.ndim != 2 or xyz.shape[1] != 3:
+        raise ValueError("XYZ fingerprint requires an Nx3 point array")
+    return hashlib.sha256(memoryview(xyz).cast("B")).hexdigest()
+
+
+def validate_xyz_sha256(points: np.ndarray, expected: str) -> str:
+    actual = xyz_sha256(points)
+    if not isinstance(expected, str) or not hmac.compare_digest(actual.lower(), expected.lower()):
+        raise ValueError("PLY point order or XYZ values do not match the Unity snapshot")
+    return actual
 
 def save_ply(path: str, points: np.ndarray, colors: np.ndarray, mask: np.ndarray = None):
     """

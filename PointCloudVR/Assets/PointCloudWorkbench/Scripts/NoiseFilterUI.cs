@@ -62,6 +62,9 @@ namespace PointCloudWorkbench
             GUI.enabled = previousEnabled;
             GUILayout.EndHorizontal();
 
+            if (Params.HasEnabledComponentKeep() && Params.processMode == "downsample")
+                GUILayout.Label("連結成分選別はFullモード専用です。中央レーンの「Full必須」を押してFullへ切り替えてください。", textStyle);
+
             if (Params.processMode == "downsample")
             {
                 GUILayout.Label($"  ボクセルサイズ: {Params.voxelSize:F1} mm", textStyle);
@@ -283,6 +286,12 @@ namespace PointCloudWorkbench
         private async Task RunNoiseFilterAnalysisAsync()
         {
             if (editor == null || editor.targetRenderer == null) return;
+            if (Params != null && Params.processMode == "downsample" && Params.HasEnabledComponentKeep())
+            {
+                PointCloudProgressManager.Instance.ShowError("ノイズ解析",
+                    "連結成分選別は元点群の正確なインデックス対応が必要なため、Downsampleでは実行できません。処理モードをFullにしてください。");
+                return;
+            }
             PointCloudLoader loader = editor.targetRenderer.GetComponent<PointCloudLoader>();
             string inputPath = loader != null && !string.IsNullOrEmpty(loader.CurrentFilePath)
                 ? loader.CurrentFilePath
@@ -299,7 +308,7 @@ namespace PointCloudWorkbench
             long datasetGeneration = rendererSnapshot.DatasetGeneration;
             long contentRevision = rendererSnapshot.ContentRevision;
             float coordinateScaleToMm = editor.targetRenderer.DisplayScale;
-            NoiseFilterParams parameterSnapshot = JsonUtility.FromJson<NoiseFilterParams>(JsonUtility.ToJson(Params));
+            NoiseFilterParams parameterSnapshot = Params.DeepCopy();
             PointCloudProgressManager pm = PointCloudProgressManager.Instance;
             PointCloudOperation operation = pm.TryStart("空中モヤ・浮遊点ノイズ除去", "Pythonプロセスを準備中...");
             if (operation == null) return;
@@ -390,6 +399,7 @@ namespace PointCloudWorkbench
             DrawLegendItem(new Color(0.63f, 0.12f, 0.9f, 1.0f), $"低密度ノイズ除去：紫 ({manager.GetPreviewReasonCount(3):N0} 点)");
             DrawLegendItem(new Color(1.0f, 0.86f, 0.0f, 1.0f), $"クラスタノイズ (DBSCAN)：黄 ({manager.GetPreviewReasonCount(4):N0} 点)");
             DrawLegendItem(new Color(1.0f, 0.0f, 0.5f, 1.0f), $"平面推定 (CC風)ノイズ：ピンク ({manager.GetPreviewReasonCount(5):N0} 点)");
+            DrawLegendItem(new Color(0.28f, 1.0f, 0.22f, 1.0f), $"連結成分選別：黄緑 ({manager.GetPreviewReasonCount(8):N0} 点)");
         }
 
         private void DrawLegendItem(Color color, string label)

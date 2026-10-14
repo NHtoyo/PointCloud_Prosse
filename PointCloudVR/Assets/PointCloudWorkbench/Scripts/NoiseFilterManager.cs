@@ -24,7 +24,7 @@ namespace PointCloudWorkbench
         // PointData.label 内の上位ビット拡張定義
         public const int NOISE_CANDIDATE_BIT = 0x40000; // bit18: 削除候補 (プレビュー表示用)
         public const int NOISE_HIDDEN_BIT    = 0x80000; // bit19: 確定非表示 (描画除外用)
-        public const int NOISE_REASON_MASK   = 0x700000; // bit20-22: ノイズの除去理由コード
+        public const int NOISE_REASON_MASK   = 0xF00000; // bit20-23: ノイズの除去理由コード。0-7は旧形式と互換。
         public const int NOISE_REASON_SHIFT  = 20;
 
         private NoiseFilterResult currentResult;
@@ -36,7 +36,7 @@ namespace PointCloudWorkbench
 
         // Keep only changed indices and noise-owned bits, not a full label snapshot.
         private readonly PointLabelEditHistory editHistory = new PointLabelEditHistory();
-        private readonly int[] previewReasonCounts = new int[8];
+        private readonly int[] previewReasonCounts = new int[9];
 
         public NoiseFilterResult CurrentResult => currentResult;
         public PointLabelEditHistory SharedEditHistory => editHistory;
@@ -76,12 +76,12 @@ namespace PointCloudWorkbench
             }
 
             // プレビュービット（CANDIDATE）と理由コード（REASON）を設定
-            int countSor = 0, countRor = 0, countDensity = 0, countCluster = 0, countCc = 0, countWhiteHaze = 0;
-            PointLabelDelta delta = BuildNoiseDelta(points, 0x740000, 18, index =>
+            int countSor = 0, countRor = 0, countDensity = 0, countCluster = 0, countCc = 0, countWhiteHaze = 0, countComponent = 0;
+            PointLabelDelta delta = BuildNoiseDelta(points, 0xF40000, 18, index =>
             {
                 if (currentResult.previewMask[index] == 0)
-                    return (byte)(((points[index].label & 0x740000) >> 18) & ~0x1d);
-                int reason = currentResult.previewReason[index] & 7;
+                    return 0;
+                int reason = currentResult.previewReason[index] & 15;
                 return (byte)(1 | (reason << 2));
             });
             for (int i = 0; i < currentResult.previewMask.Length; i++)
@@ -94,11 +94,12 @@ namespace PointCloudWorkbench
                 else if (reason == 4) countCluster++;
                 else if (reason == 5) countCc++;
                 else if (reason == 7) countWhiteHaze++;
+                else if (reason == 8) countComponent++;
             }
 
             if (!TryApplyNoiseDelta(renderer, delta, true, "プレビューを適用できませんでした。"))
                 return false;
-            SetPreviewReasonCounts(countSor, countRor, countDensity, countCluster, countCc, countWhiteHaze);
+            SetPreviewReasonCounts(countSor, countRor, countDensity, countCluster, countCc, countWhiteHaze, countComponent);
             isPreviewActive = true;
             boundRevision = renderer.ContentRevision;
             return true;
@@ -113,8 +114,7 @@ namespace PointCloudWorkbench
 
             PointData[] points = renderer.GetPointData();
             if (points == null) return false;
-            PointLabelDelta delta = BuildNoiseDelta(points, 0x740000, 18,
-                index => (byte)(((points[index].label & 0x740000) >> 18) & ~0x1d));
+            PointLabelDelta delta = BuildNoiseDelta(points, 0xF40000, 18, _ => 0);
             if (!TryApplyNoiseDelta(renderer, delta, true, "プレビュー解除に失敗しました。"))
                 return false;
             Array.Clear(previewReasonCounts, 0, previewReasonCounts.Length);
@@ -208,7 +208,7 @@ namespace PointCloudWorkbench
             boundRevision = renderer.ContentRevision;
             PointData[] points = renderer.GetPointData();
             if (points == null) return false;
-            PointLabelDelta delta = BuildNoiseDelta(points, 0x7c0000, 18, _ => 0);
+            PointLabelDelta delta = BuildNoiseDelta(points, 0xFC0000, 18, _ => 0);
             if (delta.PointCount == 0) return true;
             if (!editHistory.CanRecord(delta))
             {
@@ -322,7 +322,7 @@ namespace PointCloudWorkbench
             editHistory.Clear();
         }
 
-        private void SetPreviewReasonCounts(int sor, int ror, int density, int cluster, int cc, int whiteHaze)
+        private void SetPreviewReasonCounts(int sor, int ror, int density, int cluster, int cc, int whiteHaze, int component)
         {
             Array.Clear(previewReasonCounts, 0, previewReasonCounts.Length);
             previewReasonCounts[1] = sor;
@@ -331,6 +331,7 @@ namespace PointCloudWorkbench
             previewReasonCounts[4] = cluster;
             previewReasonCounts[5] = cc;
             previewReasonCounts[7] = whiteHaze;
+            previewReasonCounts[8] = component;
         }
 
         private void RebuildPreviewState(PointData[] points)

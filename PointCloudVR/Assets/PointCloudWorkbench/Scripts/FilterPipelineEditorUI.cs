@@ -49,11 +49,13 @@ namespace PointCloudWorkbench
         // 左パネルと右パネルの間に配置する（画面幅に応じて動的計算）
         private float BAR_X  => PointCloudUILayout.Calculate(Screen.width, Screen.height).CenterPanel.x;
         private const float BAR_Y      = 15f;
-        private const float PAL_W      = 175f;
         private const float PARAM_H    = 140f;     // 下段高さ(パラメータ) (90->140へ拡大)
+        private const int PaletteMaxRows = 5;
+        private const float PaletteColumnGap = 4f;
+        private const float PaletteRowHeight = 30f;
 
         private static readonly string[] AvailableTypes =
-            { "white_haze", "cc_noise", "sor", "ror", "density", "dbscan" };
+            { "white_haze", "cc_noise", "sor", "ror", "density", "dbscan", "component_keep" };
 
         private static readonly Dictionary<string, string> DispNames = new Dictionary<string, string>
         {
@@ -62,7 +64,8 @@ namespace PointCloudWorkbench
             { "sor",        "統計 (SOR)"      },
             { "ror",        "半径 (ROR)"      },
             { "density",    "低密度ノイズ"    },
-            { "dbscan",     "DBSCAN"          }
+            { "dbscan",     "DBSCAN"          },
+            { "component_keep", "連結成分選別" }
         };
 
         // =========================================================
@@ -157,17 +160,27 @@ namespace PointCloudWorkbench
             float barW = PointCloudUILayout.Calculate(Screen.width, Screen.height).CenterPanel.width;
             var pl = noiseFilterUI?.Params?.customPipeline;
             bool hasSelection = selectedBlockIndex >= 0 && pl != null && selectedBlockIndex < pl.Count;
-            bool compact = barW < 780f;
-            float paletteWidth = compact ? 122f : PAL_W;
-            float laneWidth = Mathf.Max(120f, barW - paletteWidth - 22f);
+            bool compact = barW < 900f;
+            int paletteColumns = Mathf.CeilToInt(AvailableTypes.Length / (float)PaletteMaxRows);
+            float paletteColumnWidth = compact ? 96f : 108f;
+            float paletteWidth = paletteColumns * paletteColumnWidth +
+                (paletteColumns - 1) * PaletteColumnGap + 12f;
+            bool stacked = barW < 620f;
+            float paletteHeight = 22f + PaletteMaxRows * (PaletteRowHeight + 2f) + 8f;
+            float laneWidth = stacked ? barW - 10f : Mathf.Max(120f, barW - paletteWidth - 22f);
             float blockWidth = compact ? 108f : 130f;
             float blockSpacing = compact ? 10f : 22f;
             float blockHeight = compact ? 40f : 50f;
             int columns = Mathf.Max(1, Mathf.FloorToInt((laneWidth - 10f + blockSpacing) / (blockWidth + blockSpacing)));
             int rows = Mathf.Max(1, Mathf.CeilToInt(Mathf.Max(1, pl?.Count ?? 0) / (float)columns));
             float headerHeight = compact ? 100f : 40f;
-            float contentHeight = rows * (blockHeight + 12f) + 14f;
-            float topHeight = Mathf.Max(160f, headerHeight + contentHeight + 14f);
+            bool componentDownsampleBlocked = noiseFilterUI.Params != null &&
+                noiseFilterUI.Params.processMode == "downsample" && noiseFilterUI.Params.HasEnabledComponentKeep();
+            float contentHeight = rows * (blockHeight + 12f) + 14f + (componentDownsampleBlocked ? 22f : 0f);
+            float laneHeight = headerHeight + contentHeight + 14f;
+            float topHeight = stacked
+                ? paletteHeight + 6f + laneHeight
+                : Mathf.Max(paletteHeight, laneHeight);
             float barH = topHeight + (hasSelection ? PARAM_H : 0f);
             Rect bar = new Rect(BAR_X, currentY, barW, barH);
             lastPanelRect = new Rect(bar.x, bar.y + CenterGroupScreenY, bar.width, bar.height);
@@ -176,8 +189,9 @@ namespace PointCloudWorkbench
             GUI.Box(bar, "", panelStyle);
 
             // 上段: パレット + レーン
-            DrawPalette(bar, topHeight, paletteWidth, compact);
-            DrawLane(bar, topHeight, paletteWidth, compact, columns, blockWidth, blockSpacing, blockHeight);
+            DrawPalette(bar, paletteWidth, compact, stacked);
+            DrawLane(bar, topHeight, paletteWidth, compact, columns, blockWidth, blockSpacing,
+                blockHeight, stacked, paletteHeight, componentDownsampleBlocked);
 
             if (hasSelection)
             {
@@ -294,26 +308,32 @@ namespace PointCloudWorkbench
         // =========================================================
         // パレット描画（絶対座標）
         // =========================================================
-        private void DrawPalette(Rect bar, float topHeight, float paletteWidth, bool compact)
+        private void DrawPalette(Rect bar, float paletteWidth, bool compact, bool stacked)
         {
             if (IsMouseBlockedByContextMenu()) return;
-            float px   = bar.x + 5f;
+            int columnCount = Mathf.CeilToInt(AvailableTypes.Length / (float)PaletteMaxRows);
+            float maxColumnWidth = compact ? 96f : 108f;
+            float availableColumnWidth = stacked
+                ? Mathf.Min(maxColumnWidth, (bar.width - 20f - (columnCount - 1) * PaletteColumnGap) / columnCount)
+                : (paletteWidth - 12f - (columnCount - 1) * PaletteColumnGap) / columnCount;
+            float contentWidth = columnCount * availableColumnWidth + (columnCount - 1) * PaletteColumnGap;
+            float px = stacked ? bar.x + (bar.width - contentWidth) * 0.5f : bar.x + 5f;
             float py   = bar.y + 4f;
-            float bW   = paletteWidth - 8f;
+            float bW = availableColumnWidth;
             float titleH = 22f; // タイトル高さを文字拡大に合わせて少し広げる
-            // ボタン高さ: 上段高さから title と余白を引いてボタン数で割る
-            float usable = topHeight - titleH - 8f - (AvailableTypes.Length - 1) * 3f;
-            float bH = Mathf.Floor(usable / AvailableTypes.Length);
-            bH = Mathf.Clamp(bH, 18f, 32f);
+            float bH = PaletteRowHeight;
 
-            GUI.Label(new Rect(px, py, bW, titleH), "パレット", titleStyle);
+            GUI.Label(new Rect(stacked ? bar.x + 5f : px, py,
+                stacked ? bar.width - 10f : contentWidth, titleH), "パレット", titleStyle);
             py += titleH + 2f;
 
             for (int i = 0; i < AvailableTypes.Length; i++)
             {
                 string type = AvailableTypes[i];
                 string lbl  = compact ? DCompact(type) : D(type);
-                Rect r = new Rect(px, py + i * (bH + 2f), bW, bH);
+                int row = i % PaletteMaxRows;
+                int column = i / PaletteMaxRows;
+                Rect r = new Rect(px + column * (bW + PaletteColumnGap), py + row * (bH + 2f), bW, bH);
 
                 if (GUI.Button(r, lbl, paletteBlockStyle))
                 {
@@ -337,27 +357,32 @@ namespace PointCloudWorkbench
         // レーン描画
         // =========================================================
         private void DrawLane(Rect bar, float topHeight, float paletteWidth, bool compact, int columns,
-            float blockWidth, float blockSpacing, float blockHeight)
+            float blockWidth, float blockSpacing, float blockHeight, bool stacked, float paletteHeight,
+            bool componentDownsampleBlocked)
         {
             if (IsMouseBlockedByContextMenu()) return;
             bool allowInteraction = GUI.enabled;
             const float p      = 5f;
             const float titleH = 22f;
-            float lx   = bar.x + paletteWidth + 6f;
+            float lx = stacked ? bar.x + 5f : bar.x + paletteWidth + 6f;
             float laneRight = bar.x + bar.width - p;
             bool hasPreview = NoiseFilterManager.Instance.IsPreviewActive;
-            float headerY = bar.y + p;
+            float headerY = bar.y + (stacked ? paletteHeight + 6f : p);
             float actionY;
             float laneY;
 
             if (compact)
             {
                 GUI.Label(new Rect(lx, headerY + 2f, Mathf.Max(80f, laneRight - lx - 100f), 22f), "パイプライン", titleStyle);
+                bool wasModeEnabled = GUI.enabled;
+                GUI.enabled = wasModeEnabled && (noiseFilterUI.Params == null ||
+                    !noiseFilterUI.Params.HasEnabledComponentKeep() || noiseFilterUI.Params.processMode == "downsample");
                 if (noiseFilterUI.Params != null && GUI.Button(new Rect(laneRight - 98f, headerY, 98f, 28f),
-                    $"処理: {noiseFilterUI.Params.processMode}", blockStyle))
+                    componentDownsampleBlocked ? "Full必須" : $"処理: {noiseFilterUI.Params.processMode}", blockStyle))
                 {
                     noiseFilterUI.Params.processMode = noiseFilterUI.Params.processMode == "full" ? "downsample" : "full";
                 }
+                GUI.enabled = wasModeEnabled;
                 actionY = headerY + 32f;
                 float gap = 4f;
                 float buttonW = Mathf.Max(48f, (laneRight - lx - gap * 3f) / 4f);
@@ -371,8 +396,11 @@ namespace PointCloudWorkbench
                 }
                 actionY += 29f;
                 float runW = Mathf.Min(90f, (laneRight - lx - (hasPreview ? gap : 0f)) / (hasPreview ? 2f : 1f));
+                bool wasRunEnabled = GUI.enabled;
+                GUI.enabled = wasRunEnabled && !componentDownsampleBlocked;
                 if (GUI.Button(new Rect(lx, actionY, runW, 25f), "▶ 実行", activeBlockStyle))
                     noiseFilterUI.RunNoiseFilterAnalysis();
+                GUI.enabled = wasRunEnabled;
                 if (hasPreview && GUI.Button(new Rect(lx + runW + gap, actionY, runW, 25f), "確定", activeBlockStyle))
                 {
                     CommitPreview();
@@ -386,8 +414,11 @@ namespace PointCloudWorkbench
                 float cursor = laneRight;
                 float runW = 85f;
                 cursor -= runW;
+                bool wasRunEnabled = GUI.enabled;
+                GUI.enabled = wasRunEnabled && !componentDownsampleBlocked;
                 if (GUI.Button(new Rect(cursor, headerY, runW, buttonHeight), "▶ 実行", activeBlockStyle))
                     noiseFilterUI.RunNoiseFilterAnalysis();
+                GUI.enabled = wasRunEnabled;
                 if (hasPreview)
                 {
                     cursor -= gap + 82f;
@@ -402,11 +433,15 @@ namespace PointCloudWorkbench
                 cursor -= gap + 74f;
                 DrawHistoryButton(new Rect(cursor, headerY, 74f, buttonHeight), "元に戻す", true);
                 cursor -= gap + 112f;
+                bool wasModeEnabled = GUI.enabled;
+                GUI.enabled = wasModeEnabled && (noiseFilterUI.Params == null ||
+                    !noiseFilterUI.Params.HasEnabledComponentKeep() || noiseFilterUI.Params.processMode == "downsample");
                 if (noiseFilterUI.Params != null && GUI.Button(new Rect(cursor, headerY, 112f, buttonHeight),
-                    $"処理: {noiseFilterUI.Params.processMode}", blockStyle))
+                    componentDownsampleBlocked ? "Full必須" : $"処理: {noiseFilterUI.Params.processMode}", blockStyle))
                 {
                     noiseFilterUI.Params.processMode = noiseFilterUI.Params.processMode == "full" ? "downsample" : "full";
                 }
+                GUI.enabled = wasModeEnabled;
                 GUI.Label(new Rect(lx, headerY + 2f, Mathf.Max(80f, cursor - lx - 8f), titleH), "パイプライン・レーン", titleStyle);
                 laneY = headerY + titleH + 6f;
             }
@@ -416,6 +451,12 @@ namespace PointCloudWorkbench
             float laneW = laneRight - lx;
             Rect lane = new Rect(lx, laneY, laneW, laneH);
             GUI.Box(lane, "", GUI.skin.textField);
+
+            if (componentDownsampleBlocked)
+            {
+                GUI.Label(new Rect(lane.x + 5f, lane.yMax - 22f, lane.width - 10f, 18f),
+                    "連結成分選別はFullモード専用です。処理モードをFullにしてください。", hintStyle);
+            }
 
             EnsurePipeline();
             var pl = noiseFilterUI.Params.customPipeline;
@@ -676,6 +717,24 @@ namespace PointCloudWorkbench
                 y += lh + 2f;
                 db.cluster = SliderInt(x,        y, lw, sw, $"最小クラスタ: {db.cluster}", db.cluster, 10, 1000);
             }
+            else if (step is ComponentKeepConfig component)
+            {
+                component.knnK = SliderInt(x, y, lw, sw, $"K近傍数: {component.knnK}", component.knnK, 1, 64);
+                component.alpha = Slider(x + colW, y, lw, sw, $"接続倍率 α: {component.alpha:F2}", component.alpha, 0.1f, 10f);
+                y += lh + 3f;
+                float modeWidth = compactParameters ? Mathf.Max(120f, r.width - 20f) : Mathf.Min(400f, r.width - 20f);
+                float optionWidth = (modeWidth - 5f) * 0.5f;
+                bool selectedMode = component.mode == "selected";
+                if (GUI.Button(new Rect(x, y, optionWidth, 24f), "最大成分を保持",
+                    selectedMode ? blockStyle : activeBlockStyle))
+                    component.mode = "largest";
+                if (GUI.Button(new Rect(x + optionWidth + 5f, y, optionWidth, 24f),
+                    "選択点の成分を保持", selectedMode ? activeBlockStyle : blockStyle))
+                    component.mode = "selected";
+                y += 24f;
+                GUI.Label(new Rect(x, y, r.width - 20f, 18f),
+                    "αは0より大きく10以下。選択モードでは選択点が1成分内に必要です。", hintStyle);
+            }
             else if (step is CcConfig cc)
             {
                 // 1行目: KNN/Radius トグル + 値スライダー
@@ -823,6 +882,7 @@ namespace PointCloudWorkbench
                 case "ror":        return new RorConfig();
                 case "density":    return new DensityConfig();
                 case "dbscan":     return new DbscanConfig();
+                case "component_keep": return new ComponentKeepConfig();
                 default:           return new FilterStepConfig { name = t, enabled = true, excludeFromNext = true };
             }
         }
@@ -839,6 +899,7 @@ namespace PointCloudWorkbench
                 case "ror": return "半径 (ROR)";
                 case "density": return "低密度";
                 case "dbscan": return "DBSCAN";
+                case "component_keep": return "連結成分";
                 default: return D(t);
             }
         }
