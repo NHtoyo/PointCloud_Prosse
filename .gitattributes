@@ -1,0 +1,2 @@
+PointCloudVR/python_backend/.venv/Lib/site-packages.zip filter=lfs diff=lfs merge=lfs -text
+PointCloudVR/python_backend/.venv/Lib/site-packages/open3d/cpu/pybind.cp312-win_amd64.pyd filter=lfs diff=lfs merge=lfs -text

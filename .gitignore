@@ -47,7 +47,6 @@ PointCloudData/**
 /query
 
 # Python backend files
-PointCloudVR/python_backend/.venv/
 PointCloudVR/python_backend/output/
 **/__pycache__/
 **/*.pyc
