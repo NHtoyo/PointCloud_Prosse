@@ -4,9 +4,11 @@ param(
     [string]$CompanyName = 'DefaultCompany',
     [string]$ProductName = 'PointCloudVR',
     [string]$EnvironmentRoot = '',
+    [string]$PipLogPath = '',
     [string]$Wheelhouse = '',
     [switch]$Offline,
-    [switch]$RepairExisting
+    [switch]$RepairExisting,
+    [switch]$PrepareOnly
 )
 
 $ErrorActionPreference = 'Stop'
@@ -20,6 +22,81 @@ $requirements = Join-Path $backend 'requirements.txt'
 
 function Write-SetupStage([string]$stage) {
     Write-Output "PCWB_STAGE:$stage"
+}
+
+function Quote-NativeArgument([string]$value) {
+    $builder = New-Object System.Text.StringBuilder
+    [void]$builder.Append('"')
+    $slashes = 0
+    foreach ($character in $value.ToCharArray()) {
+        if ($character -eq '\') {
+            $slashes++
+            continue
+        }
+        if ($character -eq '"') {
+            [void]$builder.Append(('\' * (2 * $slashes + 1)))
+            [void]$builder.Append('"')
+        }
+        else {
+            if ($slashes -gt 0) { [void]$builder.Append(('\' * $slashes)) }
+            [void]$builder.Append($character)
+        }
+        $slashes = 0
+    }
+    if ($slashes -gt 0) { [void]$builder.Append(('\' * (2 * $slashes))) }
+    [void]$builder.Append('"')
+    return $builder.ToString()
+}
+
+function Sanitize-PipLog([string]$path) {
+    if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { return }
+    $maximumBytes = 16 * 1024 * 1024
+    $utf8 = New-Object System.Text.UTF8Encoding($false)
+    $lines = New-Object 'System.Collections.Generic.Queue[string]'
+    $retainedBytes = 0
+    $wasTruncated = $false
+    $temporaryPath = $path + '.sanitized-' + [guid]::NewGuid().ToString('N')
+    $backupPath = $path + '.backup-' + [guid]::NewGuid().ToString('N')
+    $reader = $null
+    $writer = $null
+    try {
+        $reader = New-Object System.IO.StreamReader($path, [System.Text.Encoding]::UTF8, $true)
+        while (($line = $reader.ReadLine()) -ne $null) {
+            $line = [regex]::Replace($line, '(?i)(https?://)[^/@\s]+:[^/@\s]+@', '$1[REDACTED]@')
+            $line = [regex]::Replace($line, '(?i)(token|password|passwd|api[_-]?key|access[_-]?key|secret)(\s*[=:]\s*)[^\s&]+', '$1$2[REDACTED]')
+            $line = [regex]::Replace($line, '(?i)([?&](?:access[_-]?token|token|api[_-]?key|signature)=)[^&\s]+', '$1[REDACTED]')
+            $encoded = $line + "`r`n"
+            $lineBytes = $utf8.GetByteCount($encoded)
+            if ($lineBytes -gt $maximumBytes) {
+                $line = $line.Substring([Math]::Max(0, $line.Length - ($maximumBytes / 4)))
+                $encoded = $line + "`r`n"
+                $lineBytes = $utf8.GetByteCount($encoded)
+                $wasTruncated = $true
+            }
+            $lines.Enqueue($encoded)
+            $retainedBytes += $lineBytes
+            while ($retainedBytes -gt $maximumBytes -and $lines.Count -gt 1) {
+                $retainedBytes -= $utf8.GetByteCount($lines.Dequeue())
+                $wasTruncated = $true
+            }
+        }
+        $reader.Dispose()
+        $reader = $null
+        $writer = New-Object System.IO.StreamWriter($temporaryPath, $false, $utf8)
+        if ($wasTruncated) { $writer.WriteLine('[PCWB] pip log truncated to the most recent 16 MiB; older output is omitted.') }
+        while ($lines.Count -gt 0) { $writer.Write($lines.Dequeue()) }
+        $writer.Flush()
+        $writer.Dispose()
+        $writer = $null
+        [System.IO.File]::Replace($temporaryPath, $path, $backupPath)
+        [System.IO.File]::Delete($backupPath)
+    }
+    finally {
+        if ($reader -ne $null) { $reader.Dispose() }
+        if ($writer -ne $null) { $writer.Dispose() }
+        if (Test-Path -LiteralPath $temporaryPath -PathType Leaf) { Remove-Item -LiteralPath $temporaryPath -Force }
+        if (Test-Path -LiteralPath $backupPath -PathType Leaf) { Remove-Item -LiteralPath $backupPath -Force }
+    }
 }
 
 if ([string]::IsNullOrWhiteSpace($EnvironmentRoot)) {
@@ -143,16 +220,96 @@ $env:PIP_NO_INPUT = '1'
 $env:PIP_DISABLE_PIP_VERSION_CHECK = '1'
 $env:MPLBACKEND = 'Agg'
 $env:MPLCONFIGDIR = Join-Path $EnvironmentRoot 'matplotlib-config'
+$pipHelp = (& $venvPython -m pip install --help 2>&1 | Out-String)
+if ($LASTEXITCODE -ne 0) { throw 'pipの利用可能な進捗方式を確認できませんでした。' }
+$rawProgressSupported = $pipHelp -match '(?is)--progress-bar[^\r\n]*(?:\r?\n[ \t]+[^\r\n]*){0,3}?\braw\b'
+$progressMode = if ($rawProgressSupported) { 'raw' } else { 'on' }
+if ([string]::IsNullOrWhiteSpace($PipLogPath)) {
+    $PipLogPath = Join-Path $EnvironmentRoot 'pip-install.log'
+}
+$PipLogPath = [System.IO.Path]::GetFullPath($PipLogPath)
+$pipLogDirectory = Split-Path -Parent $PipLogPath
+if (-not (Test-Path -LiteralPath $pipLogDirectory -PathType Container)) {
+    New-Item -ItemType Directory -Path $pipLogDirectory -Force | Out-Null
+}
 $pipArgs = @('-m', 'pip', 'install', '--disable-pip-version-check')
-$pipArgs += @('--no-input', '--progress-bar', 'off')
+$pipArgs += @('--no-input', '--progress-bar', $progressMode, '--log', $PipLogPath)
+if (-not $rawProgressSupported) {
+    Write-Output 'PCWB_PIP_PROGRESS_NOTE:このpipは機械可読なraw進捗に非対応です。通常の進捗表示と詳細ログを使用します。'
+    $pipArgs += '--verbose'
+}
+else {
+    Write-Output 'PCWB_PIP_PROGRESS_NOTE:raw進捗を受信します。'
+}
+Write-Output "PCWB_PIP_PROGRESS_MODE:$progressMode"
+Write-Output "PCWB_PIP_LOG:$PipLogPath"
 if ($Offline) {
     $pipArgs += @('--no-index', '--find-links', (Resolve-Path $Wheelhouse).Path)
 }
 $pipArgs += @('-r', $requirements)
 Write-SetupStage 'DEPENDENCIES'
-& $venvPython @pipArgs
-if ($LASTEXITCODE -ne 0) {
-    throw '依存ライブラリの導入に失敗しました。オンライン接続、または全wheelを含むwheelhouseを確認してください。'
+if ($PrepareOnly) {
+    Write-Output 'PCWB_SETUP_PREPARED'
+    exit 0
+}
+$pipStartInfo = New-Object System.Diagnostics.ProcessStartInfo
+$pipStartInfo.FileName = $venvPython
+$pipStartInfo.Arguments = (($pipArgs | ForEach-Object { Quote-NativeArgument ([string]$_) }) -join ' ')
+$pipStartInfo.WorkingDirectory = $backend
+$pipStartInfo.UseShellExecute = $false
+$pipStartInfo.CreateNoWindow = $true
+$pipStartInfo.RedirectStandardOutput = $true
+$pipStartInfo.RedirectStandardError = $true
+$pipStartInfo.StandardOutputEncoding = $utf8NoBom
+$pipStartInfo.StandardErrorEncoding = $utf8NoBom
+$pipProcess = New-Object System.Diagnostics.Process
+$pipProcess.StartInfo = $pipStartInfo
+try {
+    if (-not $pipProcess.Start()) { throw 'pipプロセスを起動できませんでした。' }
+    Write-Output "PCWB_PIP_PID:$($pipProcess.Id)"
+
+    # Do not attach PowerShell script blocks to Process output events: those callbacks
+    # run on .NET worker threads and can crash Windows PowerShell 5.1 (GetContextFromTLS).
+    $stdoutBuffer = New-Object 'char[]' 4096
+    $stderrBuffer = New-Object 'char[]' 4096
+    $stdoutTask = $pipProcess.StandardOutput.ReadAsync($stdoutBuffer, 0, $stdoutBuffer.Length)
+    $stderrTask = $pipProcess.StandardError.ReadAsync($stderrBuffer, 0, $stderrBuffer.Length)
+    $stdoutDone = $false
+    $stderrDone = $false
+    while (-not $stdoutDone -or -not $stderrDone) {
+        $receivedOutput = $false
+        if (-not $stdoutDone -and $stdoutTask.IsCompleted) {
+            $readCount = $stdoutTask.GetAwaiter().GetResult()
+            if ($readCount -gt 0) {
+                [Console]::Out.Write($stdoutBuffer, 0, $readCount)
+                [Console]::Out.Flush()
+                $stdoutTask = $pipProcess.StandardOutput.ReadAsync($stdoutBuffer, 0, $stdoutBuffer.Length)
+            }
+            else { $stdoutDone = $true }
+            $receivedOutput = $true
+        }
+        if (-not $stderrDone -and $stderrTask.IsCompleted) {
+            $readCount = $stderrTask.GetAwaiter().GetResult()
+            if ($readCount -gt 0) {
+                [Console]::Error.Write($stderrBuffer, 0, $readCount)
+                [Console]::Error.Flush()
+                $stderrTask = $pipProcess.StandardError.ReadAsync($stderrBuffer, 0, $stderrBuffer.Length)
+            }
+            else { $stderrDone = $true }
+            $receivedOutput = $true
+        }
+        if (-not $receivedOutput) { Start-Sleep -Milliseconds 20 }
+    }
+    $pipProcess.WaitForExit()
+    $pipExitCode = $pipProcess.ExitCode
+}
+finally {
+    $pipProcess.Dispose()
+    Sanitize-PipLog $PipLogPath
+}
+Write-Output "PCWB_PIP_EXIT:$pipExitCode"
+if ($pipExitCode -ne 0) {
+    throw "依存ライブラリの導入に失敗しました (pip ExitCode: $pipExitCode)。詳細ログを確認してください。"
 }
 
 Write-SetupStage 'VERIFY'

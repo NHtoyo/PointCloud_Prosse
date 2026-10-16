@@ -56,6 +56,16 @@ def test_setup_script_is_utf8_bom_and_keeps_japanese_messages() -> None:
     assert "既存のPython環境は正常です" in script
     assert "基礎Python" in script
     assert "PCWB_STAGE:" in script
+    assert "--progress-bar', 'off'" not in script
+    assert "--progress-bar', $progressMode" in script
+    assert "PCWB_PIP_PROGRESS_MODE:" in script
+    assert "PCWB_PIP_PID:" in script
+    assert "PCWB_PIP_EXIT:" in script
+    assert "PCWB_SETUP_PREPARED" in script
+    assert "[switch]$PrepareOnly" in script
+    assert "--log', $PipLogPath" in script
+    assert "--verbose" in script
+    assert "Sanitize-PipLog" in script
 
 
 @pytest.mark.skipif(os.name != "nt", reason="Windows PowerShell 5.1 is only available on Windows.")

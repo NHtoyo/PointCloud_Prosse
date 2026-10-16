@@ -6,6 +6,7 @@ using System.Net.Http;
 using System.Runtime.InteropServices;
 using System.Security.Cryptography;
 using System.Text;
+using System.Text.RegularExpressions;
 using System.Threading;
 using System.Threading.Tasks;
 using UnityEngine;
@@ -96,10 +97,29 @@ namespace PointCloudWorkbench
         public string python_path;
         public string setup_directory;
         public string log_path;
+        public string pip_log_path;
         public string error;
         public string recent_log;
+        public long log_revision;
+        public string pip_state;
+        public string pip_progress_mode;
+        public string pip_progress_note;
+        public string pip_package;
+        public int pip_process_id;
+        public bool pip_process_alive;
+        public bool pip_progress_available;
+        public bool pip_cpu_available;
+        public bool pip_io_available;
+        public long pip_downloaded_bytes;
+        public long pip_total_bytes;
+        public long pip_read_bytes_delta;
+        public long pip_write_bytes_delta;
+        public double pip_cpu_seconds_delta;
         public double elapsed_seconds;
         public double seconds_since_output;
+        public double seconds_since_stdout;
+        public double seconds_since_stderr;
+        public double seconds_since_progress;
     }
 
     /// <summary>
@@ -162,6 +182,31 @@ namespace PointCloudWorkbench
         private static StreamWriter environmentSetupLogWriter;
         private static DateTime environmentSetupStartedUtc;
         private static DateTime environmentSetupLastOutputUtc;
+        private static DateTime environmentSetupLastStdoutUtc;
+        private static DateTime environmentSetupLastStderrUtc;
+        private static DateTime environmentSetupLastProgressUtc;
+        private static DateTime environmentSetupLastProgressLogUtc;
+        private static DateTime environmentSetupLastPipSampleUtc;
+        private static int environmentSetupPipProcessId;
+        private static bool environmentSetupPipProcessAlive;
+        private static bool environmentSetupPipProgressAvailable;
+        private static bool environmentSetupPipCpuAvailable;
+        private static bool environmentSetupPipIoAvailable;
+        private static long environmentSetupPipDownloadedBytes;
+        private static long environmentSetupPipTotalBytes;
+        private static long environmentSetupPipPreviousReadBytes;
+        private static long environmentSetupPipPreviousWriteBytes;
+        private static double environmentSetupPipCpuSeconds;
+        private static double environmentSetupPipCpuSecondsDelta;
+        private static long environmentSetupPipReadBytesDelta;
+        private static long environmentSetupPipWriteBytesDelta;
+        private static string environmentSetupPipState = "未起動";
+        private static string environmentSetupPipProgressMode = string.Empty;
+        private static string environmentSetupPipProgressNote = string.Empty;
+        private static string environmentSetupPipPackage = string.Empty;
+        private static string environmentSetupPipLogPath = string.Empty;
+        private static bool environmentSetupLogLimitNotified;
+        private static bool environmentSetupPreparedOnly;
         private static bool environmentSetupRunning;
         private static bool environmentSetupComplete;
         private static bool environmentSetupCancelled;
@@ -179,6 +224,7 @@ namespace PointCloudWorkbench
         private sealed class SetupProcessJob : IDisposable
         {
             private const uint KillOnJobClose = 0x00002000;
+            private const uint ProcessQueryInformation = 0x0400;
             private const int JobObjectExtendedLimitInformationClass = 9;
             private IntPtr handle;
 
@@ -234,6 +280,12 @@ namespace PointCloudWorkbench
             [DllImport("kernel32.dll", SetLastError = true)]
             private static extern bool CloseHandle(IntPtr handle);
 
+            [DllImport("kernel32.dll", SetLastError = true)]
+            private static extern IntPtr OpenProcess(uint access, bool inheritHandle, uint processId);
+
+            [DllImport("kernel32.dll", SetLastError = true)]
+            private static extern bool GetProcessIoCounters(IntPtr process, out IoCounters counters);
+
             private SetupProcessJob(IntPtr jobHandle)
             {
                 handle = jobHandle;
@@ -270,6 +322,26 @@ namespace PointCloudWorkbench
             public bool Terminate(uint exitCode)
             {
                 return handle != IntPtr.Zero && TerminateJobObject(handle, exitCode);
+            }
+
+            public static bool TryGetProcessIoCounters(int processId, out long readBytes, out long writeBytes)
+            {
+                readBytes = 0;
+                writeBytes = 0;
+                IntPtr process = OpenProcess(ProcessQueryInformation, false, (uint)processId);
+                if (process == IntPtr.Zero) return false;
+                try
+                {
+                    IoCounters counters;
+                    if (!GetProcessIoCounters(process, out counters)) return false;
+                    readBytes = unchecked((long)counters.ReadTransferCount);
+                    writeBytes = unchecked((long)counters.WriteTransferCount);
+                    return true;
+                }
+                finally
+                {
+                    CloseHandle(process);
+                }
             }
 
             public void Dispose()
@@ -848,14 +920,40 @@ namespace PointCloudWorkbench
                     python_path = environmentSetupPythonPath ?? string.Empty,
                     setup_directory = environmentSetupDirectory ?? string.Empty,
                     log_path = environmentSetupLogPath ?? string.Empty,
+                    pip_log_path = environmentSetupPipLogPath ?? string.Empty,
                     error = environmentSetupError ?? string.Empty,
                     recent_log = GetCachedEnvironmentSetupTail(),
+                    log_revision = environmentSetupRevision,
+                    pip_state = environmentSetupPipState ?? "不明",
+                    pip_progress_mode = environmentSetupPipProgressMode ?? string.Empty,
+                    pip_progress_note = environmentSetupPipProgressNote ?? string.Empty,
+                    pip_package = environmentSetupPipPackage ?? string.Empty,
+                    pip_process_id = environmentSetupPipProcessId,
+                    pip_process_alive = environmentSetupPipProcessAlive,
+                    pip_progress_available = environmentSetupPipProgressAvailable,
+                    pip_cpu_available = environmentSetupPipCpuAvailable,
+                    pip_io_available = environmentSetupPipIoAvailable,
+                    pip_downloaded_bytes = environmentSetupPipDownloadedBytes,
+                    pip_total_bytes = environmentSetupPipTotalBytes,
+                    pip_read_bytes_delta = environmentSetupPipReadBytesDelta,
+                    pip_write_bytes_delta = environmentSetupPipWriteBytesDelta,
+                    pip_cpu_seconds_delta = environmentSetupPipCpuSecondsDelta,
                     elapsed_seconds = environmentSetupStartedUtc == default(DateTime)
                         ? 0d : (DateTime.UtcNow - environmentSetupStartedUtc).TotalSeconds,
                     seconds_since_output = environmentSetupLastOutputUtc == default(DateTime)
-                        ? 0d : (DateTime.UtcNow - environmentSetupLastOutputUtc).TotalSeconds
+                        ? 0d : (DateTime.UtcNow - environmentSetupLastOutputUtc).TotalSeconds,
+                    seconds_since_stdout = SecondsSince(environmentSetupLastStdoutUtc),
+                    seconds_since_stderr = SecondsSince(environmentSetupLastStderrUtc),
+                    seconds_since_progress = SecondsSince(environmentSetupLastProgressUtc)
                 };
             }
+        }
+
+        private static double SecondsSince(DateTime timestampUtc)
+        {
+            return timestampUtc == default(DateTime)
+                ? -1d
+                : Math.Max(0d, (DateTime.UtcNow - timestampUtc).TotalSeconds);
         }
 
         public static void StartEnvironmentSetup()
@@ -874,6 +972,31 @@ namespace PointCloudWorkbench
                 environmentSetupCachedRevision = -1;
                 environmentSetupStartedUtc = DateTime.UtcNow;
                 environmentSetupLastOutputUtc = environmentSetupStartedUtc;
+                environmentSetupLastStdoutUtc = default(DateTime);
+                environmentSetupLastStderrUtc = default(DateTime);
+                environmentSetupLastProgressUtc = default(DateTime);
+                environmentSetupLastProgressLogUtc = default(DateTime);
+                environmentSetupLastPipSampleUtc = default(DateTime);
+                environmentSetupPipProcessId = 0;
+                environmentSetupPipProcessAlive = false;
+                environmentSetupPipProgressAvailable = false;
+                environmentSetupPipCpuAvailable = false;
+                environmentSetupPipIoAvailable = false;
+                environmentSetupPipDownloadedBytes = 0;
+                environmentSetupPipTotalBytes = 0;
+                environmentSetupPipPreviousReadBytes = 0;
+                environmentSetupPipPreviousWriteBytes = 0;
+                environmentSetupPipCpuSeconds = 0d;
+                environmentSetupPipCpuSecondsDelta = 0d;
+                environmentSetupPipReadBytesDelta = 0;
+                environmentSetupPipWriteBytesDelta = 0;
+                environmentSetupPipState = "未起動";
+                environmentSetupPipProgressMode = string.Empty;
+                environmentSetupPipProgressNote = string.Empty;
+                environmentSetupPipPackage = string.Empty;
+                environmentSetupPipLogPath = string.Empty;
+                environmentSetupLogLimitNotified = false;
+                environmentSetupPreparedOnly = false;
                 environmentSetupRunning = true;
                 environmentSetupComplete = false;
                 environmentSetupCancelled = false;
@@ -907,10 +1030,13 @@ namespace PointCloudWorkbench
                 string setupRoot = Path.Combine(environmentRoot, "managed", "setup-" + attemptId);
                 string logDirectory = Path.Combine(environmentRoot, "logs");
                 Directory.CreateDirectory(logDirectory);
+                string pipLogPath = Path.Combine(logDirectory, "pip-setup-" + attemptId + ".log");
+                string retentionSummary = PruneEnvironmentSetupLogs(logDirectory);
                 lock (environmentSetupLock)
                 {
                     environmentSetupDirectory = setupRoot;
                     environmentSetupLogPath = Path.Combine(logDirectory, "python-setup-" + attemptId + ".log");
+                    environmentSetupPipLogPath = pipLogPath;
                     environmentSetupLogWriter = new StreamWriter(environmentSetupLogPath, false, new UTF8Encoding(false))
                     {
                         AutoFlush = true
@@ -920,6 +1046,8 @@ namespace PointCloudWorkbench
                 SetEnvironmentSetupStage(0, "Python 3.12の確認");
                 AppendEnvironmentSetupLog("INFO", "セットアップ先: " + setupRoot);
                 AppendEnvironmentSetupLog("INFO", "ログファイル: " + environmentSetupLogPath);
+                if (!string.IsNullOrEmpty(retentionSummary))
+                    AppendEnvironmentSetupLog("INFO", retentionSummary);
                 string basePython = await FindPython312Async(baseCandidates, backendDirectory, cancellationToken);
                 if (string.IsNullOrWhiteSpace(basePython))
                     throw new FileNotFoundException("Python 3.12が見つかりません。Python本体を導入してから再試行してください。公式案内: https://www.python.org/downloads/windows/");
@@ -931,17 +1059,44 @@ namespace PointCloudWorkbench
                 string arguments = "-NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File " +
                     QuoteCommandLineArgument(setupScript) +
                     " -PythonExe " + QuoteCommandLineArgument(basePython) +
-                    " -EnvironmentRoot " + QuoteCommandLineArgument(setupRoot);
-                int exitCode = await RunEnvironmentSetupProcessAsync(arguments, setupScript, setupRoot, cancellationToken);
+                    " -EnvironmentRoot " + QuoteCommandLineArgument(setupRoot) +
+                    " -PipLogPath " + QuoteCommandLineArgument(pipLogPath) + " -PrepareOnly";
+                string createdPython = Path.Combine(setupRoot, ".venv", "Scripts", "python.exe");
+                using (SetupProcessJob job = Environment.OSVersion.Platform == PlatformID.Win32NT
+                    ? SetupProcessJob.Create()
+                    : null)
+                {
+                    int prepareExitCode = await RunEnvironmentSetupProcessAsync(
+                        arguments, setupScript, setupRoot, job, cancellationToken);
+                    cancellationToken.ThrowIfCancellationRequested();
+                    if (prepareExitCode != 0)
+                        throw new InvalidOperationException("Python環境の準備に失敗しました (ExitCode: " + prepareExitCode + ")。ログを確認してください。");
+
+                    bool runPip;
+                    string progressMode;
+                    lock (environmentSetupLock)
+                    {
+                        runPip = environmentSetupPreparedOnly;
+                        progressMode = environmentSetupPipProgressMode;
+                    }
+                    if (runPip)
+                    {
+                        SetEnvironmentSetupStage(2, environmentSetupStages[2]);
+                        int pipExitCode = await RunPipInstallProcessAsync(
+                            createdPython, Path.Combine(backendDirectory, "requirements.txt"), backendDirectory,
+                            setupRoot, pipLogPath, progressMode, job, cancellationToken);
+                        if (pipExitCode != 0)
+                            throw new InvalidOperationException("pipの依存ライブラリ導入に失敗しました (ExitCode: " +
+                                pipExitCode.ToString(System.Globalization.CultureInfo.InvariantCulture) +
+                                ")。pip詳細ログを確認してください。");
+                    }
+                }
                 cancellationToken.ThrowIfCancellationRequested();
                 lock (environmentSetupLock)
                     if (!string.IsNullOrEmpty(environmentSetupError))
                         throw new IOException(environmentSetupError);
-                if (exitCode != 0)
-                    throw new InvalidOperationException("セットアップスクリプトが失敗しました (ExitCode: " + exitCode + ")。ログを確認してください。");
 
                 SetEnvironmentSetupStage(3, "インストール後の動作検証");
-                string createdPython = Path.Combine(setupRoot, ".venv", "Scripts", "python.exe");
                 PythonEnvironmentInfo verified = await ProbePythonCandidateAsync(
                     new PythonCommandCandidate(createdPython), Path.Combine(backendDirectory, "requirements.txt"),
                     backendDirectory, cancellationToken, 60000);
@@ -968,6 +1123,12 @@ namespace PointCloudWorkbench
                 {
                     environmentSetupCancelled = true;
                     environmentSetupStage = "キャンセルしました。未完成の環境は使用対象にしていません";
+                    if (environmentSetupPipProcessAlive || environmentSetupPipProcessId > 0 &&
+                        environmentSetupPipState == "終了コード未取得")
+                    {
+                        environmentSetupPipProcessAlive = false;
+                        environmentSetupPipState = "キャンセル";
+                    }
                 }
                 AppendEnvironmentSetupLog("CANCEL", "セットアップをキャンセルしました。既存環境と登録情報は保持されています。");
             }
@@ -977,12 +1138,21 @@ namespace PointCloudWorkbench
                 {
                     environmentSetupError = ex.ToString();
                     environmentSetupStage = "セットアップに失敗しました";
+                    if (environmentSetupPipProcessAlive || environmentSetupPipProcessId > 0 &&
+                        (environmentSetupPipState == "実行中" || environmentSetupPipState == "終了コード未取得"))
+                    {
+                        environmentSetupPipProcessAlive = false;
+                        environmentSetupPipState = ex is TimeoutException ? "タイムアウト" : "失敗";
+                    }
                 }
                 AppendEnvironmentSetupLog("ERROR", ex.ToString());
             }
             finally
             {
                 Process process;
+                string pipLogPath;
+                lock (environmentSetupLock) pipLogPath = environmentSetupPipLogPath;
+                SanitizePipLogFile(pipLogPath);
                 lock (environmentSetupLock)
                 {
                     process = environmentSetupProcess;
@@ -1066,7 +1236,8 @@ namespace PointCloudWorkbench
         }
 
         private static async Task<int> RunEnvironmentSetupProcessAsync(
-            string arguments, string setupScript, string setupRoot, CancellationToken cancellationToken)
+            string arguments, string setupScript, string setupRoot, SetupProcessJob job,
+            CancellationToken cancellationToken)
         {
             cancellationToken.ThrowIfCancellationRequested();
             string setupTempDirectory = Path.Combine(setupRoot, ".tmp");
@@ -1095,9 +1266,7 @@ namespace PointCloudWorkbench
             process.OutputDataReceived += (_, e) => { if (e.Data != null) AppendEnvironmentSetupOutput("OUT", e.Data); };
             process.ErrorDataReceived += (_, e) => { if (e.Data != null) AppendEnvironmentSetupOutput("ERR", e.Data); };
             lock (environmentSetupLock) environmentSetupProcess = process;
-            using (SetupProcessJob job = Environment.OSVersion.Platform == PlatformID.Win32NT
-                ? SetupProcessJob.Create()
-                : null)
+            try
             {
                 if (!process.Start())
                     throw new InvalidOperationException("Pythonセットアップ用PowerShellを起動できませんでした。");
@@ -1117,8 +1286,14 @@ namespace PointCloudWorkbench
                 process.BeginErrorReadLine();
 
                 DateTime deadline = DateTime.UtcNow.AddHours(1);
+                DateTime nextPipSampleUtc = DateTime.UtcNow;
                 while (!process.HasExited)
                 {
+                    if (DateTime.UtcNow >= nextPipSampleUtc)
+                    {
+                        SamplePipProcessMetrics();
+                        nextPipSampleUtc = DateTime.UtcNow.AddSeconds(1);
+                    }
                     if (cancellationToken.IsCancellationRequested)
                     {
                         await TerminateSetupProcessTreeAsync(process, job);
@@ -1132,73 +1307,187 @@ namespace PointCloudWorkbench
                     await Task.Delay(200);
                 }
                 await Task.Run(() => process.WaitForExit());
+                SamplePipProcessMetrics();
                 return process.ExitCode;
+            }
+            finally
+            {
+                lock (environmentSetupLock)
+                {
+                    if (ReferenceEquals(environmentSetupProcess, process))
+                        environmentSetupProcess = null;
+                }
+                process.Dispose();
             }
         }
 
-        private static async Task TerminateSetupProcessTreeAsync(Process process, SetupProcessJob job)
+        private static async Task<int> RunPipInstallProcessAsync(string pythonPath, string requirementsPath,
+            string backendDirectory, string setupRoot, string pipLogPath, string progressMode,
+            SetupProcessJob job, CancellationToken cancellationToken)
         {
-            if (process == null) return;
-            if (job != null && job.Terminate(1))
+            cancellationToken.ThrowIfCancellationRequested();
+            if (!File.Exists(pythonPath)) throw new FileNotFoundException("新しいvenvのPythonが見つかりません。", pythonPath);
+            if (!File.Exists(requirementsPath)) throw new FileNotFoundException("requirements.txtが見つかりません。", requirementsPath);
+            Directory.CreateDirectory(Path.GetDirectoryName(pipLogPath));
+            string setupTempDirectory = Path.Combine(setupRoot, ".tmp");
+            Directory.CreateDirectory(setupTempDirectory);
+
+            string mode = string.Equals(progressMode, "raw", StringComparison.OrdinalIgnoreCase) ? "raw" : "on";
+            lock (environmentSetupLock)
             {
-                bool jobProcessExited = await Task.Run(() => process.WaitForExit(10000));
-                if (!jobProcessExited)
-                    throw new TimeoutException("Pythonセットアップのプロセス群を10秒以内に終了できませんでした。");
-                return;
+                environmentSetupPipProgressMode = mode;
+                environmentSetupPipState = "起動待ち";
+                environmentSetupPipProcessAlive = false;
+            }
+            if (mode != "raw")
+                AppendEnvironmentSetupLog("INFO", "現在のpipではraw進捗が使えないため、通常バー・verbose出力・プロセス状態・pip詳細ログで監視します。");
+
+            var arguments = new List<string>
+            {
+                "-m", "pip", "install", "--disable-pip-version-check", "--no-input",
+                "--progress-bar", mode, "--log", pipLogPath
+            };
+            if (mode != "raw") arguments.Add("--verbose");
+            arguments.Add("-r");
+            arguments.Add(requirementsPath);
+            var commandLine = new StringBuilder();
+            for (int i = 0; i < arguments.Count; i++)
+            {
+                if (i > 0) commandLine.Append(' ');
+                commandLine.Append(QuoteCommandLineArgument(arguments[i]));
             }
 
-            string treeKillError = null;
-            if (!process.HasExited && Environment.OSVersion.Platform == PlatformID.Win32NT)
+            ProcessStartInfo startInfo = new ProcessStartInfo
             {
-                try
-                {
-                    ProcessStartInfo killInfo = new ProcessStartInfo
+                FileName = pythonPath,
+                Arguments = commandLine.ToString(),
+                WorkingDirectory = backendDirectory,
+                UseShellExecute = false,
+                CreateNoWindow = true,
+                RedirectStandardOutput = true,
+                RedirectStandardError = true,
+                StandardOutputEncoding = Encoding.UTF8,
+                StandardErrorEncoding = Encoding.UTF8
+            };
+            startInfo.EnvironmentVariables["PYTHONNOUSERSITE"] = "1";
+            startInfo.EnvironmentVariables["PYTHONUTF8"] = "1";
+            startInfo.EnvironmentVariables["PYTHONIOENCODING"] = "utf-8";
+            startInfo.EnvironmentVariables["PIP_NO_INPUT"] = "1";
+            startInfo.EnvironmentVariables["PIP_DISABLE_PIP_VERSION_CHECK"] = "1";
+            startInfo.EnvironmentVariables["MPLBACKEND"] = "Agg";
+            startInfo.EnvironmentVariables["MPLCONFIGDIR"] = Path.Combine(setupRoot, "matplotlib-config");
+            startInfo.EnvironmentVariables["TEMP"] = setupTempDirectory;
+            startInfo.EnvironmentVariables["TMP"] = setupTempDirectory;
+            startInfo.EnvironmentVariables["TMPDIR"] = setupTempDirectory;
+
+            lock (environmentSetupLock) environmentSetupProcess = null;
+            DateTime nextSampleUtc = DateTime.UtcNow;
+            try
+            {
+                int exitCode = await PythonChildProcessRunner.RunAsync(
+                    startInfo,
+                    cancellationToken,
+                    (streamName, line) => AppendEnvironmentSetupOutput(streamName, line),
+                    async process =>
                     {
-                        FileName = "taskkill.exe",
-                        Arguments = "/PID " + process.Id.ToString(System.Globalization.CultureInfo.InvariantCulture) + " /T /F",
-                        UseShellExecute = false,
-                        CreateNoWindow = true,
-                        RedirectStandardOutput = true,
-                        RedirectStandardError = true
-                    };
-                    using (Process killer = Process.Start(killInfo))
-                    {
-                        if (killer == null) throw new InvalidOperationException("taskkill.exeを起動できませんでした。");
-                        Task<string> stdout = killer.StandardOutput.ReadToEndAsync();
-                        Task<string> stderr = killer.StandardError.ReadToEndAsync();
-                        bool killerExited = await Task.Run(() => killer.WaitForExit(10000));
-                        if (!killerExited)
+                        lock (environmentSetupLock) environmentSetupProcess = process;
+                        if (job != null)
                         {
-                            killer.Kill();
-                            throw new TimeoutException("taskkill.exeが10秒以内に終了しませんでした。");
+                            try { job.Assign(process); }
+                            catch
+                            {
+                                await TerminateSetupProcessTreeAsync(process, null);
+                                throw;
+                            }
                         }
-                        await Task.WhenAll(stdout, stderr);
-                        if (killer.ExitCode != 0)
-                            treeKillError = (stderr.Result + Environment.NewLine + stdout.Result).Trim();
+
+                        lock (environmentSetupLock)
+                        {
+                            environmentSetupPipProcessId = process.Id;
+                            environmentSetupPipProcessAlive = true;
+                            environmentSetupPipState = "実行中";
+                            environmentSetupLastPipSampleUtc = default(DateTime);
+                            environmentSetupPipCpuSeconds = 0d;
+                            environmentSetupPipPreviousReadBytes = 0;
+                            environmentSetupPipPreviousWriteBytes = 0;
+                        }
+                        AppendEnvironmentSetupLog("INFO", "pipを直接起動しました。PID=" +
+                            process.Id.ToString(System.Globalization.CultureInfo.InvariantCulture));
+                    },
+                    () =>
+                    {
+                        if (DateTime.UtcNow < nextSampleUtc) return;
+                        SamplePipProcessMetrics();
+                        nextSampleUtc = DateTime.UtcNow.AddSeconds(1d);
+                    },
+                    process => TerminateSetupProcessTreeAsync(process, job),
+                    TimeSpan.FromHours(1d),
+                    "pipの依存ライブラリ導入が1時間でタイムアウトしました。pip詳細ログを確認してください。");
+
+                SamplePipProcessMetrics();
+                lock (environmentSetupLock)
+                {
+                    environmentSetupPipProcessAlive = false;
+                    environmentSetupPipState = "終了 (ExitCode " +
+                        exitCode.ToString(System.Globalization.CultureInfo.InvariantCulture) + ")";
+                }
+                AppendEnvironmentSetupLog(exitCode == 0 ? "INFO" : "ERROR",
+                    "pip終了コード: " + exitCode.ToString(System.Globalization.CultureInfo.InvariantCulture));
+                return exitCode;
+            }
+            finally
+            {
+                lock (environmentSetupLock)
+                {
+                    environmentSetupProcess = null;
+                    if (environmentSetupPipProcessAlive)
+                    {
+                        environmentSetupPipProcessAlive = false;
+                        if (environmentSetupPipState == "実行中") environmentSetupPipState = "終了コード未取得";
                     }
                 }
-                catch (Exception ex)
-                {
-                    treeKillError = ex.Message;
-                }
             }
+        }
 
-            try { if (!process.HasExited) process.Kill(); }
-            catch (InvalidOperationException) { }
-            catch (System.ComponentModel.Win32Exception ex) { treeKillError = ex.Message; }
+        private static async Task ReadEnvironmentSetupStreamAsync(StreamReader reader, string streamName)
+        {
+            await PythonChildProcessRunner.ReadStreamAsync(reader, streamName,
+                (name, line) => AppendEnvironmentSetupOutput(name, line));
+        }
 
-            bool exited = await Task.Run(() => process.WaitForExit(10000));
-            if (!exited)
-                throw new TimeoutException("セットアッププロセスを終了できませんでした。" +
-                    (string.IsNullOrWhiteSpace(treeKillError) ? string.Empty : " " + treeKillError));
-            if (job == null && Environment.OSVersion.Platform == PlatformID.Win32NT &&
-                !string.IsNullOrWhiteSpace(treeKillError))
-                throw new IOException("セットアップの子プロセス終了を確認できませんでした: " + treeKillError);
+        private static Task TerminateSetupProcessTreeAsync(Process process, SetupProcessJob job)
+        {
+            return PythonChildProcessRunner.TerminateProcessTreeAsync(process,
+                job == null ? (Func<bool>)null : () => job.Terminate(1));
+        }
+
+        internal static bool TryParsePipProgressLine(string line, out long currentBytes, out long totalBytes)
+        {
+            currentBytes = 0;
+            totalBytes = 0;
+            if (string.IsNullOrWhiteSpace(line)) return false;
+            string[] parts = Regex.Split(line.Trim(), @"\s+");
+            return parts.Length == 4 && parts[0] == "Progress" && parts[2] == "of" &&
+                long.TryParse(parts[1], System.Globalization.NumberStyles.None,
+                    System.Globalization.CultureInfo.InvariantCulture, out currentBytes) &&
+                long.TryParse(parts[3], System.Globalization.NumberStyles.None,
+                    System.Globalization.CultureInfo.InvariantCulture, out totalBytes) &&
+                currentBytes >= 0 && totalBytes >= 0;
         }
 
         private static void AppendEnvironmentSetupOutput(string streamName, string line)
         {
-            string stagePrefix = "PCWB_STAGE:";
+            line = line ?? string.Empty;
+            RecordEnvironmentSetupOutputActivity(streamName);
+
+            if (line == "PCWB_SETUP_PREPARED")
+            {
+                lock (environmentSetupLock) environmentSetupPreparedOnly = true;
+                AppendEnvironmentSetupLog("INFO", "venv準備完了。pipはC#から直接起動します。");
+                return;
+            }
+
+            const string stagePrefix = "PCWB_STAGE:";
             if (line.StartsWith(stagePrefix, StringComparison.Ordinal))
             {
                 string stage = line.Substring(stagePrefix.Length).Trim();
@@ -1206,8 +1495,216 @@ namespace PointCloudWorkbench
                 else if (stage == "VENV_CREATE") SetEnvironmentSetupStage(1, environmentSetupStages[1]);
                 else if (stage == "DEPENDENCIES") SetEnvironmentSetupStage(2, environmentSetupStages[2]);
                 else if (stage == "VERIFY") SetEnvironmentSetupStage(3, environmentSetupStages[3]);
+                AppendEnvironmentSetupLog(streamName, line);
+                return;
             }
+
+            const string pipPidPrefix = "PCWB_PIP_PID:";
+            if (line.StartsWith(pipPidPrefix, StringComparison.Ordinal))
+            {
+                int processId;
+                if (int.TryParse(line.Substring(pipPidPrefix.Length).Trim(), out processId) && processId > 0)
+                {
+                    lock (environmentSetupLock)
+                    {
+                        environmentSetupPipProcessId = processId;
+                        environmentSetupPipProcessAlive = true;
+                        environmentSetupPipState = "実行中";
+                        environmentSetupLastPipSampleUtc = default(DateTime);
+                    }
+                }
+                AppendEnvironmentSetupLog(streamName, line);
+                return;
+            }
+
+            const string modePrefix = "PCWB_PIP_PROGRESS_MODE:";
+            if (line.StartsWith(modePrefix, StringComparison.Ordinal))
+            {
+                lock (environmentSetupLock) environmentSetupPipProgressMode = line.Substring(modePrefix.Length).Trim();
+                AppendEnvironmentSetupLog(streamName, line);
+                return;
+            }
+
+            const string notePrefix = "PCWB_PIP_PROGRESS_NOTE:";
+            if (line.StartsWith(notePrefix, StringComparison.Ordinal))
+            {
+                lock (environmentSetupLock) environmentSetupPipProgressNote = line.Substring(notePrefix.Length).Trim();
+                AppendEnvironmentSetupLog(streamName, line.Substring(notePrefix.Length).Trim());
+                return;
+            }
+
+            const string logPrefix = "PCWB_PIP_LOG:";
+            if (line.StartsWith(logPrefix, StringComparison.Ordinal))
+            {
+                lock (environmentSetupLock) environmentSetupPipLogPath = line.Substring(logPrefix.Length).Trim();
+                AppendEnvironmentSetupLog(streamName, line);
+                return;
+            }
+
+            const string exitPrefix = "PCWB_PIP_EXIT:";
+            if (line.StartsWith(exitPrefix, StringComparison.Ordinal))
+            {
+                int exitCode;
+                lock (environmentSetupLock)
+                {
+                    environmentSetupPipProcessAlive = false;
+                    environmentSetupPipState = int.TryParse(line.Substring(exitPrefix.Length).Trim(), out exitCode)
+                        ? "終了 (ExitCode " + exitCode.ToString(System.Globalization.CultureInfo.InvariantCulture) + ")"
+                        : "終了コード不明";
+                }
+                AppendEnvironmentSetupLog(streamName, line);
+                return;
+            }
+
+            long currentBytes;
+            long totalBytes;
+            if (TryParsePipProgressLine(line, out currentBytes, out totalBytes))
+            {
+                bool shouldLog;
+                DateTime now = DateTime.UtcNow;
+                lock (environmentSetupLock)
+                {
+                    environmentSetupPipProgressAvailable = true;
+                    environmentSetupPipDownloadedBytes = currentBytes;
+                    environmentSetupPipTotalBytes = totalBytes;
+                    environmentSetupLastProgressUtc = now;
+                    shouldLog = environmentSetupLastProgressLogUtc == default(DateTime) ||
+                        (now - environmentSetupLastProgressLogUtc).TotalSeconds >= 1d ||
+                        (totalBytes > 0 && currentBytes >= totalBytes);
+                    if (shouldLog) environmentSetupLastProgressLogUtc = now;
+                }
+                if (shouldLog)
+                    AppendEnvironmentSetupLog("PIP", "Progress " + currentBytes.ToString(System.Globalization.CultureInfo.InvariantCulture) +
+                        " of " + totalBytes.ToString(System.Globalization.CultureInfo.InvariantCulture));
+                return;
+            }
+
+            string package = ExtractPipPackage(line);
+            if (!string.IsNullOrEmpty(package))
+            {
+                lock (environmentSetupLock)
+                {
+                    environmentSetupPipPackage = package;
+                    environmentSetupPipProgressAvailable = false;
+                    environmentSetupPipDownloadedBytes = 0;
+                    environmentSetupPipTotalBytes = 0;
+                }
+            }
+
+            if (IsVisualProgressLine(line)) return;
             AppendEnvironmentSetupLog(streamName, line);
+        }
+
+        private static void RecordEnvironmentSetupOutputActivity(string streamName)
+        {
+            DateTime now = DateTime.UtcNow;
+            lock (environmentSetupLock)
+            {
+                environmentSetupLastOutputUtc = now;
+                if (streamName == "OUT") environmentSetupLastStdoutUtc = now;
+                else if (streamName == "ERR") environmentSetupLastStderrUtc = now;
+            }
+        }
+
+        private static string ExtractPipPackage(string line)
+        {
+            string[] prefixes = { "Collecting ", "Downloading ", "Using cached ", "Installing collected packages:" };
+            for (int i = 0; i < prefixes.Length; i++)
+            {
+                if (!line.StartsWith(prefixes[i], StringComparison.OrdinalIgnoreCase)) continue;
+                string value = line.Substring(prefixes[i].Length).Trim();
+                int whitespace = value.IndexOfAny(new[] { ' ', '\t', '(' });
+                if (whitespace >= 0) value = value.Substring(0, whitespace);
+                if (value.Length > 96) value = value.Substring(0, 93) + "...";
+                return value;
+            }
+            return null;
+        }
+
+        private static bool IsVisualProgressLine(string line)
+        {
+            if (string.IsNullOrWhiteSpace(line)) return false;
+            if (line.IndexOf('\u001b') >= 0) return true;
+            string trimmed = line.Trim();
+            if (trimmed.Length < 12) return false;
+            int barCharacters = 0;
+            for (int i = 0; i < trimmed.Length; i++)
+                if (trimmed[i] == '-' || trimmed[i] == '=' || trimmed[i] == ' ' || trimmed[i] == '\r') barCharacters++;
+            return barCharacters >= trimmed.Length * 9 / 10;
+        }
+
+        private static void SamplePipProcessMetrics()
+        {
+            int processId;
+            lock (environmentSetupLock) processId = environmentSetupPipProcessId;
+            if (processId <= 0) return;
+
+            try
+            {
+                using (Process process = Process.GetProcessById(processId))
+                {
+                    if (process.HasExited)
+                    {
+                        lock (environmentSetupLock)
+                        {
+                            environmentSetupPipProcessAlive = false;
+                            if (environmentSetupPipState == "実行中") environmentSetupPipState = "終了コード受信待ち";
+                        }
+                        return;
+                    }
+
+                    double cpuSeconds = process.TotalProcessorTime.TotalSeconds;
+                    long readBytes;
+                    long writeBytes;
+                    bool ioAvailable = SetupProcessJob.TryGetProcessIoCounters(processId, out readBytes, out writeBytes);
+                    DateTime now = DateTime.UtcNow;
+                    lock (environmentSetupLock)
+                    {
+                        environmentSetupPipCpuSecondsDelta = environmentSetupLastPipSampleUtc == default(DateTime)
+                            ? 0d : Math.Max(0d, cpuSeconds - environmentSetupPipCpuSeconds);
+                        environmentSetupPipCpuSeconds = cpuSeconds;
+                        environmentSetupPipCpuAvailable = true;
+                        if (ioAvailable)
+                        {
+                            environmentSetupPipReadBytesDelta = environmentSetupLastPipSampleUtc == default(DateTime)
+                                ? 0 : Math.Max(0L, readBytes - environmentSetupPipPreviousReadBytes);
+                            environmentSetupPipWriteBytesDelta = environmentSetupLastPipSampleUtc == default(DateTime)
+                                ? 0 : Math.Max(0L, writeBytes - environmentSetupPipPreviousWriteBytes);
+                            environmentSetupPipPreviousReadBytes = readBytes;
+                            environmentSetupPipPreviousWriteBytes = writeBytes;
+                            environmentSetupPipIoAvailable = true;
+                        }
+                        else
+                        {
+                            environmentSetupPipReadBytesDelta = 0;
+                            environmentSetupPipWriteBytesDelta = 0;
+                            environmentSetupPipIoAvailable = false;
+                        }
+                        environmentSetupPipProcessAlive = true;
+                        environmentSetupPipState = "実行中";
+                        environmentSetupLastPipSampleUtc = now;
+                    }
+                }
+            }
+            catch (ArgumentException)
+            {
+                lock (environmentSetupLock)
+                {
+                    environmentSetupPipProcessAlive = false;
+                    if (environmentSetupPipState == "実行中") environmentSetupPipState = "PIDを確認できません";
+                    environmentSetupPipCpuAvailable = false;
+                    environmentSetupPipIoAvailable = false;
+                }
+            }
+            catch (Exception ex)
+            {
+                lock (environmentSetupLock)
+                {
+                    environmentSetupPipState = "状態取得不可: " + ex.GetType().Name;
+                    environmentSetupPipCpuAvailable = false;
+                    environmentSetupPipIoAvailable = false;
+                }
+            }
         }
 
         private static void SetEnvironmentSetupStage(int index, string stage)
@@ -1221,16 +1718,151 @@ namespace PointCloudWorkbench
 
         private static void AppendEnvironmentSetupLog(string streamName, string line)
         {
+            line = RedactSensitiveText(line ?? string.Empty);
             string timestamped = DateTime.Now.ToString("HH:mm:ss.fff", System.Globalization.CultureInfo.InvariantCulture) +
-                " [" + streamName + "] " + (line ?? string.Empty);
+                " [" + streamName + "] " + line;
             lock (environmentSetupLock)
             {
-                environmentSetupLastOutputUtc = DateTime.UtcNow;
                 environmentSetupTail.AppendLine(timestamped);
                 environmentSetupRevision++;
-                try { environmentSetupLogWriter?.WriteLine(timestamped); }
+                try
+                {
+                    if (environmentSetupLogWriter == null) return;
+                    bool important = streamName == "ERROR" || streamName == "WARN" || streamName == "CANCEL";
+                    const long maximumEventLogBytes = 16L * 1024L * 1024L;
+                    if (environmentSetupLogWriter.BaseStream.Length < maximumEventLogBytes || important)
+                    {
+                        environmentSetupLogWriter.WriteLine(timestamped);
+                    }
+                    else if (!environmentSetupLogLimitNotified)
+                    {
+                        environmentSetupLogLimitNotified = true;
+                        environmentSetupLogWriter.WriteLine(DateTime.Now.ToString("HH:mm:ss.fff",
+                            System.Globalization.CultureInfo.InvariantCulture) +
+                            " [WARN] セットアップイベントログが16 MiBに達しました。以降の大量出力はpip詳細ログを参照してください。重要な失敗・警告は引き続き記録します。");
+                    }
+                }
                 catch (Exception ex) { environmentSetupError = "セットアップログを書き込めません: " + ex.Message; }
             }
+        }
+
+        private static string RedactSensitiveText(string value)
+        {
+            if (string.IsNullOrEmpty(value)) return value;
+            value = Regex.Replace(value, @"(?i)(https?://)[^/@\s]+:[^/@\s]+@", "$1[REDACTED]@");
+            value = Regex.Replace(value, @"(?i)([?&](?:access[_-]?token|token|api[_-]?key|signature)=)[^&\s]+", "$1[REDACTED]");
+            value = Regex.Replace(value, @"(?i)(authorization|password|passwd|token|api[_-]?key|access[_-]?key|secret)(\s*[=:]\s*)[^\s&]+", "$1$2[REDACTED]");
+            return value;
+        }
+
+        private static void SanitizePipLogFile(string path)
+        {
+            if (string.IsNullOrWhiteSpace(path) || !File.Exists(path)) return;
+            string temporaryPath = path + ".sanitized-" + Guid.NewGuid().ToString("N");
+            string backupPath = path + ".backup-" + Guid.NewGuid().ToString("N");
+            try
+            {
+                const int maximumBytes = 16 * 1024 * 1024;
+                var lines = new Queue<string>();
+                int retainedBytes = 0;
+                bool wasTruncated = false;
+                Encoding utf8 = new UTF8Encoding(false);
+                using (var reader = new StreamReader(path, Encoding.UTF8, true))
+                {
+                    string line;
+                    while ((line = reader.ReadLine()) != null)
+                    {
+                        line = RedactSensitiveText(line);
+                        string encodedLine = line + Environment.NewLine;
+                        int lineBytes = utf8.GetByteCount(encodedLine);
+                        if (lineBytes > maximumBytes)
+                        {
+                            int keepChars = Math.Min(line.Length, maximumBytes / 4);
+                            line = line.Substring(line.Length - keepChars);
+                            encodedLine = line + Environment.NewLine;
+                            lineBytes = utf8.GetByteCount(encodedLine);
+                            wasTruncated = true;
+                        }
+                        lines.Enqueue(encodedLine);
+                        retainedBytes += lineBytes;
+                        while (retainedBytes > maximumBytes && lines.Count > 1)
+                        {
+                            retainedBytes -= utf8.GetByteCount(lines.Dequeue());
+                            wasTruncated = true;
+                        }
+                    }
+                }
+                using (var writer = new StreamWriter(temporaryPath, false, utf8))
+                {
+                    if (wasTruncated)
+                        writer.WriteLine("[PCWB] pip log truncated to the most recent 16 MiB; older output is omitted.");
+                    while (lines.Count > 0) writer.Write(lines.Dequeue());
+                    writer.Flush();
+                }
+                File.Replace(temporaryPath, path, backupPath);
+                File.Delete(backupPath);
+            }
+            catch (Exception ex)
+            {
+                AppendEnvironmentSetupLog("WARN", "pip詳細ログの秘匿情報処理またはサイズ制限に失敗しました: " + ex.Message);
+            }
+            finally
+            {
+                try { if (File.Exists(temporaryPath)) File.Delete(temporaryPath); }
+                catch (Exception ex) { AppendEnvironmentSetupLog("WARN", "pip詳細ログの一時ファイルを削除できません: " + ex.Message); }
+                try { if (File.Exists(backupPath)) File.Delete(backupPath); }
+                catch (Exception ex) { AppendEnvironmentSetupLog("WARN", "pip詳細ログのバックアップ一時ファイルを削除できません: " + ex.Message); }
+            }
+        }
+
+        private static string PruneEnvironmentSetupLogs(string logDirectory)
+        {
+            const int retainPerKind = 10;
+            DateTime cutoffUtc = DateTime.UtcNow.AddDays(-90d);
+            int removedFiles = 0;
+            long removedBytes = 0;
+            int failedFiles = 0;
+            string[] patterns = { "python-setup-*.log", "pip-setup-*.log" };
+            for (int patternIndex = 0; patternIndex < patterns.Length; patternIndex++)
+            {
+                FileInfo[] files;
+                try
+                {
+                    files = new DirectoryInfo(logDirectory).GetFiles(patterns[patternIndex]);
+                    Array.Sort(files, (left, right) => right.LastWriteTimeUtc.CompareTo(left.LastWriteTimeUtc));
+                }
+                catch (Exception ex)
+                {
+                    return "セットアップログ保持処理を実行できません: " + ex.Message;
+                }
+
+                for (int fileIndex = 0; fileIndex < files.Length; fileIndex++)
+                {
+                    FileInfo file = files[fileIndex];
+                    bool expired = file.LastWriteTimeUtc < cutoffUtc;
+                    bool beyondRecentLimit = fileIndex >= retainPerKind &&
+                        file.LastWriteTimeUtc < DateTime.UtcNow.AddHours(-24d);
+                    if (!expired && !beyondRecentLimit) continue;
+                    try
+                    {
+                        long size = file.Length;
+                        file.Delete();
+                        removedFiles++;
+                        removedBytes += size;
+                    }
+                    catch (Exception) { failedFiles++; }
+                }
+            }
+
+            return "セットアップログ保持: 各種直近10件と直近24時間分を保持、90日超を整理。" +
+                "削除=" + removedFiles.ToString(System.Globalization.CultureInfo.InvariantCulture) +
+                "件/" + FormatByteCount(removedBytes) +
+                (failedFiles > 0 ? "、削除失敗=" + failedFiles.ToString(System.Globalization.CultureInfo.InvariantCulture) + "件" : string.Empty);
+        }
+
+        private static string FormatByteCount(long bytes)
+        {
+            return (bytes / (1024d * 1024d)).ToString("F1", System.Globalization.CultureInfo.InvariantCulture) + " MiB";
         }
 
         private static string GetCachedEnvironmentSetupTail()
