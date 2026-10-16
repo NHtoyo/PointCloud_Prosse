@@ -12,6 +12,7 @@ using UnityEngine;
 
 namespace PointCloudWorkbench
 {
+    [Serializable]
     public sealed class PythonEnvironmentPackageInfo
     {
         public string name;
@@ -26,6 +27,62 @@ namespace PointCloudWorkbench
         public string python_version;
         public string message;
         public PythonEnvironmentPackageInfo[] packages;
+    }
+
+    public sealed class PythonEnvironmentSetupRequiredException : Exception
+    {
+        public PythonEnvironmentInfo EnvironmentInfo { get; }
+        public string SetupReason { get; }
+        public string DiagnosticDetail { get; }
+
+        public PythonEnvironmentSetupRequiredException(PythonEnvironmentInfo environmentInfo)
+            : base(BuildSetupReason(environmentInfo))
+        {
+            EnvironmentInfo = environmentInfo;
+            SetupReason = Message;
+            DiagnosticDetail = BuildDiagnosticDetail(environmentInfo);
+        }
+
+        private static string BuildSetupReason(PythonEnvironmentInfo info)
+        {
+            var missingPackages = new List<string>();
+            if (info != null && info.packages != null)
+            {
+                for (int i = 0; i < info.packages.Length; i++)
+                {
+                    PythonEnvironmentPackageInfo package = info.packages[i];
+                    if (package != null && !package.import_ok && !string.IsNullOrWhiteSpace(package.name))
+                        missingPackages.Add(package.name);
+                }
+            }
+
+            string reason = missingPackages.Count > 0
+                ? "不足または読み込めないライブラリ: " + string.Join("、", missingPackages.ToArray())
+                : (info != null && !string.IsNullOrWhiteSpace(info.message)
+                    ? info.message
+                    : "Python 3.12または必要なライブラリを利用できません。");
+            return "Python環境のセットアップが必要です。\n" + reason;
+        }
+
+        private static string BuildDiagnosticDetail(PythonEnvironmentInfo info)
+        {
+            if (info == null) return "Python environment validation returned no result.";
+            var detail = new StringBuilder();
+            detail.AppendLine("Python path: " + (info.python_path ?? "not found"));
+            detail.AppendLine("Python version: " + (info.python_version ?? "unknown"));
+            detail.AppendLine("Validation: " + (info.message ?? string.Empty));
+            if (info.packages != null)
+            {
+                for (int i = 0; i < info.packages.Length; i++)
+                {
+                    PythonEnvironmentPackageInfo package = info.packages[i];
+                    if (package == null) continue;
+                    detail.AppendLine(package.name + " " + (package.version ?? "unknown") +
+                        " import_ok=" + package.import_ok);
+                }
+            }
+            return detail.ToString();
+        }
     }
 
     public sealed class PythonEnvironmentSetupSnapshot
@@ -585,9 +642,7 @@ namespace PointCloudWorkbench
             PythonEnvironmentInfo info = await ValidateAvailableEnvironmentAsync(cancellationToken);
             cancellationToken.ThrowIfCancellationRequested();
             if (info == null || !info.is_compatible)
-                throw new InvalidOperationException(info != null && !string.IsNullOrWhiteSpace(info.message)
-                    ? info.message
-                    : "Python 3.12と検証済みの依存ライブラリが必要です。環境は変更していません。");
+                throw new PythonEnvironmentSetupRequiredException(info);
             operation?.Update(0.99f, "Python環境を確認しました。");
         }
 
