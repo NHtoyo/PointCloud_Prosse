@@ -171,7 +171,9 @@ namespace PointCloudWorkbench
         }
 
         private static readonly object environmentSetupLock = new object();
-        private static readonly BoundedTextBuffer environmentSetupTail = new BoundedTextBuffer(96 * 1024, 4 * 1024);
+        private static readonly PythonEnvironmentSetupLog environmentSetupLog = new PythonEnvironmentSetupLog();
+        private static readonly ThrottledSnapshotCache<PythonEnvironmentSetupSnapshot> environmentSetupSnapshotCache =
+            new ThrottledSnapshotCache<PythonEnvironmentSetupSnapshot>(TimeSpan.FromMilliseconds(250));
         private static readonly string[] environmentSetupStages =
         {
             "Python 3.12の確認", "仮想環境の作成", "依存ライブラリの導入", "動作検証"
@@ -179,7 +181,6 @@ namespace PointCloudWorkbench
         private static Process environmentSetupProcess;
         private static CancellationTokenSource environmentSetupCancellation;
         private static Task environmentSetupTask;
-        private static StreamWriter environmentSetupLogWriter;
         private static DateTime environmentSetupStartedUtc;
         private static DateTime environmentSetupLastOutputUtc;
         private static DateTime environmentSetupLastStdoutUtc;
@@ -205,7 +206,6 @@ namespace PointCloudWorkbench
         private static string environmentSetupPipProgressNote = string.Empty;
         private static string environmentSetupPipPackage = string.Empty;
         private static string environmentSetupPipLogPath = string.Empty;
-        private static bool environmentSetupLogLimitNotified;
         private static bool environmentSetupPreparedOnly;
         private static bool environmentSetupRunning;
         private static bool environmentSetupComplete;
@@ -216,9 +216,6 @@ namespace PointCloudWorkbench
         private static string environmentSetupDirectory;
         private static string environmentSetupLogPath;
         private static string environmentSetupError;
-        private static long environmentSetupRevision;
-        private static long environmentSetupCachedRevision = -1;
-        private static string environmentSetupCachedTail = string.Empty;
         private static PythonEnvironmentInfo lastEnvironmentInfo;
 
         private sealed class SetupProcessJob : IDisposable
@@ -907,9 +904,15 @@ namespace PointCloudWorkbench
 
         public static PythonEnvironmentSetupSnapshot GetEnvironmentSetupSnapshot()
         {
+            if (environmentSetupSnapshotCache.TryGet(out PythonEnvironmentSetupSnapshot cachedSnapshot))
+                return cachedSnapshot;
+
+            GetEnvironmentSetupTail(out string recentLog, out long logRevision);
             lock (environmentSetupLock)
             {
-                return new PythonEnvironmentSetupSnapshot
+                if (environmentSetupSnapshotCache.TryGet(out cachedSnapshot)) return cachedSnapshot;
+
+                PythonEnvironmentSetupSnapshot snapshot = new PythonEnvironmentSetupSnapshot
                 {
                     is_running = environmentSetupRunning,
                     is_complete = environmentSetupComplete,
@@ -922,8 +925,8 @@ namespace PointCloudWorkbench
                     log_path = environmentSetupLogPath ?? string.Empty,
                     pip_log_path = environmentSetupPipLogPath ?? string.Empty,
                     error = environmentSetupError ?? string.Empty,
-                    recent_log = GetCachedEnvironmentSetupTail(),
-                    log_revision = environmentSetupRevision,
+                    recent_log = recentLog,
+                    log_revision = logRevision,
                     pip_state = environmentSetupPipState ?? "不明",
                     pip_progress_mode = environmentSetupPipProgressMode ?? string.Empty,
                     pip_progress_note = environmentSetupPipProgressNote ?? string.Empty,
@@ -946,6 +949,8 @@ namespace PointCloudWorkbench
                     seconds_since_stderr = SecondsSince(environmentSetupLastStderrUtc),
                     seconds_since_progress = SecondsSince(environmentSetupLastProgressUtc)
                 };
+                environmentSetupSnapshotCache.Store(snapshot);
+                return snapshot;
             }
         }
 
@@ -967,9 +972,7 @@ namespace PointCloudWorkbench
                 if (environmentSetupRunning) return;
                 environmentSetupCancellation?.Dispose();
                 environmentSetupCancellation = new CancellationTokenSource();
-                environmentSetupTail.Clear();
-                environmentSetupRevision++;
-                environmentSetupCachedRevision = -1;
+                environmentSetupLog.Clear();
                 environmentSetupStartedUtc = DateTime.UtcNow;
                 environmentSetupLastOutputUtc = environmentSetupStartedUtc;
                 environmentSetupLastStdoutUtc = default(DateTime);
@@ -995,7 +998,6 @@ namespace PointCloudWorkbench
                 environmentSetupPipProgressNote = string.Empty;
                 environmentSetupPipPackage = string.Empty;
                 environmentSetupPipLogPath = string.Empty;
-                environmentSetupLogLimitNotified = false;
                 environmentSetupPreparedOnly = false;
                 environmentSetupRunning = true;
                 environmentSetupComplete = false;
@@ -1032,15 +1034,16 @@ namespace PointCloudWorkbench
                 Directory.CreateDirectory(logDirectory);
                 string pipLogPath = Path.Combine(logDirectory, "pip-setup-" + attemptId + ".log");
                 string retentionSummary = PruneEnvironmentSetupLogs(logDirectory);
+                string setupLogPath = Path.Combine(logDirectory, "python-setup-" + attemptId + ".log");
+                environmentSetupLog.SetWriter(new StreamWriter(setupLogPath, false, new UTF8Encoding(false))
+                {
+                    AutoFlush = true
+                });
                 lock (environmentSetupLock)
                 {
                     environmentSetupDirectory = setupRoot;
-                    environmentSetupLogPath = Path.Combine(logDirectory, "python-setup-" + attemptId + ".log");
+                    environmentSetupLogPath = setupLogPath;
                     environmentSetupPipLogPath = pipLogPath;
-                    environmentSetupLogWriter = new StreamWriter(environmentSetupLogPath, false, new UTF8Encoding(false))
-                    {
-                        AutoFlush = true
-                    };
                 }
                 AppendEnvironmentSetupLog("INFO", "Python環境のセットアップを開始しました。既存環境は変更しません。");
                 SetEnvironmentSetupStage(0, "Python 3.12の確認");
@@ -1153,16 +1156,12 @@ namespace PointCloudWorkbench
                 string pipLogPath;
                 lock (environmentSetupLock) pipLogPath = environmentSetupPipLogPath;
                 SanitizePipLogFile(pipLogPath);
+                environmentSetupLog.DisposeWriter();
                 lock (environmentSetupLock)
                 {
                     process = environmentSetupProcess;
                     environmentSetupProcess = null;
                     environmentSetupRunning = false;
-                    if (environmentSetupLogWriter != null)
-                    {
-                        environmentSetupLogWriter.Dispose();
-                        environmentSetupLogWriter = null;
-                    }
                     environmentSetupCancellation?.Dispose();
                     environmentSetupCancellation = null;
                 }
@@ -1721,29 +1720,18 @@ namespace PointCloudWorkbench
             line = RedactSensitiveText(line ?? string.Empty);
             string timestamped = DateTime.Now.ToString("HH:mm:ss.fff", System.Globalization.CultureInfo.InvariantCulture) +
                 " [" + streamName + "] " + line;
-            lock (environmentSetupLock)
+            bool important = streamName == "ERROR" || streamName == "WARN" || streamName == "CANCEL";
+            string logError = environmentSetupLog.AppendLine(timestamped, important);
+            if (!string.IsNullOrEmpty(logError))
             {
-                environmentSetupTail.AppendLine(timestamped);
-                environmentSetupRevision++;
-                try
-                {
-                    if (environmentSetupLogWriter == null) return;
-                    bool important = streamName == "ERROR" || streamName == "WARN" || streamName == "CANCEL";
-                    const long maximumEventLogBytes = 16L * 1024L * 1024L;
-                    if (environmentSetupLogWriter.BaseStream.Length < maximumEventLogBytes || important)
-                    {
-                        environmentSetupLogWriter.WriteLine(timestamped);
-                    }
-                    else if (!environmentSetupLogLimitNotified)
-                    {
-                        environmentSetupLogLimitNotified = true;
-                        environmentSetupLogWriter.WriteLine(DateTime.Now.ToString("HH:mm:ss.fff",
-                            System.Globalization.CultureInfo.InvariantCulture) +
-                            " [WARN] セットアップイベントログが16 MiBに達しました。以降の大量出力はpip詳細ログを参照してください。重要な失敗・警告は引き続き記録します。");
-                    }
-                }
-                catch (Exception ex) { environmentSetupError = "セットアップログを書き込めません: " + ex.Message; }
+                lock (environmentSetupLock) environmentSetupError = logError;
             }
+        }
+
+        private static string GetEnvironmentSetupTail(out long revision)
+        {
+            environmentSetupLog.GetTail(out string tail, out revision);
+            return tail;
         }
 
         private static string RedactSensitiveText(string value)
@@ -1863,16 +1851,6 @@ namespace PointCloudWorkbench
         private static string FormatByteCount(long bytes)
         {
             return (bytes / (1024d * 1024d)).ToString("F1", System.Globalization.CultureInfo.InvariantCulture) + " MiB";
-        }
-
-        private static string GetCachedEnvironmentSetupTail()
-        {
-            if (environmentSetupCachedRevision != environmentSetupRevision)
-            {
-                environmentSetupCachedTail = environmentSetupTail.ToString();
-                environmentSetupCachedRevision = environmentSetupRevision;
-            }
-            return environmentSetupCachedTail;
         }
 
         private static void WriteActivatedEnvironmentManifest(string pythonPath, string environmentRoot,

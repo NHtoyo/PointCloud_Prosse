@@ -8,5 +8,8 @@
   </PropertyGroup>
   <ItemGroup>
     <Compile Include="../../../Assets/PointCloudWorkbench/Scripts/PythonChildProcessRunner.cs" Link="PythonChildProcessRunner.cs" />
+    <Compile Include="../../../Assets/PointCloudWorkbench/Scripts/BoundedTextBuffer.cs" Link="BoundedTextBuffer.cs" />
+    <Compile Include="../../../Assets/PointCloudWorkbench/Scripts/PythonEnvironmentSetupLog.cs" Link="PythonEnvironmentSetupLog.cs" />
+    <Compile Include="../../../Assets/PointCloudWorkbench/Scripts/ThrottledSnapshotCache.cs" Link="ThrottledSnapshotCache.cs" />
   </ItemGroup>
 </Project>

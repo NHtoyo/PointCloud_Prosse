@@ -137,6 +137,10 @@ internal static class Program
         await TestOutputAndExitCode();
         await TestSilentProcessWaitsForExit();
         await TestCancellationKillsProcessTree();
+        TestSharedLockLogWriteReproducesSnapshotBlock();
+        TestSetupLogSnapshotDoesNotWaitForDiskWrite();
+        TestSetupLogTailIsBounded();
+        TestSetupSnapshotRefreshIsThrottled();
     }
 
     private static async Task TestOutputAndExitCode()
@@ -208,6 +212,81 @@ internal static class Program
                 Directory.Delete(root, true);
             }
         }
+    }
+
+    private static void TestSetupLogSnapshotDoesNotWaitForDiskWrite()
+    {
+        var log = new PythonEnvironmentSetupLog(1024);
+        var stream = new BlockingWriteStream();
+        log.SetWriter(new StreamWriter(stream, new UTF8Encoding(false)) { AutoFlush = true });
+        Task<string> append = Task.Run(() => log.AppendLine("blocked file write", false));
+        try
+        {
+            Assert(stream.WaitForWrite(TimeSpan.FromSeconds(5)), "The log writer did not enter the blocked disk write.");
+            string snapshotText = null;
+            long revision = 0;
+            Task snapshot = Task.Run(() => log.GetTail(out snapshotText, out revision));
+            Assert(snapshot.Wait(TimeSpan.FromSeconds(1)),
+                "The setup snapshot waited for a blocked file write.");
+            Assert(snapshotText.Contains("blocked file write") && revision > 0,
+                "The in-memory setup log was not available while disk output was blocked.");
+        }
+        finally
+        {
+            stream.ReleaseWrites();
+            Assert(append.Wait(TimeSpan.FromSeconds(5)), "The log append did not finish after the disk write was released.");
+            Assert(append.Result == null, "The log writer unexpectedly reported an error.");
+            log.DisposeWriter();
+        }
+    }
+
+    private static void TestSharedLockLogWriteReproducesSnapshotBlock()
+    {
+        object sharedLock = new object();
+        var stream = new BlockingWriteStream();
+        var writer = new StreamWriter(stream, new UTF8Encoding(false)) { AutoFlush = true };
+        Task append = Task.Run(() => { lock (sharedLock) writer.WriteLine("blocked file write"); });
+        Task<bool> snapshot = null;
+        try
+        {
+            Assert(stream.WaitForWrite(TimeSpan.FromSeconds(5)), "The reproduction did not enter the blocked file write.");
+            snapshot = Task.Run(() => { lock (sharedLock) return true; });
+            Assert(!snapshot.Wait(TimeSpan.FromMilliseconds(100)),
+                "The shared-lock reproduction did not block the snapshot behind file output.");
+        }
+        finally
+        {
+            stream.ReleaseWrites();
+            Assert(append.Wait(TimeSpan.FromSeconds(5)), "The reproduction writer did not finish after release.");
+            Assert(snapshot == null || snapshot.Wait(TimeSpan.FromSeconds(5)),
+                "The reproduction snapshot did not resume after release.");
+            writer.Dispose();
+        }
+    }
+
+    private static void TestSetupLogTailIsBounded()
+    {
+        var log = new PythonEnvironmentSetupLog();
+        for (int i = 0; i < 100; i++)
+            log.AppendLine("line-" + i.ToString("D3") + "-" + new string('x', 80), false);
+
+        log.GetTail(out string tail, out long revision);
+        Assert(tail.Length <= PythonEnvironmentSetupLog.DefaultTailCapacity + 100,
+            "The setup log tail exceeded its configured display bound.");
+        Assert(tail.Contains("line-099-") && revision == 100,
+            "The bounded setup log did not retain the latest lines and revision.");
+    }
+
+    private static void TestSetupSnapshotRefreshIsThrottled()
+    {
+        var cache = new ThrottledSnapshotCache<string>(TimeSpan.FromMilliseconds(100));
+        Assert(!cache.TryGet(out string cached), "An empty setup snapshot cache returned a value.");
+        cache.Store("setup snapshot");
+        for (int i = 0; i < 1000; i++)
+            Assert(cache.TryGet(out cached) && cached == "setup snapshot",
+                "A frequent UI poll did not reuse the cached setup snapshot.");
+        Thread.Sleep(150);
+        Assert(!cache.TryGet(out cached), "The setup snapshot cache did not expire for a refresh.");
     }
 
     private static async Task<int> ReproduceJobAssignmentGap()
@@ -291,6 +370,43 @@ internal static class Program
     private static void Assert(bool condition, string message)
     {
         if (!condition) throw new InvalidOperationException(message);
+    }
+
+    private sealed class BlockingWriteStream : Stream
+    {
+        private readonly ManualResetEventSlim writeStarted = new ManualResetEventSlim(false);
+        private readonly ManualResetEventSlim release = new ManualResetEventSlim(false);
+
+        public override bool CanRead => false;
+        public override bool CanSeek => false;
+        public override bool CanWrite => true;
+        public override long Length => 0;
+        public override long Position { get => 0; set => throw new NotSupportedException(); }
+
+        public bool WaitForWrite(TimeSpan timeout) => writeStarted.Wait(timeout);
+        public void ReleaseWrites() => release.Set();
+        public override void Flush() { }
+        public override int Read(byte[] buffer, int offset, int count) => throw new NotSupportedException();
+        public override long Seek(long offset, SeekOrigin origin) => throw new NotSupportedException();
+        public override void SetLength(long value) => throw new NotSupportedException();
+
+        public override void Write(byte[] buffer, int offset, int count)
+        {
+            writeStarted.Set();
+            if (!release.Wait(TimeSpan.FromSeconds(10)))
+                throw new TimeoutException("The test did not release the blocked log stream.");
+        }
+
+        protected override void Dispose(bool disposing)
+        {
+            if (disposing)
+            {
+                release.Set();
+                writeStarted.Dispose();
+                release.Dispose();
+            }
+            base.Dispose(disposing);
+        }
     }
 
     private sealed class TestJobObject : IDisposable
