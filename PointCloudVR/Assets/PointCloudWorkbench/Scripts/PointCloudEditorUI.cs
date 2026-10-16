@@ -1225,7 +1225,8 @@ public class PointCloudEditorUI : MonoBehaviour
     {
         bool showDetails = errorDetailsExpanded && !string.IsNullOrEmpty(progress.Detail);
         float width = Mathf.Min(760f, Screen.width - 24f);
-        float height = showDetails ? Mathf.Min(560f, Screen.height - 24f) : 160f;
+        float height = showDetails ? Mathf.Min(560f, Screen.height - 24f)
+            : progress.RequiresPythonEnvironmentSetup ? 220f : 160f;
         float x = (Screen.width - width) * 0.5f;
         float y = (Screen.height - height) * 0.5f;
         errorNotificationRect = new Rect(x, y, width, height);
@@ -1236,21 +1237,36 @@ public class PointCloudEditorUI : MonoBehaviour
         GUI.Label(new Rect(x + padding, y + 10f, innerWidth, 28f),
             $"{(progress.HasError ? "エラー" : "警告")} | {progress.Title}",
             progress.HasError ? errorTitleStyle : warningTitleStyle);
-        GUI.Label(new Rect(x + padding, y + 39f, innerWidth, 42f),
+        GUI.Label(new Rect(x + padding, y + 39f, innerWidth,
+                progress.RequiresPythonEnvironmentSetup ? 82f : 42f),
             progress.NotificationMessage, notificationMessageStyle);
 
-        float actionsY = y + 84f;
+        float actionsY = y + (progress.RequiresPythonEnvironmentSetup ? 132f : 84f);
         bool hasDetail = !string.IsNullOrEmpty(progress.Detail);
+        float actionX = x + padding;
         if (hasDetail)
         {
-            if (GUI.Button(new Rect(x + padding, actionsY, 98f, 28f),
+            if (GUI.Button(new Rect(actionX, actionsY, 98f, 28f),
                 showDetails ? "詳細を隠す" : "詳細", buttonStyle))
                 errorDetailsExpanded = !showDetails;
-
-            if (showDetails && GUI.Button(new Rect(x + padding + 106f, actionsY, 112f, 28f),
-                "全文コピー", buttonStyle))
-                GUIUtility.systemCopyBuffer = progress.Detail;
+            actionX += 106f;
         }
+
+        if (progress.RequiresPythonEnvironmentSetup && GUI.Button(
+            new Rect(actionX, actionsY, 220f, 28f), "Python環境をセットアップ", buttonStyle))
+        {
+            if (HardwareCompatibilityDiagnostic.OpenPythonSetupForOperation(progress.PythonEnvironmentSetupReason))
+            {
+                PointCloudProgressManager.Instance.DismissNotification();
+                errorDetailsExpanded = false;
+                return;
+            }
+        }
+        if (progress.RequiresPythonEnvironmentSetup) actionX += 228f;
+
+        if (showDetails && GUI.Button(new Rect(actionX, actionsY, 112f, 28f),
+                "全文コピー", buttonStyle))
+            GUIUtility.systemCopyBuffer = progress.Detail;
 
         if (GUI.Button(new Rect(x + width - padding - 90f, actionsY, 90f, 28f), "閉じる", buttonStyle))
         {

@@ -57,6 +57,7 @@ public sealed class HardwareCompatibilityDiagnostic : MonoBehaviour
     private string driverStatusText = "GPUドライバー情報を確認中...";
     private string saveStatus;
     private Vector2 detailsScroll;
+    private Vector2 setupDetailsScroll;
     private bool detailsOpen;
     private bool setupViewOpen;
     private bool setupConfirmationOpen;
@@ -64,6 +65,8 @@ public sealed class HardwareCompatibilityDiagnostic : MonoBehaviour
     private bool pythonProbeRunning;
     private string setupUiMessage;
     private Vector2 setupLogScroll;
+    private bool setupFollowLog = true;
+    private long setupLogRevisionSeen = -1;
     private bool quitting;
     private Process activeProbe;
     private GUIStyle titleStyle;
@@ -74,6 +77,22 @@ public sealed class HardwareCompatibilityDiagnostic : MonoBehaviour
 
     public static bool HasBlockingGraphicsFailure => instance != null && !string.IsNullOrEmpty(instance.graphicsFailure);
     public static bool IsDetailsOpen => instance != null && instance.detailsOpen;
+
+    public static bool OpenPythonSetupForOperation(string reason)
+    {
+        if (instance == null) instance = FindAnyObjectByType<HardwareCompatibilityDiagnostic>();
+        if (instance == null) return false;
+        instance.detailsOpen = true;
+        instance.setupViewOpen = true;
+        instance.setupConfirmationOpen = true;
+        instance.setupCompletionRefreshed = false;
+        instance.setupUiMessage = reason;
+        instance.setupDetailsScroll = Vector2.zero;
+        instance.setupLogScroll = Vector2.zero;
+        instance.setupFollowLog = true;
+        instance.setupLogRevisionSeen = -1;
+        return true;
+    }
 
     public static bool BlocksUnderlyingInput(Vector2 guiPointer)
     {

@@ -333,7 +333,8 @@ namespace PointCloudWorkbench
             }
             catch (Exception ex)
             {
-                operation.Fail("空中モヤ・浮遊点ノイズ除去", "Python解析に失敗しました。点群の編集内容は適用していません。", ex.ToString());
+                operation.FailWithException("空中モヤ・浮遊点ノイズ除去",
+                    "Python解析に失敗しました。点群の編集内容は適用していません。", ex);
                 UnityEngine.Debug.LogWarning($"[RecoverableOperationError] ノイズ解析: {ex}");
             }
             finally

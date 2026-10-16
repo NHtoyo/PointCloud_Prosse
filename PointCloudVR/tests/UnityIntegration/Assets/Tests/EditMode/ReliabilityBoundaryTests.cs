@@ -6,6 +6,71 @@ using NUnit.Framework;
 public sealed class ReliabilityBoundaryTests
 {
     [Test]
+    public void PythonEnvironmentProbe_DeserializesMissingPackageDetails()
+    {
+        Type bridgeType = RuntimeType("PointCloudWorkbench.PythonBridge");
+        MethodInfo parse = bridgeType.GetMethod("ParsePythonEnvironmentProbe", BindingFlags.NonPublic | BindingFlags.Static);
+        string json = "{\"is_compatible\":false,\"python_executable\":\"C:/qa/python.exe\"," +
+            "\"python_version\":\"3.12.3\",\"message\":\"numpy: No module named numpy\"," +
+            "\"packages\":[{\"name\":\"numpy\",\"version\":\"unavailable\",\"import_ok\":false}]}";
+
+        object info = parse.Invoke(null, new object[] { "PCWB_ENVIRONMENT_JSON:" + json, string.Empty, 2 });
+        Type infoType = RuntimeType("PointCloudWorkbench.PythonEnvironmentInfo");
+        Array packages = (Array)infoType.GetField("packages").GetValue(info);
+
+        Assert.That(packages.Length, Is.EqualTo(1));
+        object package = packages.GetValue(0);
+        Assert.That(package.GetType().GetField("name").GetValue(package), Is.EqualTo("numpy"));
+        Assert.That(package.GetType().GetField("import_ok").GetValue(package), Is.EqualTo(false));
+    }
+
+    [Test]
+    public void PythonEnvironmentFailure_OffersSetupOnlyForTypedEnvironmentErrors()
+    {
+        Type managerType = RuntimeType("PointCloudWorkbench.PointCloudProgressManager");
+        object manager = managerType.GetProperty("Instance").GetValue(null);
+        MethodInfo dismiss = managerType.GetMethod("DismissNotification");
+        MethodInfo start = managerType.GetMethod("TryStart");
+        Type operationType = RuntimeType("PointCloudWorkbench.PointCloudOperation");
+        Type infoType = RuntimeType("PointCloudWorkbench.PythonEnvironmentInfo");
+        Type packageType = RuntimeType("PointCloudWorkbench.PythonEnvironmentPackageInfo");
+        Type setupExceptionType = RuntimeType("PointCloudWorkbench.PythonEnvironmentSetupRequiredException");
+        Type snapshotType = RuntimeType("PointCloudWorkbench.PointCloudProgressSnapshot");
+
+        dismiss.Invoke(manager, null);
+        object package = Activator.CreateInstance(packageType);
+        packageType.GetField("name").SetValue(package, "open3d");
+        packageType.GetField("version").SetValue(package, "unavailable");
+        packageType.GetField("import_ok").SetValue(package, false);
+        Array packages = Array.CreateInstance(packageType, 1);
+        packages.SetValue(package, 0);
+
+        object info = Activator.CreateInstance(infoType);
+        infoType.GetField("is_compatible").SetValue(info, false);
+        infoType.GetField("python_path").SetValue(info, "C:/qa/python.exe");
+        infoType.GetField("python_version").SetValue(info, "3.12.3");
+        infoType.GetField("message").SetValue(info, "open3d: No module named 'open3d'");
+        infoType.GetField("packages").SetValue(info, packages);
+        object setupException = Activator.CreateInstance(setupExceptionType, new[] { info });
+
+        object operation = start.Invoke(manager, new object[] { "noise", "running" });
+        operationType.GetMethod("FailWithException").Invoke(operation,
+            new[] { "noise", "failed", setupException });
+        object snapshot = managerType.GetMethod("GetSnapshot").Invoke(manager, null);
+        Assert.That(snapshotType.GetProperty("RequiresPythonEnvironmentSetup").GetValue(snapshot), Is.True);
+        Assert.That((string)snapshotType.GetProperty("NotificationMessage").GetValue(snapshot), Does.Contain("open3d"));
+        Assert.That((string)snapshotType.GetProperty("Detail").GetValue(snapshot), Does.Contain("Python path"));
+
+        dismiss.Invoke(manager, null);
+        operation = start.Invoke(manager, new object[] { "noise", "running" });
+        operationType.GetMethod("FailWithException").Invoke(operation,
+            new object[] { "noise", "failed", new InvalidOperationException("algorithm failed") });
+        snapshot = managerType.GetMethod("GetSnapshot").Invoke(manager, null);
+        Assert.That(snapshotType.GetProperty("RequiresPythonEnvironmentSetup").GetValue(snapshot), Is.False);
+        dismiss.Invoke(manager, null);
+    }
+
+    [Test]
     public void BoundedTextBuffer_AppendLineKeepsItsConfiguredLimit()
     {
         Type bufferType = RuntimeType("PointCloudWorkbench.BoundedTextBuffer");

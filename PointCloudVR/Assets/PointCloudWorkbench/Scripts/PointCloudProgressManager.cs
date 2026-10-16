@@ -28,6 +28,17 @@ namespace PointCloudWorkbench
         public bool Fail(string operationTitle, string message, string exceptionDetail = null) =>
             owner.Finish(operationId, PointCloudOperationStatus.Failed, true, false, message,
                 exceptionDetail ?? message, operationTitle);
+        public bool FailWithException(string operationTitle, string message, Exception exception)
+        {
+            PythonEnvironmentSetupRequiredException setupException = exception as PythonEnvironmentSetupRequiredException;
+            string detail = exception != null ? exception.ToString() : message;
+            if (setupException != null && !string.IsNullOrWhiteSpace(setupException.DiagnosticDetail))
+                detail += Environment.NewLine + setupException.DiagnosticDetail;
+            return owner.Finish(operationId, PointCloudOperationStatus.Failed, true, false,
+                setupException != null ? setupException.SetupReason : message,
+                detail, operationTitle,
+                setupException != null, setupException != null ? setupException.SetupReason : null);
+        }
         public bool Cancel() => owner.Cancel(operationId);
     }
 
@@ -51,11 +62,14 @@ namespace PointCloudWorkbench
         public string StatusMessage { get; }
         public string NotificationMessage { get; }
         public string Detail { get; }
+        public bool RequiresPythonEnvironmentSetup { get; }
+        public string PythonEnvironmentSetupReason { get; }
         public PointCloudOperationStatus OperationStatus { get; }
 
         internal PointCloudProgressSnapshot(bool isRunning, bool hasError, bool hasWarning, float progress,
             string title, string statusMessage, string notificationMessage, string detail,
-            PointCloudOperationStatus operationStatus)
+            PointCloudOperationStatus operationStatus, bool requiresPythonEnvironmentSetup,
+            string pythonEnvironmentSetupReason)
         {
             IsRunning = isRunning;
             HasError = hasError;
@@ -65,6 +79,8 @@ namespace PointCloudWorkbench
             StatusMessage = statusMessage;
             NotificationMessage = notificationMessage;
             Detail = detail;
+            RequiresPythonEnvironmentSetup = requiresPythonEnvironmentSetup;
+            PythonEnvironmentSetupReason = pythonEnvironmentSetupReason;
             OperationStatus = operationStatus;
         }
     }
@@ -83,6 +99,8 @@ namespace PointCloudWorkbench
         private string statusMessage = string.Empty;
         private string notificationMessage = string.Empty;
         private string detail = string.Empty;
+        private bool requiresPythonEnvironmentSetup;
+        private string pythonEnvironmentSetupReason = string.Empty;
         private PointCloudOperationStatus operationStatus = PointCloudOperationStatus.Idle;
         private CancellationTokenSource cts;
         private long nextOperationId;
@@ -104,7 +122,8 @@ namespace PointCloudWorkbench
             lock (sync)
             {
                 return new PointCloudProgressSnapshot(isRunning, hasError, hasWarning, progress,
-                    title, statusMessage, notificationMessage, detail, operationStatus);
+                    title, statusMessage, notificationMessage, detail, operationStatus,
+                    requiresPythonEnvironmentSetup, pythonEnvironmentSetupReason);
             }
         }
 
@@ -126,6 +145,8 @@ namespace PointCloudWorkbench
                 statusMessage = message ?? string.Empty;
                 notificationMessage = string.Empty;
                 detail = string.Empty;
+                requiresPythonEnvironmentSetup = false;
+                pythonEnvironmentSetupReason = string.Empty;
                 operationStatus = PointCloudOperationStatus.Running;
                 operation = new PointCloudOperation(this, currentOperationId, cts.Token);
             }
@@ -183,6 +204,8 @@ namespace PointCloudWorkbench
                 title = operationTitle ?? string.Empty;
                 notificationMessage = message ?? string.Empty;
                 detail = notificationMessage;
+                requiresPythonEnvironmentSetup = false;
+                pythonEnvironmentSetupReason = string.Empty;
                 operationStatus = PointCloudOperationStatus.Failed;
             }
         }
@@ -196,11 +219,14 @@ namespace PointCloudWorkbench
                 hasWarning = false;
                 notificationMessage = string.Empty;
                 detail = string.Empty;
+                requiresPythonEnvironmentSetup = false;
+                pythonEnvironmentSetupReason = string.Empty;
             }
         }
 
         internal bool Finish(long operationId, PointCloudOperationStatus status, bool error, bool warning, string message,
-            string exceptionDetail, string operationTitle = null)
+            string exceptionDetail, string operationTitle = null, bool requiresPythonEnvironmentSetup = false,
+            string pythonEnvironmentSetupReason = null)
         {
             CancellationTokenSource source;
             lock (sync)
@@ -212,6 +238,8 @@ namespace PointCloudWorkbench
                 if (operationTitle != null) title = operationTitle;
                 notificationMessage = message ?? string.Empty;
                 detail = exceptionDetail ?? string.Empty;
+                this.requiresPythonEnvironmentSetup = requiresPythonEnvironmentSetup;
+                this.pythonEnvironmentSetupReason = pythonEnvironmentSetupReason ?? string.Empty;
                 operationStatus = status;
                 if (status == PointCloudOperationStatus.Success) progress = 1f;
                 if (status == PointCloudOperationStatus.Failed) statusMessage = "処理に失敗しました。";
