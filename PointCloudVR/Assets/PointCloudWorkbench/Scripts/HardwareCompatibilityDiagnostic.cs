@@ -3,6 +3,7 @@ using System.Collections;
 using System.Collections.Generic;
 using System.IO;
 using System.Text;
+using System.Threading;
 using System.Threading.Tasks;
 using UnityEngine;
 using PointCloudWorkbench;
@@ -52,15 +53,24 @@ public sealed class HardwareCompatibilityDiagnostic : MonoBehaviour
     private HardwareCompatibilityReport report;
     private string graphicsFailure;
     private string pythonStatusText = "Python環境を確認中...";
+    private string pythonExecutableText = "未確認";
     private string driverStatusText = "GPUドライバー情報を確認中...";
     private string saveStatus;
+    private Vector2 detailsScroll;
     private bool detailsOpen;
+    private bool setupViewOpen;
+    private bool setupConfirmationOpen;
+    private bool setupCompletionRefreshed;
+    private bool pythonProbeRunning;
+    private string setupUiMessage;
+    private Vector2 setupLogScroll;
     private bool quitting;
     private Process activeProbe;
     private GUIStyle titleStyle;
     private GUIStyle bodyStyle;
     private GUIStyle warningStyle;
     private GUIStyle buttonStyle;
+    private GUIStyle setupLogStyle;
 
     public static bool HasBlockingGraphicsFailure => instance != null && !string.IsNullOrEmpty(instance.graphicsFailure);
     public static bool IsDetailsOpen => instance != null && instance.detailsOpen;
@@ -192,91 +202,80 @@ public sealed class HardwareCompatibilityDiagnostic : MonoBehaviour
         if (!quitting) yield return StartCoroutine(ProbePythonEnvironment());
     }
 
+    private void Update()
+    {
+        PythonEnvironmentSetupSnapshot snapshot = PythonBridge.GetEnvironmentSetupSnapshot();
+        if (snapshot.is_complete && !setupCompletionRefreshed)
+        {
+            setupCompletionRefreshed = true;
+            ApplyPythonEnvironmentInfo(PythonBridge.GetLastEnvironmentInfo());
+        }
+    }
+
     private IEnumerator ProbePythonEnvironment()
     {
-        string userPython = Path.Combine(Application.persistentDataPath, "PythonEnvironment", ".venv", "Scripts", "python.exe");
-        string packagedPython = Path.GetFullPath(Path.Combine(Application.dataPath, "../python_backend/.venv/Scripts/python.exe"));
-        List<PythonCandidate> candidates = new List<PythonCandidate>();
-        if (File.Exists(userPython)) candidates.Add(new PythonCandidate(userPython, string.Empty));
-        if (File.Exists(packagedPython)) candidates.Add(new PythonCandidate(packagedPython, string.Empty));
-        candidates.Add(new PythonCandidate("python", string.Empty));
-        candidates.Add(new PythonCandidate("py", "-3.12 "));
-
-        const string probe = "import importlib,importlib.util,importlib.metadata as m,json,sys\n" +
-            "mods=[('numpy','numpy'),('scipy','scipy'),('open3d','open3d'),('fastapi','fastapi'),('uvicorn','uvicorn'),('pydantic','pydantic'),('matplotlib','matplotlib')]\n" +
-            "expected={'open3d':'0.20.0','numpy':'2.5.3','scipy':'1.18.1','fastapi':'0.143.0','uvicorn':'0.54.0','pydantic':'2.14.0','matplotlib':'3.11.2'}\n" +
-            "p=[]\n" +
-            "for n,mod in mods:\n" +
-            " try:\n  importlib.import_module(mod); p.append({'name':n,'version':m.version(n),'import_ok':True})\n" +
-            " except Exception:\n  p.append({'name':n,'version':'missing','import_ok':False})\n" +
-            "ok=sys.version_info[:2]==(3,12) and all(x['import_ok'] and x['version']==expected[x['name']] for x in p)\n" +
-            "print(('PCWB_DIAG_OK:' if ok else 'PCWB_DIAG:')+json.dumps({'python_version':sys.version.split()[0],'packages':p}))\n";
-
-        Task<string> probeTask = Task.Run(() => ProbePythonJson(candidates,
-            Path.GetFullPath(Path.Combine(Application.dataPath, "..")), probe));
+        if (pythonProbeRunning) yield break;
+        pythonProbeRunning = true;
+        Task<PythonEnvironmentInfo> probeTask = PythonBridge.ValidateAvailableEnvironmentAsync(CancellationToken.None);
         yield return new WaitUntil(() => probeTask.IsCompleted);
-        string output = null;
-        try { output = probeTask.GetAwaiter().GetResult(); }
-        catch { }
-        string markerText = "PCWB_DIAG_OK:";
-        int marker = output != null ? output.LastIndexOf(markerText, StringComparison.Ordinal) : -1;
-        if (marker < 0)
+        if (quitting)
         {
-            markerText = "PCWB_DIAG:";
-            marker = output != null ? output.LastIndexOf(markerText, StringComparison.Ordinal) : -1;
+            pythonProbeRunning = false;
+            yield break;
         }
-        bool pythonEnvironmentAccepted = marker >= 0 && markerText == "PCWB_DIAG_OK:";
-        bool probeParsed = false;
-        if (marker >= 0)
+        PythonEnvironmentInfo info = null;
+        try { info = probeTask.GetAwaiter().GetResult(); }
+        catch (Exception ex) { info = new PythonEnvironmentInfo { is_compatible = false, message = ex.Message }; }
+        ApplyPythonEnvironmentInfo(info);
+        pythonProbeRunning = false;
+    }
+
+    private void ApplyPythonEnvironmentInfo(PythonEnvironmentInfo info)
+    {
+        if (info == null)
         {
-            try
+            report.python_status = "確認失敗";
+            report.python_version = "取得不可";
+            report.python_packages = new HardwarePackageReport[0];
+            pythonExecutableText = "未確認";
+            pythonStatusText = "Python環境を確認できません。点群の閲覧・編集は継続できます。";
+            return;
+        }
+
+        report.python_version = string.IsNullOrWhiteSpace(info.python_version) ? "取得不可" : info.python_version;
+        report.python_packages = new HardwarePackageReport[info.packages != null ? info.packages.Length : 0];
+        for (int i = 0; i < report.python_packages.Length; i++)
+        {
+            PythonEnvironmentPackageInfo package = info.packages[i];
+            report.python_packages[i] = new HardwarePackageReport
             {
-                string json = output.Substring(marker + markerText.Length).Trim();
-                PythonProbeResult result = JsonUtility.FromJson<PythonProbeResult>(json);
-                if (result != null)
-                {
-                    report.python_version = result.python_version;
-                    report.python_packages = result.packages ?? new HardwarePackageReport[0];
-                    bool required = result.python_version.StartsWith("3.12.", StringComparison.Ordinal);
-                    for (int i = 0; i < report.python_packages.Length; i++)
-                    {
-                        HardwarePackageReport package = report.python_packages[i];
-                        if (!PackageMatchesPinnedVersion(package)) required = false;
-                    }
-                    required &= pythonEnvironmentAccepted;
-                    report.python_status = required ? "利用可能" : "必須ライブラリ不足またはバージョン不一致";
-                    pythonStatusText = required
-                        ? $"Python {report.python_version}: 固定バージョンの依存関係を確認しました。"
-                        : $"Python {report.python_version}: 依存関係が不足または固定バージョンと異なります。解析実行時にセットアップを試みます。";
-                    probeParsed = true;
-                }
-            }
-            catch { }
+                name = package.name,
+                version = package.version,
+                import_ok = package.import_ok
+            };
         }
-        if (probeParsed) yield break;
-
-        report.python_status = "未検出または起動不可";
-        report.python_version = "取得不可";
-        report.python_packages = new HardwarePackageReport[0];
-        pythonStatusText = "Python環境を確認できません。Python解析は利用できませんが、点群の閲覧・編集などは継続できます。";
-    }
-
-    private sealed class PythonCandidate
-    {
-        public readonly string FileName;
-        public readonly string PrefixArguments;
-        public PythonCandidate(string fileName, string prefixArguments)
+        pythonExecutableText = string.IsNullOrWhiteSpace(info.python_path) ? "未確認" : info.python_path;
+        if (string.IsNullOrWhiteSpace(info.python_path))
         {
-            FileName = fileName;
-            PrefixArguments = prefixArguments;
+            report.python_status = "Python未検出";
+            pythonStatusText = "Python 3.12を検出できません。Python本体を導入後、「Pythonを再検出」してください。";
         }
-    }
-
-    [Serializable]
-    private sealed class PythonProbeResult
-    {
-        public string python_version;
-        public HardwarePackageReport[] packages;
+        else if (!report.python_version.StartsWith("3.12.", StringComparison.Ordinal))
+        {
+            report.python_status = "Pythonバージョン非対応";
+            pythonStatusText = $"Python {report.python_version}を検出しましたが、Python 3.12.xが必要です。";
+        }
+        else if (!info.is_compatible)
+        {
+            report.python_status = "依存ライブラリまたはAPI不整合";
+            pythonStatusText = "Python 3.12は検出しましたが、必要ライブラリ・バージョン・APIの検証に失敗しました: " +
+                (info.message ?? "詳細を診断ログで確認してください。");
+        }
+        else
+        {
+            report.python_status = "利用可能";
+            pythonStatusText = $"Python {report.python_version}: 依存ライブラリと主要APIを確認しました。";
+        }
     }
 
     private static string QuoteArgument(string value)
@@ -318,32 +317,6 @@ public sealed class HardwareCompatibilityDiagnostic : MonoBehaviour
             RedirectStandardError = true
         };
         return RunBoundedProcess(startInfo, 5000);
-    }
-
-    private string ProbePythonJson(List<PythonCandidate> candidates, string workingDirectory, string probe)
-    {
-        string firstAvailableEnvironment = null;
-        for (int i = 0; i < candidates.Count; i++)
-        {
-            PythonCandidate candidate = candidates[i];
-            ProcessStartInfo startInfo = new ProcessStartInfo
-            {
-                FileName = candidate.FileName,
-                Arguments = candidate.PrefixArguments + "-c " + QuoteArgument(probe),
-                WorkingDirectory = workingDirectory,
-                UseShellExecute = false,
-                CreateNoWindow = true,
-                RedirectStandardOutput = true,
-                RedirectStandardError = true,
-                StandardOutputEncoding = Encoding.UTF8,
-                StandardErrorEncoding = Encoding.UTF8
-            };
-            string output = RunBoundedProcess(startInfo, 30000);
-            if (!string.IsNullOrEmpty(output) && output.Contains("PCWB_DIAG_OK:")) return output;
-            if (firstAvailableEnvironment == null && !string.IsNullOrEmpty(output) && output.Contains("PCWB_DIAG:"))
-                firstAvailableEnvironment = output;
-        }
-        return firstAvailableEnvironment;
     }
 
     private string RunBoundedProcess(ProcessStartInfo startInfo, int timeoutMilliseconds)
@@ -415,9 +388,14 @@ public sealed class HardwareCompatibilityDiagnostic : MonoBehaviour
 
         if (Event.current.type == EventType.KeyDown && Event.current.keyCode == KeyCode.F10 && GUIUtility.keyboardControl == 0)
             detailsOpen = !detailsOpen;
+        if (detailsOpen)
+        {
+            if (setupViewOpen) DrawPythonSetupWindow();
+            else DrawDetailsWindow();
+            return;
+        }
         Rect buttonRect = PointCloudUILayout.Calculate(Screen.width, Screen.height).DiagnosticButton;
         if (GUI.Button(buttonRect, "PC互換性・Python診断", buttonStyle)) detailsOpen = !detailsOpen;
-        if (detailsOpen) DrawDetailsWindow();
     }
 
     private void EnsureStyles()
@@ -427,6 +405,13 @@ public sealed class HardwareCompatibilityDiagnostic : MonoBehaviour
         bodyStyle = new GUIStyle(GUI.skin.label) { fontSize = 14, wordWrap = true, richText = false };
         warningStyle = new GUIStyle(bodyStyle) { normal = { textColor = new Color(1f, 0.72f, 0.28f) } };
         buttonStyle = new GUIStyle(GUI.skin.button) { fontSize = 14, wordWrap = true, fixedHeight = 32 };
+        setupLogStyle = new GUIStyle(GUI.skin.label)
+        {
+            fontSize = 11,
+            wordWrap = true,
+            alignment = TextAnchor.UpperLeft,
+            padding = new RectOffset(6, 6, 4, 4)
+        };
     }
 
     private void DrawBlockingGraphicsError()
@@ -455,15 +440,166 @@ public sealed class HardwareCompatibilityDiagnostic : MonoBehaviour
     private void DrawDetailsWindow()
     {
         Rect panel = PointCloudUILayout.Calculate(Screen.width, Screen.height).DiagnosticDetails;
-        float height = panel.height;
         GUI.Box(panel, GUIContent.none);
         GUILayout.BeginArea(new Rect(panel.x + 14f, panel.y + 12f, panel.width - 28f, panel.height - 24f));
         GUILayout.Label("PC互換性診断", titleStyle);
-        GUILayout.Label(BuildSummary(), bodyStyle, GUILayout.Height(height - 118f));
+        detailsScroll = GUILayout.BeginScrollView(detailsScroll, GUILayout.ExpandHeight(true));
+        GUILayout.Label(BuildSummary(), bodyStyle);
+        GUILayout.EndScrollView();
+        if (pythonProbeRunning)
+            GUILayout.Label("Python環境を再検出しています...", bodyStyle);
+        else if (string.IsNullOrWhiteSpace(pythonExecutableText) || pythonExecutableText == "未確認")
+        {
+            GUILayout.BeginHorizontal();
+            if (GUILayout.Button("Python 3.12の公式案内", buttonStyle))
+                Application.OpenURL("https://www.python.org/downloads/windows/");
+            if (GUILayout.Button("Pythonを再検出", buttonStyle)) StartCoroutine(ProbePythonEnvironment());
+            GUILayout.EndHorizontal();
+        }
+        else if (!string.Equals(report.python_status, "利用可能", StringComparison.Ordinal))
+        {
+            if (GUILayout.Button("Python環境を再検出", buttonStyle)) StartCoroutine(ProbePythonEnvironment());
+        }
+        if (GUILayout.Button("Python環境をセットアップ／修復", buttonStyle))
+        {
+            setupViewOpen = true;
+            setupConfirmationOpen = false;
+            setupUiMessage = null;
+        }
+        GUILayout.BeginHorizontal();
         if (GUILayout.Button("診断JSONを保存", buttonStyle)) SaveReport();
-        if (!string.IsNullOrEmpty(saveStatus)) GUILayout.Label(saveStatus, bodyStyle);
         if (GUILayout.Button("閉じる", buttonStyle)) detailsOpen = false;
+        GUILayout.EndHorizontal();
+        if (!string.IsNullOrEmpty(saveStatus)) GUILayout.Label(saveStatus, bodyStyle);
         GUILayout.EndArea();
+    }
+
+    private void DrawPythonSetupWindow()
+    {
+        Rect panel = PointCloudUILayout.Calculate(Screen.width, Screen.height).DiagnosticDetails;
+        GUI.Box(panel, GUIContent.none);
+        GUILayout.BeginArea(new Rect(panel.x + 14f, panel.y + 12f, panel.width - 28f, panel.height - 24f));
+        GUILayout.Label("Python環境セットアップ", titleStyle);
+        PythonEnvironmentSetupSnapshot snapshot = PythonBridge.GetEnvironmentSetupSnapshot();
+
+        if (setupConfirmationOpen && !snapshot.is_running)
+        {
+            GUILayout.Label(
+                "新しい独立したPython環境を作成し、requirements.txtの依存関係を導入します。既存の正常な環境は更新・削除しません。インターネット接続と空きディスクが必要です。",
+                bodyStyle, GUILayout.ExpandHeight(true));
+            GUILayout.BeginHorizontal();
+            if (GUILayout.Button("セットアップを開始", buttonStyle))
+            {
+                setupConfirmationOpen = false;
+                setupCompletionRefreshed = false;
+                setupUiMessage = null;
+                PythonBridge.StartEnvironmentSetup();
+            }
+            if (GUILayout.Button("戻る", buttonStyle)) setupConfirmationOpen = false;
+            GUILayout.EndHorizontal();
+        }
+        else
+        {
+            string state = snapshot.is_running ? "セットアップ中: " + snapshot.stage
+                : snapshot.is_complete ? "完了: 新しい環境を検証し、有効化しました。"
+                : snapshot.has_error ? "失敗: " + snapshot.stage
+                : snapshot.was_cancelled ? "キャンセル済み: 既存環境は保持されています。"
+                : "既存環境は保持されます。新規導入は利用者が開始を選んだ場合だけ行います。";
+            GUILayout.Label(state, snapshot.has_error ? warningStyle : bodyStyle);
+
+            if (snapshot.is_running || snapshot.is_complete || snapshot.has_error || snapshot.was_cancelled)
+            {
+                string[] stageNames = { "Python 3.12の確認", "仮想環境の作成", "依存ライブラリの導入", "動作検証" };
+                for (int i = 0; i < stageNames.Length; i++)
+                {
+                    string marker = i < snapshot.stage_index ? "完了" :
+                        i == snapshot.stage_index && snapshot.is_running ? "実行中" :
+                        i == snapshot.stage_index && snapshot.was_cancelled ? "キャンセル" :
+                        snapshot.has_error && i == snapshot.stage_index ? "失敗" : "待機中";
+                    GUILayout.Label("[" + (i + 1) + "/4] " + stageNames[i] + "  " + marker, bodyStyle);
+                }
+                GUILayout.Label("経過時間: " + FormatDuration(snapshot.elapsed_seconds) +
+                    "　最終ログ受信: " + snapshot.seconds_since_output.ToString("F0") + "秒前", bodyStyle);
+                if (!string.IsNullOrEmpty(snapshot.python_path))
+                    GUILayout.Label("Python: " + snapshot.python_path, bodyStyle);
+                if (!string.IsNullOrEmpty(snapshot.setup_directory))
+                    GUILayout.Label("セットアップ先: " + snapshot.setup_directory, bodyStyle);
+                if (!string.IsNullOrEmpty(snapshot.log_path))
+                    GUILayout.Label("ログ: " + snapshot.log_path, bodyStyle);
+                if (snapshot.has_error) GUILayout.Label(FirstLine(snapshot.error), warningStyle);
+            }
+
+            GUILayout.BeginVertical(GUI.skin.box, GUILayout.ExpandHeight(true));
+            setupLogScroll = GUILayout.BeginScrollView(setupLogScroll, GUILayout.ExpandHeight(true));
+            GUILayout.Label(string.IsNullOrEmpty(snapshot.recent_log) ? "セットアップログはまだありません。" : snapshot.recent_log, setupLogStyle);
+            GUILayout.EndScrollView();
+            GUILayout.EndVertical();
+
+            GUILayout.BeginHorizontal();
+            if (snapshot.is_running)
+            {
+                if (GUILayout.Button("処理をキャンセル", buttonStyle)) PythonBridge.CancelEnvironmentSetup();
+            }
+            else if (!snapshot.is_complete)
+            {
+                if (GUILayout.Button(snapshot.has_error || snapshot.was_cancelled ? "再試行" : "開始", buttonStyle))
+                    setupConfirmationOpen = true;
+            }
+            if (!string.IsNullOrEmpty(snapshot.log_path))
+            {
+                if (GUILayout.Button("全文コピー", buttonStyle)) CopySetupLog(snapshot.log_path);
+                if (GUILayout.Button("ログを開く", buttonStyle)) OpenSetupLog(snapshot.log_path);
+            }
+            GUILayout.EndHorizontal();
+            GUILayout.BeginHorizontal();
+            if (snapshot.has_error && snapshot.error.Contains("Python 3.12が見つかりません"))
+            {
+                if (GUILayout.Button("Python 3.12の公式案内", buttonStyle))
+                    Application.OpenURL("https://www.python.org/downloads/windows/");
+            }
+            if (GUILayout.Button("診断へ戻る", buttonStyle)) setupViewOpen = false;
+            if (GUILayout.Button("閉じる", buttonStyle)) detailsOpen = false;
+            GUILayout.EndHorizontal();
+            if (!string.IsNullOrEmpty(setupUiMessage)) GUILayout.Label(setupUiMessage, bodyStyle);
+        }
+        GUILayout.EndArea();
+    }
+
+    private static string FormatDuration(double seconds)
+    {
+        TimeSpan value = TimeSpan.FromSeconds(Math.Max(0d, seconds));
+        return value.ToString(value.TotalHours >= 1d ? @"hh\:mm\:ss" : @"mm\:ss");
+    }
+
+    private static string FirstLine(string value)
+    {
+        if (string.IsNullOrEmpty(value)) return string.Empty;
+        int lineEnd = value.IndexOfAny(new[] { '\r', '\n' });
+        return lineEnd < 0 ? value : value.Substring(0, lineEnd);
+    }
+
+    private void CopySetupLog(string path)
+    {
+        try
+        {
+            GUIUtility.systemCopyBuffer = File.ReadAllText(path, Encoding.UTF8);
+            setupUiMessage = "ログ全文をクリップボードへコピーしました。";
+        }
+        catch (Exception ex) { setupUiMessage = "ログをコピーできません: " + ex.Message; }
+    }
+
+    private void OpenSetupLog(string path)
+    {
+        try
+        {
+            System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo
+            {
+                FileName = path,
+                UseShellExecute = true
+            });
+            setupUiMessage = "ログファイルを開きました。";
+        }
+        catch (Exception ex) { setupUiMessage = "ログを開けません: " + ex.Message; }
     }
 
     private string BuildSummary()
@@ -478,6 +614,7 @@ public sealed class HardwareCompatibilityDiagnostic : MonoBehaviour
         text.AppendLine($"Reported graphics memory capacity: {report.graphics_memory_capacity_mb} MB (usage is not measured)");
         text.AppendLine($"Required shader: {(report.required_shader_supported ? "supported" : "unsupported")}; PointData stride: {report.point_data_stride_bytes} bytes");
         text.AppendLine(pythonStatusText);
+        text.AppendLine("Python executable: " + pythonExecutableText);
         if (report.python_packages != null)
             for (int i = 0; i < report.python_packages.Length; i++)
             {
@@ -485,22 +622,6 @@ public sealed class HardwareCompatibilityDiagnostic : MonoBehaviour
                 text.AppendLine($"  {package.name}: {package.version} ({(package.import_ok ? "import OK" : "import failed")})");
             }
         return text.ToString();
-    }
-
-    private static bool PackageMatchesPinnedVersion(HardwarePackageReport package)
-    {
-        if (!package.import_ok) return false;
-        switch (package.name)
-        {
-            case "open3d": return package.version == "0.20.0";
-            case "numpy": return package.version == "2.5.3";
-            case "scipy": return package.version == "1.18.1";
-            case "fastapi": return package.version == "0.143.0";
-            case "uvicorn": return package.version == "0.54.0";
-            case "pydantic": return package.version == "2.14.0";
-            case "matplotlib": return package.version == "3.11.2";
-            default: return false;
-        }
     }
 
     private void SaveReport()

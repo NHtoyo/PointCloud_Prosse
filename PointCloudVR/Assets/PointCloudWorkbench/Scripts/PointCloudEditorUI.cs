@@ -89,6 +89,8 @@ public class PointCloudEditorUI : MonoBehaviour
     private GUIStyle notificationPanelStyle;
     private GUIStyle errorTitleStyle;
     private GUIStyle warningTitleStyle;
+    private GUIStyle notificationMessageStyle;
+    private GUIStyle errorDetailStyle;
 
     // --- Scale Calibration / Downsampling Modals & Variables ---
     public bool showMeasurementUI = true;
@@ -311,6 +313,14 @@ public class PointCloudEditorUI : MonoBehaviour
         warningTitleStyle = new GUIStyle(headerStyle);
         warningTitleStyle.alignment = TextAnchor.MiddleLeft;
         warningTitleStyle.normal.textColor = new Color(1f, 0.72f, 0.2f);
+        notificationMessageStyle = new GUIStyle(textStyle);
+        notificationMessageStyle.fontSize = 13;
+        notificationMessageStyle.alignment = TextAnchor.UpperLeft;
+        errorDetailStyle = new GUIStyle(GUI.skin.label);
+        errorDetailStyle.fontSize = 12;
+        errorDetailStyle.wordWrap = true;
+        errorDetailStyle.alignment = TextAnchor.UpperLeft;
+        errorDetailStyle.padding = new RectOffset(5, 5, 4, 4);
 
         stylesInitialized = true;
     }
@@ -1015,7 +1025,11 @@ public class PointCloudEditorUI : MonoBehaviour
         }
         else if (progress.HasError || progress.HasWarning)
         {
+            GUI.enabled = true;
+            GUI.Box(new Rect(0, 0, Screen.width, Screen.height), GUIContent.none, modalBackdropStyle);
             DrawOperationNotification(progress);
+            GUI.enabled = guiEnabledBeforeDraw;
+            return;
         }
 
         // --- 11. Format Selection Dialog for Export ---
@@ -1209,32 +1223,56 @@ public class PointCloudEditorUI : MonoBehaviour
 
     private void DrawOperationNotification(PointCloudProgressSnapshot progress)
     {
-        float width = Mathf.Min(560f, Screen.width - 24f);
-        float height = errorDetailsExpanded ? Mathf.Min(350f, Screen.height - 24f) : 150f;
+        bool showDetails = errorDetailsExpanded && !string.IsNullOrEmpty(progress.Detail);
+        float width = Mathf.Min(760f, Screen.width - 24f);
+        float height = showDetails ? Mathf.Min(560f, Screen.height - 24f) : 160f;
         float x = (Screen.width - width) * 0.5f;
         float y = (Screen.height - height) * 0.5f;
         errorNotificationRect = new Rect(x, y, width, height);
-        GUILayout.BeginArea(errorNotificationRect, notificationPanelStyle);
-        GUILayout.Label($"{(progress.HasError ? "エラー" : "警告")} | {progress.Title}", progress.HasError ? errorTitleStyle : warningTitleStyle);
-        GUILayout.Label(progress.NotificationMessage, textStyle);
-        GUILayout.BeginHorizontal();
-        if (!string.IsNullOrEmpty(progress.Detail) && GUILayout.Button(errorDetailsExpanded ? "詳細を隠す" : "詳細", buttonStyle, GUILayout.Width(90f)))
-            errorDetailsExpanded = !errorDetailsExpanded;
-        GUILayout.FlexibleSpace();
-        if (GUILayout.Button("閉じる", buttonStyle, GUILayout.Width(90f)))
+        GUI.Box(errorNotificationRect, GUIContent.none, notificationPanelStyle);
+
+        const float padding = 16f;
+        float innerWidth = width - padding * 2f;
+        GUI.Label(new Rect(x + padding, y + 10f, innerWidth, 28f),
+            $"{(progress.HasError ? "エラー" : "警告")} | {progress.Title}",
+            progress.HasError ? errorTitleStyle : warningTitleStyle);
+        GUI.Label(new Rect(x + padding, y + 39f, innerWidth, 42f),
+            progress.NotificationMessage, notificationMessageStyle);
+
+        float actionsY = y + 84f;
+        bool hasDetail = !string.IsNullOrEmpty(progress.Detail);
+        if (hasDetail)
+        {
+            if (GUI.Button(new Rect(x + padding, actionsY, 98f, 28f),
+                showDetails ? "詳細を隠す" : "詳細", buttonStyle))
+                errorDetailsExpanded = !showDetails;
+
+            if (showDetails && GUI.Button(new Rect(x + padding + 106f, actionsY, 112f, 28f),
+                "全文コピー", buttonStyle))
+                GUIUtility.systemCopyBuffer = progress.Detail;
+        }
+
+        if (GUI.Button(new Rect(x + width - padding - 90f, actionsY, 90f, 28f), "閉じる", buttonStyle))
         {
             PointCloudProgressManager.Instance.DismissNotification();
             errorDetailsExpanded = false;
+            return;
         }
-        GUILayout.EndHorizontal();
-        if (errorDetailsExpanded && !string.IsNullOrEmpty(progress.Detail))
+
+        if (showDetails)
         {
-            GUILayout.Space(4f);
-            errorScrollPos = GUILayout.BeginScrollView(errorScrollPos);
-            GUILayout.TextArea(progress.Detail, textStyle);
-            GUILayout.EndScrollView();
+            Rect viewRect = new Rect(
+                x + padding,
+                actionsY + 36f,
+                innerWidth,
+                Mathf.Max(40f, height - (actionsY - y) - 52f));
+            float contentWidth = Mathf.Max(1f, viewRect.width - 18f);
+            float contentHeight = errorDetailStyle.CalcHeight(new GUIContent(progress.Detail), contentWidth);
+            Rect contentRect = new Rect(0f, 0f, contentWidth, Mathf.Max(viewRect.height, contentHeight));
+            errorScrollPos = GUI.BeginScrollView(viewRect, errorScrollPos, contentRect);
+            GUI.Label(new Rect(0f, 0f, contentWidth, contentHeight), progress.Detail, errorDetailStyle);
+            GUI.EndScrollView();
         }
-        GUILayout.EndArea();
     }
 
     private void DrawLine(Vector2 start, Vector2 end, Color color, float width)
