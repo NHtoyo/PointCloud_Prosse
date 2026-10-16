@@ -1,4 +1,4 @@
-[CmdletBinding()]
+﻿[CmdletBinding()]
 param(
     [string]$PythonExe = '',
     [string]$CompanyName = 'DefaultCompany',
@@ -10,6 +10,11 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
+$utf8NoBom = New-Object -TypeName System.Text.UTF8Encoding -ArgumentList $false
+[Console]::OutputEncoding = $utf8NoBom
+$OutputEncoding = $utf8NoBom
+$env:PYTHONUTF8 = '1'
+$env:PYTHONIOENCODING = 'utf-8'
 $backend = (Resolve-Path $PSScriptRoot).Path
 $requirements = Join-Path $backend 'requirements.txt'
 
@@ -90,6 +95,25 @@ if ([string]::IsNullOrWhiteSpace($PythonExe)) {
 if ([string]::IsNullOrWhiteSpace($PythonExe)) {
     throw 'Python 3.12が見つかりません。Python 3.12をユーザー権限で導入するか、-PythonExeで実行ファイルを指定してください。'
 }
+
+$basePythonProbe = "import json,os,sys; base=getattr(sys,'_base_executable',None) or sys.executable; print(json.dumps({'version':'.'.join(map(str,sys.version_info[:3])),'base_executable':os.path.realpath(base)})); raise SystemExit(0 if sys.version_info[:2]==(3,12) and os.path.isfile(base) else 1)"
+if ($PythonExe -eq 'py -3.12') {
+    $basePythonOutput = & py -3.12 -B -c $basePythonProbe 2>&1
+}
+else {
+    $basePythonOutput = & $PythonExe -B -c $basePythonProbe 2>&1
+}
+$basePythonExitCode = $LASTEXITCODE
+if ($basePythonExitCode -ne 0) {
+    throw "指定されたPython 3.12本体を確認できませんでした。既存venvの基礎Pythonを確認してください: $($basePythonOutput -join ' ')"
+}
+$basePythonInfo = ($basePythonOutput | Select-Object -Last 1 | Out-String).Trim() | ConvertFrom-Json
+if ([string]$basePythonInfo.version -notlike '3.12.*' -or
+    [string]::IsNullOrWhiteSpace([string]$basePythonInfo.base_executable) -or
+    -not (Test-Path -LiteralPath $basePythonInfo.base_executable -PathType Leaf)) {
+    throw "Python 3.12の基礎実行ファイルが見つかりません: $($basePythonInfo | ConvertTo-Json -Compress)"
+}
+$PythonExe = [System.IO.Path]::GetFullPath([string]$basePythonInfo.base_executable)
 Write-Output "PCWB_PYTHON:$PythonExe"
 if ($Offline -and [string]::IsNullOrWhiteSpace($Wheelhouse)) {
     throw '-Offlineには完全なwheelhouseのパスを-Wheelhouseで指定してください。'

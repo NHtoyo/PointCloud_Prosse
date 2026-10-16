@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
 using System.Net.Http;
+using System.Runtime.InteropServices;
 using System.Security.Cryptography;
 using System.Text;
 using System.Threading;
@@ -117,6 +118,110 @@ namespace PointCloudWorkbench
         private static long environmentSetupCachedRevision = -1;
         private static string environmentSetupCachedTail = string.Empty;
         private static PythonEnvironmentInfo lastEnvironmentInfo;
+
+        private sealed class SetupProcessJob : IDisposable
+        {
+            private const uint KillOnJobClose = 0x00002000;
+            private const int JobObjectExtendedLimitInformationClass = 9;
+            private IntPtr handle;
+
+            [StructLayout(LayoutKind.Sequential)]
+            private struct BasicLimitInformation
+            {
+                public long PerProcessUserTimeLimit;
+                public long PerJobUserTimeLimit;
+                public uint LimitFlags;
+                public UIntPtr MinimumWorkingSetSize;
+                public UIntPtr MaximumWorkingSetSize;
+                public uint ActiveProcessLimit;
+                public UIntPtr Affinity;
+                public uint PriorityClass;
+                public uint SchedulingClass;
+            }
+
+            [StructLayout(LayoutKind.Sequential)]
+            private struct IoCounters
+            {
+                public ulong ReadOperationCount;
+                public ulong WriteOperationCount;
+                public ulong OtherOperationCount;
+                public ulong ReadTransferCount;
+                public ulong WriteTransferCount;
+                public ulong OtherTransferCount;
+            }
+
+            [StructLayout(LayoutKind.Sequential)]
+            private struct ExtendedLimitInformation
+            {
+                public BasicLimitInformation BasicLimitInformation;
+                public IoCounters IoInfo;
+                public UIntPtr ProcessMemoryLimit;
+                public UIntPtr JobMemoryLimit;
+                public UIntPtr PeakProcessMemoryUsed;
+                public UIntPtr PeakJobMemoryUsed;
+            }
+
+            [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+            private static extern IntPtr CreateJobObject(IntPtr jobAttributes, string name);
+
+            [DllImport("kernel32.dll", SetLastError = true)]
+            private static extern bool SetInformationJobObject(IntPtr job, int informationClass,
+                ref ExtendedLimitInformation information, uint informationLength);
+
+            [DllImport("kernel32.dll", SetLastError = true)]
+            private static extern bool AssignProcessToJobObject(IntPtr job, IntPtr process);
+
+            [DllImport("kernel32.dll", SetLastError = true)]
+            private static extern bool TerminateJobObject(IntPtr job, uint exitCode);
+
+            [DllImport("kernel32.dll", SetLastError = true)]
+            private static extern bool CloseHandle(IntPtr handle);
+
+            private SetupProcessJob(IntPtr jobHandle)
+            {
+                handle = jobHandle;
+            }
+
+            public static SetupProcessJob Create()
+            {
+                IntPtr job = CreateJobObject(IntPtr.Zero, null);
+                if (job == IntPtr.Zero)
+                    throw new System.ComponentModel.Win32Exception(Marshal.GetLastWin32Error(),
+                        "Pythonセットアップ用のプロセス管理を作成できませんでした。");
+
+                ExtendedLimitInformation information = new ExtendedLimitInformation();
+                information.BasicLimitInformation.LimitFlags = KillOnJobClose;
+                if (!SetInformationJobObject(job, JobObjectExtendedLimitInformationClass,
+                    ref information, (uint)Marshal.SizeOf(typeof(ExtendedLimitInformation))))
+                {
+                    int error = Marshal.GetLastWin32Error();
+                    CloseHandle(job);
+                    throw new System.ComponentModel.Win32Exception(error,
+                        "Pythonセットアップの終了時クリーンアップを設定できませんでした。");
+                }
+
+                return new SetupProcessJob(job);
+            }
+
+            public void Assign(Process process)
+            {
+                if (handle == IntPtr.Zero || process == null || !AssignProcessToJobObject(handle, process.Handle))
+                    throw new System.ComponentModel.Win32Exception(Marshal.GetLastWin32Error(),
+                        "PowerShellをPlayer所有のプロセス管理へ登録できませんでした。");
+            }
+
+            public bool Terminate(uint exitCode)
+            {
+                return handle != IntPtr.Zero && TerminateJobObject(handle, exitCode);
+            }
+
+            public void Dispose()
+            {
+                IntPtr closing = handle;
+                handle = IntPtr.Zero;
+                if (closing != IntPtr.Zero) CloseHandle(closing);
+            }
+        }
 
         /// <summary>
         /// 螳溯｡檎腸蠅�↓縺翫￠繧倶ｻｮ諠ｳ迺ｰ蠅�� python.exe 縺ｮ繝代せ繧貞叙蠕励＠縺ｾ縺吶�
@@ -843,7 +948,7 @@ namespace PointCloudWorkbench
         private static async Task<string> FindPython312Async(List<PythonCommandCandidate> candidates,
             string backendDirectory, CancellationToken cancellationToken)
         {
-            const string probe = "import sys; print('PCWB_BASE:'+sys.executable); raise SystemExit(0 if sys.version_info[:2]==(3,12) else 1)";
+            const string probe = "import os,sys; base=getattr(sys,'_base_executable',None) or sys.executable; print('PCWB_BASE:'+os.path.realpath(base)); raise SystemExit(0 if sys.version_info[:2]==(3,12) and os.path.isfile(base) else 1)";
             for (int i = 0; i < candidates.Count; i++)
             {
                 cancellationToken.ThrowIfCancellationRequested();
@@ -935,60 +1040,105 @@ namespace PointCloudWorkbench
             process.OutputDataReceived += (_, e) => { if (e.Data != null) AppendEnvironmentSetupOutput("OUT", e.Data); };
             process.ErrorDataReceived += (_, e) => { if (e.Data != null) AppendEnvironmentSetupOutput("ERR", e.Data); };
             lock (environmentSetupLock) environmentSetupProcess = process;
-            if (!process.Start())
+            using (SetupProcessJob job = Environment.OSVersion.Platform == PlatformID.Win32NT
+                ? SetupProcessJob.Create()
+                : null)
             {
-                process.Dispose();
-                throw new InvalidOperationException("Pythonセットアップ用PowerShellを起動できませんでした。");
-            }
-            process.BeginOutputReadLine();
-            process.BeginErrorReadLine();
+                if (!process.Start())
+                    throw new InvalidOperationException("Pythonセットアップ用PowerShellを起動できませんでした。");
+                if (job != null)
+                {
+                    try
+                    {
+                        job.Assign(process);
+                    }
+                    catch
+                    {
+                        await TerminateSetupProcessTreeAsync(process, null);
+                        throw;
+                    }
+                }
+                process.BeginOutputReadLine();
+                process.BeginErrorReadLine();
 
-            DateTime deadline = DateTime.UtcNow.AddHours(1);
-            while (!process.HasExited)
-            {
-                if (cancellationToken.IsCancellationRequested)
+                DateTime deadline = DateTime.UtcNow.AddHours(1);
+                while (!process.HasExited)
                 {
-                    await TerminateSetupProcessTreeAsync(process);
-                    cancellationToken.ThrowIfCancellationRequested();
+                    if (cancellationToken.IsCancellationRequested)
+                    {
+                        await TerminateSetupProcessTreeAsync(process, job);
+                        cancellationToken.ThrowIfCancellationRequested();
+                    }
+                    if (DateTime.UtcNow >= deadline)
+                    {
+                        await TerminateSetupProcessTreeAsync(process, job);
+                        throw new TimeoutException("Pythonセットアップが1時間でタイムアウトしました。出力が止まっていても、その時間までは処理を継続します。");
+                    }
+                    await Task.Delay(200);
                 }
-                if (DateTime.UtcNow >= deadline)
-                {
-                    await TerminateSetupProcessTreeAsync(process);
-                    throw new TimeoutException("Pythonセットアップが1時間でタイムアウトしました。出力が止まっていても、その時間までは処理を継続します。");
-                }
-                await Task.Delay(200);
+                await Task.Run(() => process.WaitForExit());
+                return process.ExitCode;
             }
-            await Task.Run(() => process.WaitForExit());
-            return process.ExitCode;
         }
 
-        private static async Task TerminateSetupProcessTreeAsync(Process process)
+        private static async Task TerminateSetupProcessTreeAsync(Process process, SetupProcessJob job)
         {
             if (process == null) return;
-            try
+            if (job != null && job.Terminate(1))
             {
-                if (!process.HasExited && Environment.OSVersion.Platform == PlatformID.Win32NT)
+                bool jobProcessExited = await Task.Run(() => process.WaitForExit(10000));
+                if (!jobProcessExited)
+                    throw new TimeoutException("Pythonセットアップのプロセス群を10秒以内に終了できませんでした。");
+                return;
+            }
+
+            string treeKillError = null;
+            if (!process.HasExited && Environment.OSVersion.Platform == PlatformID.Win32NT)
+            {
+                try
                 {
                     ProcessStartInfo killInfo = new ProcessStartInfo
                     {
                         FileName = "taskkill.exe",
                         Arguments = "/PID " + process.Id.ToString(System.Globalization.CultureInfo.InvariantCulture) + " /T /F",
                         UseShellExecute = false,
-                        CreateNoWindow = true
+                        CreateNoWindow = true,
+                        RedirectStandardOutput = true,
+                        RedirectStandardError = true
                     };
                     using (Process killer = Process.Start(killInfo))
-                        if (killer != null) await Task.Run(() => killer.WaitForExit(5000));
+                    {
+                        if (killer == null) throw new InvalidOperationException("taskkill.exeを起動できませんでした。");
+                        Task<string> stdout = killer.StandardOutput.ReadToEndAsync();
+                        Task<string> stderr = killer.StandardError.ReadToEndAsync();
+                        bool killerExited = await Task.Run(() => killer.WaitForExit(10000));
+                        if (!killerExited)
+                        {
+                            killer.Kill();
+                            throw new TimeoutException("taskkill.exeが10秒以内に終了しませんでした。");
+                        }
+                        await Task.WhenAll(stdout, stderr);
+                        if (killer.ExitCode != 0)
+                            treeKillError = (stderr.Result + Environment.NewLine + stdout.Result).Trim();
+                    }
+                }
+                catch (Exception ex)
+                {
+                    treeKillError = ex.Message;
                 }
             }
-            catch { }
+
             try { if (!process.HasExited) process.Kill(); }
-            catch { }
-            try
-            {
-                bool exited = await Task.Run(() => process.WaitForExit(5000));
-                if (!exited) throw new TimeoutException("セットアッププロセスが終了しませんでした。");
-            }
             catch (InvalidOperationException) { }
+            catch (System.ComponentModel.Win32Exception ex) { treeKillError = ex.Message; }
+
+            bool exited = await Task.Run(() => process.WaitForExit(10000));
+            if (!exited)
+                throw new TimeoutException("セットアッププロセスを終了できませんでした。" +
+                    (string.IsNullOrWhiteSpace(treeKillError) ? string.Empty : " " + treeKillError));
+            if (job == null && Environment.OSVersion.Platform == PlatformID.Win32NT &&
+                !string.IsNullOrWhiteSpace(treeKillError))
+                throw new IOException("セットアップの子プロセス終了を確認できませんでした: " + treeKillError);
         }
 
         private static void AppendEnvironmentSetupOutput(string streamName, string line)
